@@ -36,6 +36,7 @@ pub fn resolve_work_queue(ctx: &WorkQueueContext<'_>) -> Result<WorkQueue> {
         _ => discover(ctx.engine, ctx.scope, ctx.media_directory)?,
     };
     roots.sort_by(|a, b| a.lock_path.cmp(&b.lock_path));
+    roots.dedup_by(|a, b| a.lock_path == b.lock_path);
 
     let mut missing = match &ctx.tracked {
         Some(tracked) if ctx.force == ForceMode::Preserve => {

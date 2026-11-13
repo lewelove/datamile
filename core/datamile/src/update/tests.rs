@@ -1,9 +1,11 @@
+use crate::compile::LogVerbosity;
 use crate::compile::media::RootTarget;
-use crate::server::state::{DependencyGraph, RootMeta};
+use crate::server::state::{DependencyGraph, RootMeta, UpdateScope};
 use crate::update::cache::LibraryCache;
 use crate::update::client::ForceMode;
-use crate::update::queue::rebuild_cache;
+use crate::update::queue::{WorkQueueContext, rebuild_cache, resolve_work_queue};
 use crate::update::verify::{CacheIndex, verify_targets};
+use libdatamile::lua::LuaEngine;
 use serde_json::json;
 use std::collections::HashSet;
 use std::fs;
@@ -185,4 +187,60 @@ fn missing_lock_is_dirty() {
 
     let dirty = dirty(&fixture);
     assert!(dirty.contains(&fixture.root.join("Dune.lock.json")));
+}
+
+/// Overlapping scope paths (a directory and an album inside it) must not
+/// queue the same root twice.
+#[test]
+fn overlapping_scope_paths_dedupe_roots() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize");
+    let album = root.join("album");
+    fs::create_dir_all(&album).expect("album dir");
+    fs::write(album.join("album.toml"), b"[album]").expect("marker");
+    fs::write(album.join("album.lock.json"), b"{}").expect("lock");
+
+    let engine = LuaEngine::new().expect("engine");
+    let code = r#"
+        d.media.type("album")
+        d.compile.album.lock(function(t) return t.path .. "/album.lock.json" end)
+        d.compile.album.select(function(scope)
+            local marker = d.fs.joinpath(scope.path, "album.toml")
+            if d.fs.exists(marker) then
+                return { { path = scope.path } }
+            end
+            if not scope.recursive then
+                return {}
+            end
+            local out = {}
+            for rel, kind in d.fs.dir(scope.path, { depth = math.huge }) do
+                if kind == "file" and d.fs.basename(rel) == "album.toml" then
+                    table.insert(out, {
+                        path = d.fs.dirname(d.fs.joinpath(scope.path, rel)),
+                    })
+                end
+            end
+            return out
+        end)
+    "#;
+    engine.lua.load(code).exec().expect("register");
+
+    let scope = UpdateScope::Paths(HashSet::from([root.clone(), album.clone()]));
+    let cache = LibraryCache::new();
+    let graph = DependencyGraph::default();
+    let ctx = WorkQueueContext {
+        engine: &engine,
+        scope: &scope,
+        media_directory: &root,
+        cache: &cache,
+        deps_graph: &graph,
+        force: ForceMode::Force,
+        effective_jobs: Some(1),
+        tracked: None,
+        verbosity: LogVerbosity::Silent,
+    };
+
+    let queue = resolve_work_queue(&ctx).expect("queue");
+    assert_eq!(queue.roots.len(), 1);
+    assert_eq!(queue.roots[0].target, album);
 }

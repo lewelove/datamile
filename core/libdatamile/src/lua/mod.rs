@@ -241,6 +241,18 @@ pub struct EvaluatedLuaData {
     pub manifest: LogicManifest,
 }
 
+/// Child targets emitted by `__DATAMILE_MEDIA_PREPARE`.
+pub struct PreparedChildren {
+    pub field: String,
+    pub type_name: String,
+    pub targets: Vec<serde_json::Value>,
+}
+
+pub struct PreparedEntity {
+    pub ctx_id: u64,
+    pub children: Vec<PreparedChildren>,
+}
+
 fn call_getter<T: serde::de::DeserializeOwned>(lua: &Lua, fn_name: &str) -> Result<T> {
     let func: mlua::Function = lua
         .globals()
@@ -249,6 +261,14 @@ fn call_getter<T: serde::de::DeserializeOwned>(lua: &Lua, fn_name: &str) -> Resu
     let val: mlua::Value = func.call(()).map_err(|e| anyhow::anyhow!("{e}"))?;
     let parsed: T = lua.from_value(val).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(parsed)
+}
+
+fn json_str(value: &serde_json::Value, key: &str) -> Result<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow::anyhow!("expected string field '{key}' in {value}"))
 }
 
 fn register_native_functions(lua: &Lua) -> mlua::Result<()> {
@@ -605,26 +625,89 @@ impl LuaEngine {
         }
     }
 
-    pub fn media_compile(
+    /// Stage 1: run inputs and child selectors. The context stays alive in Lua
+    /// until `media_finalize` or `media_drop` collects it.
+    pub fn media_prepare(
         &self,
         type_name: &str,
-        source: &serde_json::Value,
+        seed: &serde_json::Value,
+    ) -> Result<PreparedEntity> {
+        let func: mlua::Function = self
+            .lua
+            .globals()
+            .get("__DATAMILE_MEDIA_PREPARE")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let lua_seed = self
+            .lua
+            .to_value(seed)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let value: mlua::Value = func
+            .call((type_name, lua_seed))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let prepared: serde_json::Value = self
+            .lua
+            .from_value(value)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        let ctx_id = prepared
+            .get("ctx_id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| {
+                anyhow::anyhow!("media prepare for '{type_name}' returned no ctx")
+            })?;
+
+        let mut children = Vec::new();
+        if let Some(items) = prepared
+            .get("children")
+            .and_then(serde_json::Value::as_array)
+        {
+            for item in items {
+                children.push(PreparedChildren {
+                    field: json_str(item, "field")?,
+                    type_name: json_str(item, "type")?,
+                    targets: item
+                        .get("targets")
+                        .and_then(serde_json::Value::as_array)
+                        .cloned()
+                        .unwrap_or_default(),
+                });
+            }
+        }
+
+        Ok(PreparedEntity { ctx_id, children })
+    }
+
+    /// Stage 2: run the output boxes with the compiled children attached.
+    pub fn media_finalize(
+        &self,
+        type_name: &str,
+        ctx_id: u64,
+        children: &serde_json::Value,
     ) -> Result<serde_json::Value> {
         let func: mlua::Function = self
             .lua
             .globals()
-            .get("__DATAMILE_MEDIA_COMPILE")
+            .get("__DATAMILE_MEDIA_FINALIZE")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let lua_source = self
+        let lua_children = self
             .lua
-            .to_value(source)
+            .to_value(children)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let value: mlua::Value = func
-            .call((type_name, lua_source))
+            .call((type_name, ctx_id, lua_children))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         self.lua
             .from_value(value)
             .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    pub fn media_drop(&self, ctx_id: u64) -> Result<()> {
+        let func: mlua::Function = self
+            .lua
+            .globals()
+            .get("__DATAMILE_MEDIA_DROP")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        func.call::<()>(ctx_id).map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     pub fn execute_dispatcher(

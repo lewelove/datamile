@@ -1,23 +1,6 @@
 _G.datamile = _G.datamile or {}
 _G.d = _G.datamile
 
-local function read_manifest(path)
-    local album_toml = d.fs.joinpath(path, "album.toml")
-    if d.fs.exists(album_toml) then
-        return d.fs.read_toml(album_toml)
-    end
-    return nil
-end
-
-local function is_virtual(path)
-    local virtual_toml = d.fs.joinpath(path, "virtual.toml")
-    if not d.fs.exists(virtual_toml) then
-        return false
-    end
-
-    return d.get(d.fs.read_toml(virtual_toml), "album.virtual") == true
-end
-
 local function format_duration(ms)
     local total_secs = math.floor((tonumber(ms) or 0) / 1000)
     local hours = math.floor(total_secs / 3600)
@@ -31,34 +14,13 @@ local function format_duration(ms)
     return string.format("%d:%02d", mins, secs)
 end
 
-local function find_albums(root_source)
-    local result = {}
-    local seen = {}
-    local root = root_source.path
-
-    for _, marker in ipairs({ "album.toml" }) do
-        for _, manifest in ipairs(d.fs.find(marker, { path = root, type = "file" })) do
-            local dir = d.fs.dirname(manifest)
-            local nested = false
-
-            for _, other in ipairs(d.fs.find(marker, { path = dir, type = "file" })) do
-                if d.fs.dirname(other) ~= dir then
-                    nested = true
-                    break
-                end
-            end
-
-            if not nested and not seen[dir] then
-                seen[dir] = true
-                table.insert(result, { path = dir })
-            end
-        end
+local function count_keys(tbl)
+    local count = 0
+    for _ in pairs(tbl) do
+        count = count + 1
     end
 
-    table.sort(result, function(a, b)
-        return a.path < b.path
-    end)
-    return result
+    return count
 end
 
 local function audio_extensions()
@@ -88,42 +50,44 @@ local function find_tracks(path)
     end, { path = path, type = "file" })
 end
 
--- Filesystem walks are unordered, so tracks are keyed by their audio tags to
--- yield a stable album order: (discnumber, tracknumber, path).
-local function track_order(path)
-    local tags = d.get(d.fs.read_audio(path), "tags") or {}
-
-    return {
-        disc = tonumber(tags.discnumber) or 1,
-        number = tonumber(tags.tracknumber) or math.huge,
-        path = path,
-    }
-end
-
-local function sort_tracks(paths)
-    local keyed = {}
-    for _, path in ipairs(paths) do
-        table.insert(keyed, track_order(path))
+-- Track numbers may be "03/12"; only the leading integer orders tracks.
+local function leading_int(value)
+    if type(value) == "number" then
+        return math.floor(value)
+    end
+    if type(value) ~= "string" then
+        return nil
     end
 
-    table.sort(keyed, function(a, b)
-        if a.disc ~= b.disc then
-            return a.disc < b.disc
+    local digits = value:match("^%s*(%d+)")
+    return digits and tonumber(digits) or nil
+end
+
+-- Filesystem walks are unordered, so tracks are keyed by their audio tags to
+-- yield a stable album order: (discnumber, tracknumber, path).
+local function harvest_tracks(path)
+    local harvested = {}
+    for _, file in ipairs(find_tracks(path)) do
+        table.insert(harvested, { path = file, audio = d.fs.read_audio(file) })
+    end
+
+    table.sort(harvested, function(a, b)
+        local disc_a = leading_int(d.get(a.audio, "tags.discnumber")) or 1
+        local disc_b = leading_int(d.get(b.audio, "tags.discnumber")) or 1
+        if disc_a ~= disc_b then
+            return disc_a < disc_b
         end
 
-        if a.number ~= b.number then
-            return a.number < b.number
+        local num_a = leading_int(d.get(a.audio, "tags.tracknumber")) or math.huge
+        local num_b = leading_int(d.get(b.audio, "tags.tracknumber")) or math.huge
+        if num_a ~= num_b then
+            return num_a < num_b
         end
 
         return a.path < b.path
     end)
 
-    local sorted = {}
-    for _, entry in ipairs(keyed) do
-        table.insert(sorted, entry.path)
-    end
-
-    return sorted
+    return harvested
 end
 
 local function find_cover(path)
@@ -144,116 +108,116 @@ local function find_cover(path)
     return nil
 end
 
-local function track_sources(album)
-    local path = album.path
-    if not path then
-        return {}
+local album = d.media.type("album")
+local track = d.media.type("track")
+
+album.lock(function(target)
+    return d.fs.joinpath(target.path, "album.lock.json")
+end)
+
+-- One tree walk finds every album marker. When the scope points straight at an
+-- album directory, only that album is selected.
+album.select(function(scope)
+    local root = scope.path
+    local marker = d.fs.joinpath(root, "album.toml")
+    local result = {}
+
+    if d.fs.exists(marker) then
+        table.insert(result, { path = root })
+        return result
     end
 
-    local sources = {}
+    if not scope.recursive then
+        return result
+    end
 
-    if not is_virtual(path) then
-        local files = sort_tracks(find_tracks(path))
-        if #files > 0 then
-            for _, file in ipairs(files) do
-                table.insert(sources, { path = file })
-            end
-            return sources
+    for rel, kind in d.fs.dir(root, { depth = math.huge }) do
+        if kind == "file" and d.fs.basename(rel) == "album.toml" then
+            table.insert(result, { path = d.fs.dirname(d.fs.joinpath(root, rel)) })
         end
     end
 
-    local manifest = read_manifest(path)
-    local album_data = d.get(manifest, "album") or {}
+    table.sort(result, function(a, b)
+        return a.path < b.path
+    end)
 
-    for _, entry in ipairs(d.get(manifest, "tracks") or {}) do
-        table.insert(sources, {
-            data = d.tbl.extend("force", album_data, entry),
-        })
-    end
-
-    return sources
-end
-
-local function track_tag(source, key)
-    local value = d.get(source, "data." .. key)
-    if value ~= nil then
-        return value
-    end
-
-    if not source.path then
-        return nil
-    end
-
-    return d.get(d.fs.read_audio(source.path), "tags." .. key)
-end
-
-d.media.type("album")
-
-d.compile.album.select(find_albums)
-d.compile.album.id(function(source)
-    local music_directory = d.get(REGISTRY.config, "storage.music_directory")
-    if not music_directory or music_directory == "" then
-        return nil
-    end
-
-    return d.fs.relpath(music_directory, source.path)
+    return result
 end)
-d.compile.album.lock(function(source)
-    return d.fs.joinpath(source.path, "album.lock.json")
+
+album.input("manifest", function(ctx)
+    return d.fs.read_toml(d.fs.joinpath(ctx.path, "album.toml"))
 end)
-d.compile.album.location(function(source)
-    if not source.path then
+
+album.input("virtual", function(ctx)
+    local virtual_toml = d.fs.read_toml(d.fs.joinpath(ctx.path, "virtual.toml"))
+    return d.get(virtual_toml, "album.virtual") == true
+end)
+
+album.id(function(ctx)
+    local media_directory = d.get(REGISTRY.config, "storage.media_directory")
+        or d.get(REGISTRY.config, "storage.music_directory")
+    if not media_directory or media_directory == "" then
         return nil
     end
 
-    local stat = d.fs.stat(source.path)
+    return d.fs.relpath(media_directory, ctx.path)
+end)
+
+album.location(function(ctx)
+    local stat = d.fs.stat(ctx.path)
 
     return {
         kind = "directory",
-        path = source.path,
+        path = ctx.path,
         mtime = stat.mtime,
     }
 end)
 
-d.compile.album.tag("albumartist", function(source)
-    local m = read_manifest(source.path)
-    return d.get(m, "album.albumartist") or d.get(m, "album.artist")
-end)
-d.compile.album.tag("album", function(source)
-    local m = read_manifest(source.path)
-    return d.get(m, "album.album")
-end)
-d.compile.album.tag("date", function(source)
-    local m = read_manifest(source.path)
-    return d.get(m, "album.date") or d.get(m, "album.release_date")
+album.tag("albumartist", function(ctx)
+    return d.get(ctx, "manifest.album.albumartist") or d.get(ctx, "manifest.album.artist")
 end)
 
-d.compile.album.object("info", function(source)
-    local tracks = d.media.select("track", source)
+album.tag("album", function(ctx)
+    return d.get(ctx, "manifest.album.album")
+end)
+
+album.tag("date", function(ctx)
+    return d.get(ctx, "manifest.album.date") or d.get(ctx, "manifest.album.release_date")
+end)
+
+album.child("tracks", "track", function(ctx)
+    if ctx.virtual then
+        local album_meta = d.get(ctx, "manifest.album") or {}
+        local seeds = {}
+        for _, entry in ipairs(d.get(ctx, "manifest.tracks") or {}) do
+            table.insert(seeds, { manifest = d.tbl.extend("force", album_meta, entry) })
+        end
+        return seeds
+    end
+
+    local seeds = {}
+    for _, item in ipairs(harvest_tracks(ctx.path)) do
+        table.insert(seeds, { path = item.path, audio = item.audio })
+    end
+
+    return seeds
+end)
+
+-- Aggregates over the already compiled ctx.tracks.
+album.object("info", function(ctx)
+    local tracks = ctx.tracks or {}
     local duration = 0
     local discs = {}
 
-    for _, track in ipairs(tracks) do
-        local disc = d.get(track, "data.discnumber")
-        if not disc and track.path then
-            disc = d.get(d.fs.read_audio(track.path), "tags.discnumber")
-        end
-        discs[tostring(disc or "1")] = true
-
-        if track.path then
-            duration = duration + (d.fs.read_audio(track.path).duration_milliseconds or 0)
-        end
-    end
-
-    local total_discs = 0
-    for _ in pairs(discs) do
-        total_discs = total_discs + 1
+    for _, item in ipairs(tracks) do
+        duration = duration + (d.get(item, "objects.info.duration_milliseconds") or 0)
+        discs[tostring(d.get(item, "tags.discnumber") or 1)] = true
     end
 
     return {
-        virtual = is_virtual(source.path),
+        virtual = ctx.virtual,
         total_tracks = #tracks,
-        total_discs = math.max(total_discs, 1),
+        total_discs = math.max(count_keys(discs), 1),
         duration_milliseconds = duration,
         duration_formatted = format_duration(duration),
     }
@@ -299,8 +263,8 @@ end
 
 -- `theme.toml` carries the cover-derived palette consumed by the background
 -- shader. Only valid hex colors are compiled.
-d.compile.album.object("colors", function(source)
-    local theme = d.fs.read_toml(d.fs.joinpath(source.path, "theme.toml"))
+album.object("colors", function(ctx)
+    local theme = d.fs.read_toml(d.fs.joinpath(ctx.path, "theme.toml"))
     local raw = d.get(theme, "album.colors")
     if type(raw) ~= "table" then
         return nil
@@ -320,8 +284,8 @@ d.compile.album.object("colors", function(source)
     return colors
 end)
 
-d.compile.album.images("main", function(source)
-    local matched = find_cover(source.path)
+album.image("main", function(ctx)
+    local matched = find_cover(ctx.path)
     if not matched then
         return nil
     end
@@ -333,12 +297,29 @@ d.compile.album.images("main", function(source)
     }
 end)
 
-d.compile.album.media("tracks", "track")
+track.select(function(scope)
+    local seeds = {}
+    for _, item in ipairs(harvest_tracks(scope.path)) do
+        table.insert(seeds, { path = item.path, audio = item.audio })
+    end
 
-d.media.type("track")
+    return seeds
+end)
 
-d.compile.track.select(track_sources)
-d.compile.track.id(function(_, tags)
+-- Parent selectors may pass `audio`, so a track harvests at most once.
+track.input("audio", function(ctx)
+    if ctx.audio ~= nil then
+        return ctx.audio
+    end
+    if ctx.path == nil then
+        return nil
+    end
+
+    return d.fs.read_audio(ctx.path)
+end)
+
+track.id(function(ctx)
+    local tags = ctx.tags
     local disc = tonumber(tags.discnumber or 1)
     local number = tostring(tags.tracknumber or "")
 
@@ -353,16 +334,17 @@ d.compile.track.id(function(_, tags)
         tags.title or "",
     }, " - ")
 end)
-d.compile.track.location(function(source)
-    if not source.path then
+
+track.location(function(ctx)
+    if ctx.path == nil then
         return nil
     end
 
-    local stat = d.fs.stat(source.path)
+    local stat = d.fs.stat(ctx.path)
 
     return {
         kind = "file",
-        path = source.path,
+        path = ctx.path,
         mtime = stat.mtime,
         byte_size = stat.byte_size,
     }
@@ -379,13 +361,14 @@ for _, key in ipairs({
     "genre",
     "composer",
 }) do
-    d.compile.track.tag(key, function(source)
-        return track_tag(source, key)
+    track.tag(key, function(ctx)
+        return d.get(ctx, "manifest." .. key) or d.get(ctx, "audio.tags." .. key)
     end)
 end
 
-d.compile.track.object("info", function(source)
-    if not source.path then
+track.object("info", function(ctx)
+    local audio = ctx.audio
+    if not audio then
         return {
             sample_rate = 0,
             bits_per_sample = 0,
@@ -397,7 +380,6 @@ d.compile.track.object("info", function(source)
         }
     end
 
-    local audio = d.fs.read_audio(source.path)
     return {
         sample_rate = audio.sample_rate,
         bits_per_sample = audio.bit_depth or 0,

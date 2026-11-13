@@ -4,11 +4,13 @@ _G.d = _G.datamile
 _G.datamile.compile = _G.datamile.compile or {}
 _G.datamile.media = _G.datamile.media or {}
 
-local function require_type(name)
-    if type(name) ~= "string" or name == "" then
-        error("media type name must be a non-empty string")
-    end
+-- Prepared contexts wait in Lua between PREPARE and FINALIZE so large inputs
+-- never round-trip through JSON while their children compile.
+local ACTIVE_CTX = {}
+_G.__DATAMILE_ACTIVE_CTX = ACTIVE_CTX
+local next_ctx_id = 0
 
+local function require_type(name)
     local t = REGISTRY.media[name]
     if not t then
         error(string.format("unknown media type '%s'", name))
@@ -17,13 +19,13 @@ local function require_type(name)
     return t
 end
 
-local function validate_tag(value)
-    local function scalar(v)
-        local tv = type(v)
-        return tv == "string" or tv == "number" or tv == "boolean"
-    end
+local function is_scalar(value)
+    local tv = type(value)
+    return tv == "string" or tv == "number" or tv == "boolean"
+end
 
-    if scalar(value) then
+local function validate_tag(value)
+    if is_scalar(value) then
         return
     end
 
@@ -36,59 +38,73 @@ local function validate_tag(value)
     end
 
     for _, item in ipairs(value) do
-        if not scalar(item) then
+        if not is_scalar(item) then
             error("tag list must contain scalars only")
         end
     end
 end
 
-local function source_label(source)
-    if type(source) == "table" and type(source.path) == "string" then
-        return source.path
+local function ctx_label(ctx)
+    if type(ctx) == "table" and type(ctx.path) == "string" then
+        return ctx.path
     end
 
     return "<virtual>"
 end
 
-local function validate_source(source)
-    if type(source) ~= "table" then
-        error("media source must be a table")
+local function validate_seed(seed)
+    if type(seed) ~= "table" then
+        error("media seed must be a table")
     end
-    if source.path ~= nil and type(source.path) ~= "string" then
-        error("media source path must be a string")
+    if seed.path ~= nil and type(seed.path) ~= "string" then
+        error("media seed path must be a string")
     end
 
-    return source
+    return seed
 end
 
-local function normalize_sources(result, label)
+local function normalize_seeds(result, label)
     if type(result) ~= "table" then
-        error(string.format("%s must return a table of sources", label))
+        error(string.format("%s must return a table of seeds", label))
     end
 
-    local sources = {}
-    for _, source in ipairs(result) do
-        sources[#sources + 1] = validate_source(source)
+    local seeds = {}
+    for _, seed in ipairs(result) do
+        seeds[#seeds + 1] = validate_seed(seed)
     end
 
-    return sources
+    return seeds
 end
 
-local function run_selector(fn, source, label)
-    local ok, result = pcall(fn, source)
-    if not ok then
-        error(string.format("%s failed for %s: %s", label, source_label(source), result))
+local function sorted_keys(tbl)
+    local keys = {}
+    for key in pairs(tbl) do
+        table.insert(keys, key)
     end
+    table.sort(keys)
 
-    return normalize_sources(result, label)
+    return keys
 end
 
-local function call_field(fn, source, kind, name)
-    local ok, result = pcall(fn, source)
+local function call_hook(fn, ctx, kind, name, type_name)
+    local ok, result = pcall(fn, ctx)
     if not ok then
-        error(string.format("%s '%s' failed for %s: %s", kind, name, source_label(source), result))
+        error(string.format(
+            "media type '%s' %s '%s' failed for %s: %s",
+            type_name, kind, name, ctx_label(ctx), result
+        ))
     end
+
     return result
+end
+
+local function call_selector(fn, ctx, label)
+    local ok, result = pcall(fn, ctx)
+    if not ok then
+        error(string.format("%s failed for %s: %s", label, ctx_label(ctx), result))
+    end
+
+    return normalize_seeds(result, label)
 end
 
 function _G.datamile.media.type(name)
@@ -102,79 +118,71 @@ function _G.datamile.media.type(name)
     end
 
     t = {
+        name = name,
         tags = {},
         objects = {},
         images = {},
-        media = {},
+        inputs = {},
+        input_order = {},
+        children = {},
+        child_order = {},
     }
     REGISTRY.media[name] = t
 
+    local function set_fn(field, fn)
+        if type(fn) ~= "function" then
+            error(string.format("media type '%s': %s must be a function", name, field))
+        end
+        t[field] = fn
+    end
+
+    local function set_named(bucket, kind, key, fn)
+        if type(key) ~= "string" or key == "" then
+            error(string.format("media type '%s': %s name must be a non-empty string", name, kind))
+        end
+        if type(fn) ~= "function" then
+            error(string.format("media type '%s': %s '%s' must be a function", name, kind, key))
+        end
+        t[bucket][key] = fn
+    end
+
     local api = {
-        select = function(fn)
-            if type(fn) ~= "function" then
-                error(string.format("media type '%s': select must be a function", name))
-            end
-            t.select = fn
-        end,
-        id = function(fn)
-            if type(fn) ~= "function" then
-                error(string.format("media type '%s': id must be a function", name))
-            end
-            t.id = fn
-        end,
-        lock = function(fn)
-            if type(fn) ~= "function" then
-                error(string.format("media type '%s': lock must be a function", name))
-            end
-            t.lock = fn
-        end,
-        tag = function(key, fn)
+        select = function(fn) set_fn("select", fn) end,
+        lock = function(fn) set_fn("lock", fn) end,
+        id = function(fn) set_fn("id", fn) end,
+        location = function(fn) set_fn("location", fn) end,
+        tag = function(key, fn) set_named("tags", "tag", key, fn) end,
+        object = function(key, fn) set_named("objects", "object", key, fn) end,
+        image = function(key, fn) set_named("images", "image", key, fn) end,
+        input = function(key, fn)
             if type(key) ~= "string" or key == "" then
-                error(string.format("media type '%s': tag name must be a non-empty string", name))
+                error(string.format("media type '%s': input name must be a non-empty string", name))
             end
-            if fn ~= nil and type(fn) ~= "function" then
-                error(string.format("media type '%s': tag '%s' must be a function or nil", name, key))
+            if type(fn) ~= "function" then
+                error(string.format("media type '%s': input '%s' must be a function", name, key))
             end
-            t.tags[key] = fn
+            if t.inputs[key] == nil then
+                table.insert(t.input_order, key)
+            end
+            t.inputs[key] = fn
         end,
-        object = function(key, fn)
-            if type(key) ~= "string" or key == "" then
-                error(string.format("media type '%s': object name must be a non-empty string", name))
-            end
-            if fn ~= nil and type(fn) ~= "function" then
-                error(string.format("media type '%s': object '%s' must be a function or nil", name, key))
-            end
-            t.objects[key] = fn
-        end,
-        image = function(key, fn)
-            if type(key) ~= "string" or key == "" then
-                error(string.format("media type '%s': image name must be a non-empty string", name))
-            end
-            if fn ~= nil and type(fn) ~= "function" then
-                error(string.format("media type '%s': image '%s' must be a function or nil", name, key))
-            end
-            t.images[key] = fn
-        end,
-        location = function(fn)
-            if fn ~= nil and type(fn) ~= "function" then
-                error(string.format("media type '%s': location must be a function or nil", name))
-            end
-            t.location = fn
-        end,
-        media = function(field, child_type, fn)
+        child = function(field, child_type, selector)
             if type(field) ~= "string" or field == "" then
-                error(string.format("media type '%s': media field must be a non-empty string", name))
+                error(string.format("media type '%s': child field must be a non-empty string", name))
             end
             if type(child_type) ~= "string" or child_type == "" then
                 error(string.format("media type '%s': child type must be a non-empty string", name))
             end
-            if fn ~= nil and type(fn) ~= "function" then
-                error(string.format("media type '%s': media field '%s' selector must be a function or nil", name, field))
+            if selector ~= nil and type(selector) ~= "function" then
+                error(string.format(
+                    "media type '%s': child '%s' selector must be a function or nil",
+                    name, field
+                ))
             end
-            t.media[field] = {
-                type = child_type,
-                select = fn,
-            }
+            if t.children[field] == nil then
+                table.insert(t.child_order, field)
+            end
+            t.children[field] = { type = child_type, select = selector }
         end,
     }
 
@@ -186,14 +194,14 @@ function _G.datamile.media.type(name)
     return api
 end
 
-function _G.datamile.media.select(name, source)
+function _G.datamile.media.select(name, scope)
     local t = require_type(name)
     if type(t.select) ~= "function" then
         error(string.format("media type '%s' has no select function", name))
     end
 
     local label = string.format("media type '%s' select", name)
-    return run_selector(t.select, source, label)
+    return call_selector(t.select, validate_seed(scope), label)
 end
 
 function __DATAMILE_MEDIA_ROOTS()
@@ -204,23 +212,26 @@ function __DATAMILE_MEDIA_ROOTS()
         end
     end
     table.sort(roots)
+
     return roots
 end
 
-function __DATAMILE_MEDIA_SELECT(name, source)
-    return _G.datamile.media.select(name, source)
+function __DATAMILE_MEDIA_SELECT(name, scope)
+    return _G.datamile.media.select(name, scope)
 end
 
-function __DATAMILE_MEDIA_LOCK(name, source)
+function __DATAMILE_MEDIA_LOCK(name, seed)
     local t = require_type(name)
     if type(t.lock) ~= "function" then
         return nil
     end
 
-    source = validate_source(source)
-    local ok, result = pcall(t.lock, source)
+    seed = validate_seed(seed)
+    local ok, result = pcall(t.lock, seed)
     if not ok then
-        error(string.format("media type '%s' lock failed for %s: %s", name, source_label(source), result))
+        error(string.format(
+            "media type '%s' lock failed for %s: %s", name, ctx_label(seed), result
+        ))
     end
     if result == nil then
         return nil
@@ -232,76 +243,118 @@ function __DATAMILE_MEDIA_LOCK(name, source)
     return result
 end
 
-function __DATAMILE_MEDIA_COMPILE(name, source)
+local function run_prepare(t, name, ctx)
+    for _, key in ipairs(t.input_order) do
+        ctx[key] = call_hook(t.inputs[key], ctx, "input", key, name)
+    end
+
+    local children = {}
+    for _, field in ipairs(t.child_order) do
+        local spec = t.children[field]
+        local child_type = require_type(spec.type)
+        local selector = spec.select or child_type.select
+        if type(selector) ~= "function" then
+            error(string.format(
+                "media type '%s' child '%s': type '%s' has no select function",
+                name, field, spec.type
+            ))
+        end
+
+        local label = string.format("media type '%s' child '%s' select", name, field)
+        table.insert(children, {
+            field = field,
+            type = spec.type,
+            targets = call_selector(selector, ctx, label),
+        })
+    end
+
+    return children
+end
+
+-- Stage 1: run inputs once, then emit the child targets selected from ctx.
+function __DATAMILE_MEDIA_PREPARE(name, seed)
     local t = require_type(name)
-    source = validate_source(source)
+    local ctx = {}
+    for key, value in pairs(validate_seed(seed)) do
+        ctx[key] = value
+    end
 
-    local out = {
-        id = source.path or "",
-        tags = {},
-        objects = {},
-        images = {},
-        media = {},
-    }
+    next_ctx_id = next_ctx_id + 1
+    local ctx_id = next_ctx_id
+    ACTIVE_CTX[ctx_id] = ctx
 
-    for key, fn in pairs(t.tags) do
-        if type(fn) == "function" then
-            local result = call_field(fn, source, "tag", key)
-            if result ~= nil then
-                validate_tag(result)
-                out.tags[key] = result
-            end
+    local ok, children = pcall(run_prepare, t, name, ctx)
+    if not ok then
+        ACTIVE_CTX[ctx_id] = nil
+        error(children)
+    end
+
+    return { ctx_id = ctx_id, children = children }
+end
+
+-- Stage 2: attach the already compiled children, then run the output boxes.
+function __DATAMILE_MEDIA_FINALIZE(name, ctx_id, compiled_children)
+    local t = require_type(name)
+    local ctx = ACTIVE_CTX[ctx_id]
+    ACTIVE_CTX[ctx_id] = nil
+    if type(ctx) ~= "table" then
+        error(string.format(
+            "media type '%s' finalize failed for unknown context %s", name, tostring(ctx_id)
+        ))
+    end
+
+    if type(compiled_children) == "table" then
+        for field, value in pairs(compiled_children) do
+            ctx[field] = value
         end
     end
 
-    if type(t.id) == "function" then
-        local ok, result = pcall(t.id, source, out.tags)
-        if not ok then
-            error(string.format("media type '%s' id failed for %s: %s", name, source_label(source), result))
-        end
-        if type(result) == "string" and result ~= "" then
-            out.id = result
-        end
-    end
+    local out = { id = ctx.path or "", tags = {}, objects = {}, images = {} }
+    ctx.tags = out.tags
+    ctx.objects = out.objects
+    ctx.images = out.images
 
-    for key, fn in pairs(t.objects) do
-        if type(fn) == "function" then
-            local result = call_field(fn, source, "object", key)
-            if result ~= nil then
-                out.objects[key] = result
-            end
+    for _, key in ipairs(sorted_keys(t.tags)) do
+        local result = call_hook(t.tags[key], ctx, "tag", key, name)
+        if result ~= nil then
+            validate_tag(result)
+            ctx.tags[key] = result
         end
     end
 
     if type(t.location) == "function" then
-        local result = call_field(t.location, source, "location", "location")
+        local result = call_hook(t.location, ctx, "location", "location", name)
         if result ~= nil then
+            ctx.location = result
             out.location = result
         end
     end
 
-    for key, fn in pairs(t.images) do
-        if type(fn) == "function" then
-            local result = call_field(fn, source, "image", key)
-            if result ~= nil then
-                out.images[key] = result
-            end
+    for _, key in ipairs(sorted_keys(t.images)) do
+        local result = call_hook(t.images[key], ctx, "image", key, name)
+        if result ~= nil then
+            ctx.images[key] = result
         end
     end
 
-    for field, child in pairs(t.media) do
-        local child_type = require_type(child.type)
-        local selector = child.select or child_type.select
-        if type(selector) ~= "function" then
-            error(string.format("media type '%s' field '%s': child type '%s' has no select function", name, field, child.type))
+    if type(t.id) == "function" then
+        local result = call_hook(t.id, ctx, "id", "id", name)
+        if type(result) == "string" and result ~= "" then
+            out.id = result
         end
+    end
+    ctx.id = out.id
 
-        local label = string.format("media type '%s' field '%s' select", name, field)
-        out.media[field] = {
-            type = child.type,
-            sources = run_selector(selector, source, label),
-        }
+    for _, key in ipairs(sorted_keys(t.objects)) do
+        local result = call_hook(t.objects[key], ctx, "object", key, name)
+        if result ~= nil then
+            ctx.objects[key] = result
+        end
     end
 
     return out
+end
+
+function __DATAMILE_MEDIA_DROP(ctx_id)
+    ACTIVE_CTX[ctx_id] = nil
 end

@@ -53,6 +53,13 @@ fn engine_with_cache(cache: &Path) -> LuaEngine {
     engine
 }
 
+fn compile(engine: &LuaEngine, type_name: &str, seed: &Value) -> Value {
+    let prepared = engine.media_prepare(type_name, seed).expect("prepare");
+    engine
+        .media_finalize(type_name, prepared.ctx_id, &json!({}))
+        .expect("finalize")
+}
+
 fn source_names(sources: &[Value]) -> Vec<String> {
     sources
         .iter()
@@ -157,9 +164,11 @@ fn test_album_colors_from_theme() {
     .expect("theme");
 
     let engine = engine_with_cache(&cache);
-    let value = engine
-        .media_compile("album", &json!({ "path": album.to_string_lossy() }))
-        .expect("compile");
+    let value = compile(
+        &engine,
+        "album",
+        &json!({ "path": album.to_string_lossy() }),
+    );
 
     assert_eq!(value["objects"]["colors"]["background"], json!(["#AABBCC"]));
     assert_eq!(value["objects"]["colors"]["foreground"], json!("#FFF"));
@@ -176,10 +185,94 @@ fn test_album_colors_rejects_invalid_hex() {
     .expect("theme");
 
     let engine = engine_with_cache(&cache);
-    let value = engine
-        .media_compile("album", &json!({ "path": album.to_string_lossy() }))
-        .expect("compile");
+    let value = compile(
+        &engine,
+        "album",
+        &json!({ "path": album.to_string_lossy() }),
+    );
 
     assert_eq!(value["objects"]["colors"]["background"], json!(["#AABBCC"]));
     assert!(value["objects"]["colors"].get("foreground").is_none());
+}
+
+/// Track numbers may carry a total ("03/12"); the leading integer orders them.
+#[test]
+fn test_track_sources_parse_fractional_tracknumbers() {
+    let (_tmp, album, cache) = fixture();
+
+    write_track(&album, &cache, "a.flac", &json!({ "tracknumber": "10/12" }));
+    write_track(&album, &cache, "b.flac", &json!({ "tracknumber": "02/12" }));
+    write_track(&album, &cache, "c.flac", &json!({ "tracknumber": "1/12" }));
+
+    let engine = engine_with_cache(&cache);
+    let sources = engine
+        .media_select("track", &json!({ "path": album.to_string_lossy() }))
+        .expect("select");
+
+    assert_eq!(source_names(&sources), vec!["c.flac", "b.flac", "a.flac"]);
+}
+
+/// A single recursive walk finds nested albums without re-scanning.
+#[test]
+fn test_album_select_finds_nested_albums() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    for dir in ["A", "A/disc", "A/nested", "B"] {
+        fs::create_dir_all(root.join(dir)).expect("dir");
+    }
+    for marker in ["A/album.toml", "A/nested/album.toml", "B/album.toml"] {
+        fs::write(root.join(marker), "").expect("marker");
+    }
+
+    let engine = LuaEngine::new().expect("engine");
+    let mut sources = engine
+        .media_select(
+            "album",
+            &json!({ "path": root.to_string_lossy(), "recursive": true }),
+        )
+        .expect("select");
+    sources.sort_by_key(|s| s["path"].as_str().unwrap_or("").to_string());
+
+    let names: Vec<String> = sources
+        .iter()
+        .map(|s| {
+            let path = PathBuf::from(s["path"].as_str().expect("path"));
+            path.strip_prefix(root)
+                .expect("relative")
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(names, vec!["A", "A/nested", "B"]);
+}
+
+/// A non-recursive scope inspects only the given directory.
+#[test]
+fn test_album_select_non_recursive() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let album = root.join("A");
+    fs::create_dir_all(&album).expect("dir");
+    fs::write(album.join("album.toml"), "").expect("marker");
+    fs::write(root.join("album.toml"), "").expect("marker");
+
+    let engine = LuaEngine::new().expect("engine");
+    let same = engine
+        .media_select(
+            &"album",
+            &json!({ "path": album.to_string_lossy(), "recursive": false }),
+        )
+        .expect("select");
+    assert_eq!(same.len(), 1);
+
+    let plain = root.join("plain");
+    fs::create_dir_all(&plain).expect("dir");
+    let none = engine
+        .media_select(
+            "album",
+            &json!({ "path": plain.to_string_lossy(), "recursive": false }),
+        )
+        .expect("select");
+    assert!(none.is_empty());
 }

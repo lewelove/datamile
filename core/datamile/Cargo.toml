@@ -50,3 +50,6 @@ tower-http = { workspace = true }
 urlencoding = { workspace = true }
 walkdir = { workspace = true }
 xxhash-rust = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

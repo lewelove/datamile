@@ -209,7 +209,8 @@ function M.dir(path, opts)
                 local rel = (cur_node.rel == "") and name or (cur_node.rel .. "/" .. name)
                 if type_ == "directory" and cur_node.depth < depth then
                     local should_traverse = true
-                    if skip and skip(rel) == false then
+                    local skip_full = cur_node.path .. "/" .. name
+                    if skip and skip(rel, skip_full) == false then
                         should_traverse = false
                     end
                     if should_traverse then

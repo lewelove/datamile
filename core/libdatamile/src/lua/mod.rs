@@ -347,6 +347,8 @@ impl LuaEngine {
             .map_err(|e| anyhow::anyhow!("{e}"))
             .context("Failed to execute init.lua")?;
 
+        let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
+
         if let Some(media_directory) = MEDIA_DIRECTORY_OVERRIDE.get()
             && let Ok(registry) = self.lua.globals().get::<Table>("REGISTRY")
             && let Ok(config) = registry.get::<Table>("config")
@@ -360,9 +362,10 @@ impl LuaEngine {
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
 
+        self.resolve_music_directory(config_dir)?;
+
         let app_config: AppConfig = call_getter(&self.lua, "__DATAMILE_GET_CONFIG")?;
 
-        let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let resolved_cache = if app_config.storage.cache.is_empty() {
             crate::utils::expand_path("~/.cache/datamile")
         } else {
@@ -407,6 +410,39 @@ impl LuaEngine {
             dependencies,
             manifest,
         })
+    }
+
+    /// Resolve `storage.music_directory` inside the Lua registry so Lua-side
+    /// path math (relative ids, source matching) sees absolute paths, matching
+    /// what `discover_roots` hands to the compiler.
+    fn resolve_music_directory(&self, config_dir: &Path) -> Result<()> {
+        let registry: Table = self
+            .lua
+            .globals()
+            .get("REGISTRY")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let Ok(config) = registry.get::<Table>("config") else {
+            return Ok(());
+        };
+        let Ok(storage) = config.get::<Table>("storage") else {
+            return Ok(());
+        };
+
+        let Ok(music_directory) = storage.get::<Option<String>>("music_directory") else {
+            return Ok(());
+        };
+        let Some(raw) = music_directory.filter(|value| !value.is_empty()) else {
+            return Ok(());
+        };
+
+        let resolved = crate::utils::resolve_path(&raw, config_dir);
+        let resolved = resolved.canonicalize().unwrap_or(resolved);
+
+        storage
+            .set("music_directory", resolved.to_string_lossy().as_ref())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        Ok(())
     }
 
     pub fn execute_interface(&self, name: &str, ctx: &serde_json::Value) -> Result<()> {

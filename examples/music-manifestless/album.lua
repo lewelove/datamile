@@ -6,20 +6,37 @@ album.lock(function(target)
     return d.fs.joinpath(target.path, "album.lock.json")
 end)
 
--- Exclusivity anchoring: any directory holding audio files is an album root.
--- Pruning at the first match prevents nested album directories from leaking
--- into their parent.
+-- Tag anchoring: a directory is an album root only when every audio file
+-- shares one albumartist and album. Pruning keeps nested albums out of parents.
 album.select(function(scope)
     return d.fs.roots(scope, function(_, entries)
+        local audio = {}
         for _, entry in ipairs(entries) do
             if entry.type == "file"
                 and d.fs.is_audio(entry.name, util.audio_extensions())
             then
-                return true, "prune"
+                table.insert(audio, entry.path)
             end
         end
 
-        return false
+        if #audio == 0 then
+            return false
+        end
+
+        local anchor
+        local same = d.list.all(audio, function(path)
+            local tags = d.get(d.fs.read_audio(path), "tags") or {}
+            local artist = tags.albumartist or tags.artist
+            if not artist or not tags.album then
+                return false
+            end
+
+            local key = artist .. "\0" .. tags.album
+            anchor = anchor or key
+            return key == anchor
+        end)
+
+        return same, "prune"
     end)
 end)
 

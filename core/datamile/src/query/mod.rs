@@ -29,7 +29,8 @@ pub async fn run(query_str: Option<String>, flags: QueryFlags) -> Result<()> {
         library: false,
     };
 
-    let resolved_albums = resolve_target_albums(&music_dir, &target_flags).await?;
+    let resolved_albums =
+        resolve_target_albums(&music_dir, &target_flags, &config.path).await?;
 
     if flags.json {
         let albums_json: Vec<serde_json::Value> =
@@ -40,8 +41,7 @@ pub async fn run(query_str: Option<String>, flags: QueryFlags) -> Result<()> {
             if flags.id {
                 println!("{}", album.id);
             } else if flags.lock {
-                let lock_file = album.path.join("album.lock.json");
-                println!("{}", lock_file.display());
+                println!("{}", album.lock_path.display());
             } else {
                 println!("{}", album.path.display());
             }

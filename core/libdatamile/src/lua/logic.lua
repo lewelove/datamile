@@ -16,11 +16,12 @@ function __DATAMILE_GET_LOGIC_MANIFEST()
         cabinets_order = REGISTRY.cabinets_order or {}
     }
     for k, v in pairs(REGISTRY.filters or {}) do
-        manifest.filters[k] = { label = v.label or k }
+        manifest.filters[k] = { label = v.label or k, type = v.type }
     end
     for k, v in pairs(REGISTRY.groupers or {}) do
         manifest.groupers[k] = {
             label = v.label or k,
+            type = v.type,
             index = v.index,
             count = v.count,
             reverse = v.reverse or false
@@ -29,12 +30,14 @@ function __DATAMILE_GET_LOGIC_MANIFEST()
     for k, v in pairs(REGISTRY.orders or {}) do
         manifest.orders[k] = {
             label = v.label or k,
+            type = v.type,
             reverse = v.reverse or false
         }
     end
     for k, v in pairs(REGISTRY.libraries or {}) do
         manifest.libraries[k] = {
             label = v.label or k,
+            type = v.type,
             filters = v.filters or {},
             groupers = v.groupers or {},
             orders = v.orders or {}
@@ -43,12 +46,14 @@ function __DATAMILE_GET_LOGIC_MANIFEST()
     for k, v in pairs(REGISTRY.shelves or {}) do
         manifest.shelves[k] = {
             label = v.label or k,
+            type = v.type,
             reverse = v.reverse or false
         }
     end
     for k, v in pairs(REGISTRY.cabinets or {}) do
         manifest.cabinets[k] = {
             label = v.label or k,
+            type = v.type,
             shelves = v.shelves or {},
             orders = v.orders or {}
         }
@@ -56,7 +61,11 @@ function __DATAMILE_GET_LOGIC_MANIFEST()
     return manifest
 end
 
-function __DATAMILE_EVALUATE_ALBUM_LOGIC(raw_album)
+local function matches_type(def, root_type)
+    return def.type == nil or def.type == root_type
+end
+
+function __DATAMILE_EVALUATE_ENTITY_LOGIC(root_type, raw_lock)
     local res = {
         filters = {},
         groupers = {},
@@ -66,14 +75,14 @@ function __DATAMILE_EVALUATE_ALBUM_LOGIC(raw_album)
         shelf_sorts = {}
     }
 
-    if type(raw_album) ~= "table" or type(raw_album.album) ~= "table" then
+    if type(raw_lock) ~= "table" or type(raw_lock[root_type]) ~= "table" then
         return res
     end
 
-    local album = raw_album.album
+    local album = raw_lock[root_type]
 
     for k, v in pairs(REGISTRY.filters or {}) do
-        if type(v.match) == "function" then
+        if matches_type(v, root_type) and type(v.match) == "function" then
             local ok, match_res = pcall(v.match, album)
             if ok and match_res then
                 res.filters[k] = true
@@ -84,7 +93,7 @@ function __DATAMILE_EVALUATE_ALBUM_LOGIC(raw_album)
     end
 
     for k, v in pairs(REGISTRY.groupers or {}) do
-        if type(v.select) == "function" then
+        if matches_type(v, root_type) and type(v.select) == "function" then
             local ok, sel_res = pcall(v.select, album)
             if ok and sel_res ~= nil then
                 if type(sel_res) == "table" then
@@ -105,7 +114,7 @@ function __DATAMILE_EVALUATE_ALBUM_LOGIC(raw_album)
     end
 
     for k, v in pairs(REGISTRY.orders or {}) do
-        if type(v.sort) == "function" then
+        if matches_type(v, root_type) and type(v.sort) == "function" then
             local ok, sort_res = pcall(v.sort, album)
             if ok and sort_res ~= nil then
                 res.orders[k] = sort_res
@@ -116,7 +125,7 @@ function __DATAMILE_EVALUATE_ALBUM_LOGIC(raw_album)
     end
 
     for k, v in pairs(REGISTRY.libraries or {}) do
-        if type(v.match) == "function" then
+        if matches_type(v, root_type) and type(v.match) == "function" then
             local ok, match_res = pcall(v.match, album)
             if ok and match_res then
                 res.libraries[k] = true
@@ -127,7 +136,7 @@ function __DATAMILE_EVALUATE_ALBUM_LOGIC(raw_album)
     end
 
     for k, v in pairs(REGISTRY.shelves or {}) do
-        if type(v.match) == "function" then
+        if matches_type(v, root_type) and type(v.match) == "function" then
             local ok, match_res = pcall(v.match, album)
             if ok and match_res then
                 res.shelves[k] = true
@@ -135,7 +144,7 @@ function __DATAMILE_EVALUATE_ALBUM_LOGIC(raw_album)
                 error(string.format("Error evaluating shelf match '%s': %s", k, tostring(match_res)))
             end
         end
-        if type(v.sort) == "function" then
+        if matches_type(v, root_type) and type(v.sort) == "function" then
             local ok, sort_res = pcall(v.sort, album)
             if ok and sort_res ~= nil then
                 res.shelf_sorts[k] = sort_res

@@ -43,7 +43,8 @@ pub struct FormattedGrouperResult {
 #[derive(Clone, Debug)]
 pub struct EngineContext {
     pub cache_root: PathBuf,
-    pub captured_deps: RefCell<HashSet<PathBuf>>,
+    captured_files: RefCell<HashSet<PathBuf>>,
+    captured_dirs: RefCell<HashSet<PathBuf>>,
 }
 
 impl EngineContext {
@@ -51,31 +52,59 @@ impl EngineContext {
     pub fn new(cache_root: PathBuf) -> Self {
         Self {
             cache_root,
-            captured_deps: RefCell::new(HashSet::new()),
+            captured_files: RefCell::new(HashSet::new()),
+            captured_dirs: RefCell::new(HashSet::new()),
         }
     }
 
+    /// Record an inspected path. A probe for a missing file records its parent
+    /// directory, so creating the file later marks the owner dirty.
     pub fn record_dependency(&self, path: &Path) {
-        if let Ok(canon) = path.canonicalize()
-            && canon.is_file()
+        if let Ok(canon) = path.canonicalize() {
+            if canon.is_file() {
+                self.captured_files.borrow_mut().insert(canon);
+            } else {
+                self.captured_dirs.borrow_mut().insert(canon);
+            }
+            return;
+        }
+
+        if let Some(parent) = path.parent()
+            && let Ok(canon) = parent.canonicalize()
         {
-            self.captured_deps.borrow_mut().insert(canon);
+            self.captured_dirs.borrow_mut().insert(canon);
+        }
+    }
+
+    pub fn record_dir(&self, path: &Path) {
+        if let Ok(canon) = path.canonicalize()
+            && canon.is_dir()
+        {
+            self.captured_dirs.borrow_mut().insert(canon);
         }
     }
 
     pub fn take_dependencies(&self) -> HashSet<PathBuf> {
-        std::mem::take(&mut *self.captured_deps.borrow_mut())
+        std::mem::take(&mut *self.captured_files.borrow_mut())
+    }
+
+    pub fn take_directories(&self) -> HashSet<PathBuf> {
+        std::mem::take(&mut *self.captured_dirs.borrow_mut())
     }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct FilterDef {
     pub label: String,
+    #[serde(default)]
+    pub r#type: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct GrouperDef {
     pub label: String,
+    #[serde(default)]
+    pub r#type: Option<String>,
     #[serde(default)]
     pub index: Option<bool>,
     #[serde(default)]
@@ -88,12 +117,16 @@ pub struct GrouperDef {
 pub struct OrderDef {
     pub label: String,
     #[serde(default)]
+    pub r#type: Option<String>,
+    #[serde(default)]
     pub reverse: bool,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct LibraryDef {
     pub label: String,
+    #[serde(default)]
+    pub r#type: Option<String>,
     #[serde(default)]
     pub filters: Vec<String>,
     #[serde(default)]
@@ -112,12 +145,16 @@ pub struct LibraryDef {
 pub struct ShelfDef {
     pub label: String,
     #[serde(default)]
+    pub r#type: Option<String>,
+    #[serde(default)]
     pub reverse: bool,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct CabinetDef {
     pub label: String,
+    #[serde(default)]
+    pub r#type: Option<String>,
     #[serde(default)]
     pub shelves: Vec<String>,
     #[serde(default)]
@@ -418,6 +455,7 @@ impl LuaEngine {
             for dep in ctx.take_dependencies() {
                 dependencies.push(dep);
             }
+            ctx.take_directories();
         }
         dependencies.sort();
         dependencies.dedup();
@@ -529,23 +567,24 @@ impl LuaEngine {
         Ok(())
     }
 
-    pub fn evaluate_album_logic(
+    pub fn evaluate_entity_logic(
         &self,
-        album_val: &serde_json::Value,
+        root_type: &str,
+        lock_val: &serde_json::Value,
     ) -> Result<serde_json::Value> {
         let globals = self.lua.globals();
         let eval_fn: mlua::Function = globals
-            .get("__DATAMILE_EVALUATE_ALBUM_LOGIC")
+            .get("__DATAMILE_EVALUATE_ENTITY_LOGIC")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let opts = SerializeOptions::new()
             .serialize_none_to_null(false)
             .serialize_unit_to_null(false);
-        let lua_album = self
+        let lua_lock = self
             .lua
-            .to_value_with(album_val, opts)
+            .to_value_with(lock_val, opts)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let res: mlua::Table = eval_fn
-            .call(lua_album)
+            .call((root_type, lua_lock))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let json_res: serde_json::Value = self
             .lua

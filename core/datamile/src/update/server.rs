@@ -1,5 +1,5 @@
 use crate::compile::{self, LogVerbosity};
-use crate::server::inotify::handler::IngestOrigin;
+use crate::server::inotify::handler::{IngestOrigin, RecompiledAlbumItem};
 use crate::server::state::{AppState, PendingUpdateParams, UpdateScope};
 use crate::update::cache::{
     calculate_path_hash, deps_graph_path, library_cache_dir, load_cache, save_cache,
@@ -7,10 +7,10 @@ use crate::update::cache::{
 };
 use crate::update::client::ForceMode;
 use crate::update::queue::{
-    WorkQueueContext, check_lua_config_changed, resolve_work_queue,
-    try_get_server_tracked_albums, update_cache_entries,
+    WorkQueueContext, check_lua_config_changed, rebuild_cache, resolve_work_queue,
+    try_get_server_tracked_roots,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,9 +18,9 @@ use std::sync::Arc;
 
 pub struct CompilePassContext<'a> {
     pub scope: &'a UpdateScope,
-    pub music_directory: &'a Path,
-    pub work_queue: &'a [PathBuf],
-    pub missing_paths: &'a [PathBuf],
+    pub media_directory: &'a Path,
+    pub roots: &'a [crate::compile::media::RootTarget],
+    pub missing: &'a [PathBuf],
     pub effective_jobs: Option<usize>,
     pub verbosity: LogVerbosity,
 }
@@ -49,11 +49,12 @@ pub fn spawn_server_ingest_handler(
     verbosity: LogVerbosity,
     log_txs: Vec<tokio::sync::mpsc::Sender<String>>,
 ) -> (
-    tokio::sync::mpsc::Sender<crate::server::api::system::AlbumIngestPayload>,
+    tokio::sync::mpsc::Sender<crate::server::api::system::EntityIngestPayload>,
     tokio::task::JoinHandle<()>,
 ) {
-    let (ingest_tx, mut ingest_rx) =
-        tokio::sync::mpsc::channel::<crate::server::api::system::AlbumIngestPayload>(512);
+    let (ingest_tx, mut ingest_rx) = tokio::sync::mpsc::channel::<
+        crate::server::api::system::EntityIngestPayload,
+    >(512);
 
     let ingest_handle = tokio::spawn(async move {
         while let Some(first_payload) = ingest_rx.recv().await {
@@ -68,32 +69,28 @@ pub fn spawn_server_ingest_handler(
                 batch.push(payload);
             }
 
-            let mut vanished_paths = HashSet::new();
+            let mut vanished = HashSet::new();
             let mut items = Vec::with_capacity(batch.len());
             let mut logs = Vec::new();
 
             for payload in batch {
-                if payload.eval_res.is_none() && !payload.album_dir.exists() {
-                    vanished_paths.insert(payload.album_dir);
-                } else if let Some(eval) = payload.eval_res {
-                    if payload.modified
-                        && !payload.lock_json.is_empty()
-                        && !payload.id.is_empty()
-                    {
-                        logs.push(format!("Updated lock: {}", payload.id));
-                    }
-                    items.push((
-                        payload.album_dir,
-                        payload.id,
-                        payload.lock_json,
-                        Some(eval),
-                        payload.dependencies.into_iter().collect(),
-                    ));
+                if payload.eval_res.is_none() {
+                    vanished.insert(payload.lock_path);
+                    continue;
                 }
+
+                if payload.modified
+                    && !payload.lock_json.is_empty()
+                    && !payload.id.is_empty()
+                {
+                    logs.push(format!("Updated lock: {}", payload.id));
+                }
+
+                items.push(RecompiledAlbumItem::from(payload));
             }
 
             crate::server::inotify::handler::ingest_and_broadcast_albums(
-                vanished_paths,
+                vanished,
                 items,
                 IngestOrigin::Internal,
                 &state,
@@ -227,17 +224,18 @@ async fn run_server_update_pass(
     log_txs: Vec<tokio::sync::mpsc::Sender<String>>,
 ) -> Result<()> {
     let config = state.config.read().await.app.clone();
-    let music_directory = state.config.read().await.music_directory.clone();
+    let config_path = state.config.read().await.config_path.clone();
+    let media_directory = state.config.read().await.music_directory.clone();
     let cache_root = state.config.read().await.cache_root.clone();
     let dependencies = state.config.read().await.resolved_dependencies.clone();
 
     let effective_jobs = jobs.or(config.compiler.jobs);
     let is_full_library = scope == UpdateScope::All;
 
-    let base_cache_dir = library_cache_dir(&cache_root, &music_directory);
+    let base_cache_dir = library_cache_dir(&cache_root, &media_directory);
     fs::create_dir_all(&base_cache_dir)?;
 
-    let lib_hash = calculate_path_hash(&music_directory);
+    let lib_hash = calculate_path_hash(&media_directory);
     validate_library_root(&base_cache_dir, &lib_hash).await?;
 
     let mut cache = load_cache(&base_cache_dir.join("library.json"));
@@ -256,28 +254,37 @@ async fn run_server_update_pass(
     };
 
     let tracked = if effective_force == ForceMode::Preserve && is_full_library {
-        try_get_server_tracked_albums(&music_directory).await
+        try_get_server_tracked_roots().await
     } else {
         None
     };
 
     let deps_graph = state.deps_graph.read().await.clone();
-    let (work_queue, missing_paths) = resolve_work_queue(WorkQueueContext {
-        scope: &scope,
-        music_directory: &music_directory,
-        cache: &cache,
-        deps_graph: &deps_graph,
-        force: effective_force,
-        effective_jobs,
-        tracked,
-        verbosity,
-    })?;
+    let queue = {
+        let engine =
+            libdatamile::lua::LuaEngine::new().context("Failed to create Lua engine")?;
+        engine
+            .evaluate_config(&config_path)
+            .context("Failed to evaluate config in Lua engine")?;
 
-    if work_queue.is_empty() && missing_paths.is_empty() {
+        resolve_work_queue(&WorkQueueContext {
+            engine: &engine,
+            scope: &scope,
+            media_directory: &media_directory,
+            cache: &cache,
+            deps_graph: &deps_graph,
+            force: effective_force,
+            effective_jobs,
+            tracked,
+            verbosity,
+        })?
+    };
+
+    if queue.roots.is_empty() && queue.missing.is_empty() {
         emit_log("Library is up to date.", verbosity, &log_txs);
         let _ = fs::write(&lua_hash_file, &lua_hash);
         save_cache(&cache, &base_cache_dir.join("library.json"))?;
-        let deps_json_path = deps_graph_path(&cache_root, &music_directory);
+        let deps_json_path = deps_graph_path(&cache_root, &media_directory);
         let deps_graph_arc = Arc::clone(&state.deps_graph);
         tokio::task::spawn_blocking(move || {
             let mut guard = deps_graph_arc.blocking_write();
@@ -290,17 +297,17 @@ async fn run_server_update_pass(
         return Ok(());
     }
 
-    let checked_count = work_queue.len();
-    let missing_count = missing_paths.len();
+    let checked_count = queue.roots.len();
+    let missing_count = queue.missing.len();
     let start_time = std::time::Instant::now();
 
     let report = process_missing_and_compile(
         &state,
         CompilePassContext {
             scope: &scope,
-            music_directory: &music_directory,
-            work_queue: &work_queue,
-            missing_paths: &missing_paths,
+            media_directory: &media_directory,
+            roots: &queue.roots,
+            missing: &queue.missing,
             effective_jobs,
             verbosity,
         },
@@ -309,14 +316,7 @@ async fn run_server_update_pass(
     .await?;
 
     let deps_graph_guard = state.deps_graph.read().await;
-    update_cache_entries(
-        &mut cache,
-        &deps_graph_guard,
-        &work_queue,
-        &missing_paths,
-        &music_directory,
-        verbosity,
-    );
+    rebuild_cache(&mut cache, &deps_graph_guard);
     drop(deps_graph_guard);
 
     let elapsed = start_time.elapsed().as_millis();
@@ -343,50 +343,41 @@ async fn process_missing_and_compile(
     let (ingest_tx, ingest_handle) =
         spawn_server_ingest_handler(Arc::clone(state), ctx.verbosity, log_txs.to_vec());
 
-    for missing in ctx.missing_paths {
-        let album_id = libdatamile::resolvers::rel_path(missing, ctx.music_directory);
-        emit_log(
-            &format!("Removed album: {album_id}"),
-            ctx.verbosity,
-            log_txs,
-        );
+    for lock in ctx.missing {
+        let id = lock
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_string())
+            .unwrap_or_default();
+        emit_log(&format!("Removed entity: {id}"), ctx.verbosity, log_txs);
         let _ = ingest_tx
-            .send(crate::server::api::system::AlbumIngestPayload {
-                album_dir: missing.clone(),
-                id: String::new(),
-                artist: String::new(),
-                album: String::new(),
+            .send(crate::server::api::system::EntityIngestPayload {
+                root_type: String::new(),
+                target: lock.clone(),
+                lock_path: lock.clone(),
+                id,
                 lock_json: String::new(),
                 eval_res: None,
-                dependencies: Vec::new(),
+                files: Vec::new(),
+                dirs: Vec::new(),
                 modified: false,
             })
             .await;
     }
 
-    if !ctx.work_queue.is_empty() {
-        let checked_count = ctx.work_queue.len();
-        emit_log(
-            &format!("Verifying {checked_count} albums..."),
-            ctx.verbosity,
-            log_txs,
-        );
-    }
-
     let scan_root = match ctx.scope {
-        UpdateScope::All => ctx.music_directory.to_path_buf(),
+        UpdateScope::All => ctx.media_directory.to_path_buf(),
         UpdateScope::Paths(paths) => {
             if paths.len() == 1 {
-                paths.iter().next().cloned().unwrap()
+                paths.iter().next().cloned().unwrap_or_default()
             } else {
-                ctx.music_directory.to_path_buf()
+                ctx.media_directory.to_path_buf()
             }
         }
     };
 
     let compile_options = compile::CompileOptions {
         target_path: scan_root,
-        specific_albums: Some(ctx.work_queue.to_vec()),
+        specific_paths: Some(ctx.roots.iter().map(|root| root.target.clone()).collect()),
         jobs: ctx.effective_jobs,
         compile_flags: compile::CompileFlags {
             mode: compile::CompileMode::Standard,

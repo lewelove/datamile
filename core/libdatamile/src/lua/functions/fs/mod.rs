@@ -98,6 +98,9 @@ fn fs_scandir_native(
     (path_str, follow): (String, bool),
 ) -> mlua::Result<mlua::Function> {
     let expanded = crate::utils::expand_path(&path_str);
+    if let Some(ctx) = lua.app_data_ref::<EngineContext>() {
+        ctx.record_dir(std::path::Path::new(&expanded));
+    }
 
     // Directory handles are read eagerly and dropped here: keeping a live
     // `ReadDir` inside the returned Lua iterator leaks one file descriptor per

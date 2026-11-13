@@ -1,11 +1,12 @@
 use crate::compile::{self, LogVerbosity};
+use crate::server::state::RootMeta;
 use crate::server::state::{DependencyGraph, UpdateScope};
 use crate::update::cache::{
     calculate_path_hash, deps_graph_path, library_cache_dir, load_cache, save_cache,
     validate_library_root,
 };
 use crate::update::queue::{
-    WorkQueueContext, check_lua_config_changed, resolve_work_queue, update_cache_entries,
+    WorkQueueContext, check_lua_config_changed, rebuild_cache, resolve_work_queue,
 };
 use anyhow::{Context, Result};
 use libdatamile::utils::expand_path;
@@ -63,18 +64,27 @@ pub async fn run(
 
     let (scan_root, scope) = resolve_target_scope(target_path.as_ref(), &music_directory);
 
-    let (work_queue, missing_paths) = resolve_work_queue(WorkQueueContext {
-        scope: &scope,
-        music_directory: &music_directory,
-        cache: &cache,
-        deps_graph: &deps_graph,
-        force: effective_force,
-        effective_jobs,
-        tracked: None,
-        verbosity,
-    })?;
+    let queue = {
+        let engine =
+            libdatamile::lua::LuaEngine::new().context("Failed to create Lua engine")?;
+        engine
+            .evaluate_config(&config.path)
+            .context("Failed to evaluate config in Lua engine")?;
 
-    if work_queue.is_empty() && missing_paths.is_empty() {
+        resolve_work_queue(&WorkQueueContext {
+            engine: &engine,
+            scope: &scope,
+            media_directory: &music_directory,
+            cache: &cache,
+            deps_graph: &deps_graph,
+            force: effective_force,
+            effective_jobs,
+            tracked: None,
+            verbosity,
+        })?
+    };
+
+    if queue.roots.is_empty() && queue.missing.is_empty() {
         if verbosity == LogVerbosity::Verbose {
             log::info!("Library is up to date.");
         }
@@ -87,28 +97,21 @@ pub async fn run(
         return Ok(());
     }
 
-    let checked_count = work_queue.len();
-    let missing_count = missing_paths.len();
+    let checked_count = queue.roots.len();
+    let missing_count = queue.missing.len();
     let start_time = std::time::Instant::now();
 
     let report = execute_compile_pass(
         scan_root,
-        &work_queue,
-        &missing_paths,
+        &queue.roots,
         &mut deps_graph,
         effective_jobs,
         verbosity,
     )
     .await?;
 
-    update_cache_entries(
-        &mut cache,
-        &deps_graph,
-        &work_queue,
-        &missing_paths,
-        &music_directory,
-        verbosity,
-    );
+    apply_missing(&queue.missing, &mut deps_graph);
+    rebuild_cache(&mut cache, &deps_graph);
 
     let elapsed = start_time.elapsed().as_millis();
     if verbosity == LogVerbosity::Verbose {
@@ -130,14 +133,14 @@ pub async fn run(
 
 async fn execute_compile_pass(
     scan_root: PathBuf,
-    work_queue: &[PathBuf],
-    missing_paths: &[PathBuf],
+    roots: &[crate::compile::media::RootTarget],
     deps_graph: &mut DependencyGraph,
     jobs: Option<usize>,
     verbosity: LogVerbosity,
 ) -> Result<compile::CompileReport> {
-    let (ingest_tx, mut ingest_rx) =
-        tokio::sync::mpsc::channel::<crate::server::api::system::AlbumIngestPayload>(512);
+    let (ingest_tx, mut ingest_rx) = tokio::sync::mpsc::channel::<
+        crate::server::api::system::EntityIngestPayload,
+    >(512);
 
     let ingest_handle = tokio::spawn(async move {
         let mut items = Vec::new();
@@ -149,7 +152,7 @@ async fn execute_compile_pass(
 
     let compile_options = compile::CompileOptions {
         target_path: scan_root,
-        specific_albums: Some(work_queue.to_vec()),
+        specific_paths: Some(roots.iter().map(|root| root.target.clone()).collect()),
         jobs,
         compile_flags: compile::CompileFlags {
             mode: compile::CompileMode::Standard,
@@ -164,34 +167,36 @@ async fn execute_compile_pass(
     let report = compile::run(compile_options).await?;
     let ingested_payloads = ingest_handle.await.unwrap_or_default();
 
-    apply_ingested_deps(ingested_payloads, missing_paths, deps_graph);
+    apply_ingested_deps(ingested_payloads, deps_graph);
 
     Ok(report)
 }
 
 fn apply_ingested_deps(
-    payloads: Vec<crate::server::api::system::AlbumIngestPayload>,
-    missing_paths: &[PathBuf],
+    payloads: Vec<crate::server::api::system::EntityIngestPayload>,
     deps_graph: &mut DependencyGraph,
 ) {
     for payload in payloads {
-        let album_path_canon = payload
-            .album_dir
-            .canonicalize()
-            .unwrap_or(payload.album_dir);
-        if payload.eval_res.is_some() {
-            deps_graph.update_album_deps(
-                album_path_canon,
-                payload.dependencies.into_iter().collect(),
-            );
-        } else {
-            deps_graph.remove_album(&album_path_canon);
+        if payload.eval_res.is_none() {
+            deps_graph.remove_lock(&payload.lock_path);
+            continue;
         }
-    }
 
-    for missing in missing_paths {
-        let album_path_canon = missing.canonicalize().unwrap_or_else(|_| missing.clone());
-        deps_graph.remove_album(&album_path_canon);
+        deps_graph.update_lock(
+            payload.lock_path,
+            RootMeta {
+                root_type: payload.root_type,
+                target: payload.target,
+                files: payload.files.into_iter().collect(),
+                dirs: payload.dirs.into_iter().collect(),
+            },
+        );
+    }
+}
+
+fn apply_missing(missing: &[PathBuf], deps_graph: &mut DependencyGraph) {
+    for lock in missing {
+        deps_graph.remove_lock(lock);
     }
 }
 

@@ -121,7 +121,7 @@ pub async fn run(port: u16) -> Result<()> {
         tx,
         config: RwLock::new(server_config),
         mpd_engine,
-        tracked_albums: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+        tracked_roots: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         full_rescan_needed: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         active_writes: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         cover_tasks: Arc::new(state::CoverTaskRegistry::default()),

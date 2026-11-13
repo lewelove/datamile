@@ -33,11 +33,12 @@ pub struct CompileFlags {
 
 pub struct CompileOptions {
     pub target_path: PathBuf,
-    pub specific_albums: Option<Vec<PathBuf>>,
+    pub specific_paths: Option<Vec<PathBuf>>,
     pub jobs: Option<usize>,
     pub compile_flags: CompileFlags,
-    pub ingest_tx:
-        Option<tokio::sync::mpsc::Sender<crate::server::api::system::AlbumIngestPayload>>,
+    pub ingest_tx: Option<
+        tokio::sync::mpsc::Sender<crate::server::api::system::EntityIngestPayload>,
+    >,
     pub active_writes: Option<Arc<Mutex<HashSet<PathBuf>>>>,
     pub verbosity: LogVerbosity,
 }
@@ -71,16 +72,16 @@ pub async fn run(options: CompileOptions) -> Result<CompileReport> {
             .evaluate_config(&config.path)
             .context("Failed to evaluate config in Lua engine")?;
 
-        let roots = media::discover_roots(
+        let roots = media::discover_targets(
             &engine,
             &options.target_path,
-            options.specific_albums.as_deref(),
+            options.specific_paths.as_deref(),
         )?;
 
         let mut outputs = Vec::new();
         if options.compile_flags.mode == CompileMode::Intermediary {
-            for (root_type, source) in &roots {
-                let out = media::compile_root(&engine, root_type, source, &cache_root)?;
+            for root in &roots {
+                let out = media::compile_root(&engine, root, &cache_root)?;
                 outputs.push(out.lock_json);
             }
         }

@@ -1,6 +1,6 @@
 use crate::server::inotify::classifier::ChangeFlags;
 use crate::server::logic::SortOrder;
-use crate::server::state::AppState;
+use crate::server::state::{AppState, RootMeta};
 use rayon::prelude::*;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -13,13 +13,32 @@ pub enum IngestOrigin {
     External,
 }
 
-pub type RecompiledAlbumItem = (
-    PathBuf,
-    String,
-    String,
-    Option<serde_json::Value>,
-    HashSet<PathBuf>,
-);
+#[derive(Debug, Clone)]
+pub struct RecompiledAlbumItem {
+    pub root_type: String,
+    pub target: PathBuf,
+    pub lock_path: PathBuf,
+    pub id: String,
+    pub lock_json: String,
+    pub eval_res: Option<serde_json::Value>,
+    pub files: HashSet<PathBuf>,
+    pub dirs: HashSet<PathBuf>,
+}
+
+impl From<crate::server::api::system::EntityIngestPayload> for RecompiledAlbumItem {
+    fn from(payload: crate::server::api::system::EntityIngestPayload) -> Self {
+        Self {
+            root_type: payload.root_type,
+            target: payload.target,
+            lock_path: payload.lock_path,
+            id: payload.id,
+            lock_json: payload.lock_json,
+            eval_res: payload.eval_res,
+            files: payload.files.into_iter().collect(),
+            dirs: payload.dirs.into_iter().collect(),
+        }
+    }
+}
 
 #[derive(Default)]
 struct IngestOutcome {
@@ -44,176 +63,143 @@ pub async fn process_events(flags: ChangeFlags, state: &Arc<AppState>) {
         handle_config_change(state).await;
     }
 
-    if !flags.vanished_paths.is_empty() || !flags.changed_albums.is_empty() {
-        handle_album_changes(flags.vanished_paths, flags.changed_albums, state).await;
+    if flags.changed_locks.is_empty()
+        && flags.changed_paths.is_empty()
+        && flags.vanished_paths.is_empty()
+    {
+        return;
     }
-}
 
-async fn handle_album_changes(
-    vanished_paths: HashSet<PathBuf>,
-    changed_albums: HashSet<PathBuf>,
-    state: &Arc<AppState>,
-) {
-    let config_path = {
-        let guard = state.config.read().await;
-        guard.config_path.clone()
+    let config_path = state.config.read().await.config_path.clone();
+    let targets = resolve_targets(&flags, state).await;
+    let recompiled =
+        recompile_targets(targets, Arc::clone(&state.active_writes), config_path).await;
+
+    let vanished_locks = {
+        let graph = state.deps_graph.read().await;
+        let mut locks = HashSet::new();
+        for path in &flags.vanished_paths {
+            locks.extend(graph.locks_under(path));
+        }
+        locks
     };
-    log_detected_events(&vanished_paths, &changed_albums, state).await;
-    let recompiled_items = recompile_changed_albums(
-        changed_albums,
-        Arc::clone(&state.active_writes),
-        config_path,
-    )
-    .await;
+
     ingest_and_broadcast_albums(
-        vanished_paths,
-        recompiled_items,
+        vanished_locks,
+        recompiled,
         IngestOrigin::External,
         state,
     )
     .await;
 }
 
-async fn log_detected_events(
-    vanished_paths: &HashSet<PathBuf>,
-    changed_albums: &HashSet<PathBuf>,
-    state: &Arc<AppState>,
-) {
-    let music_directory = {
-        let guard = state.config.read().await;
-        guard.music_directory.clone()
-    };
-    let logic = state.logic.read().await;
+async fn resolve_targets(flags: &ChangeFlags, state: &Arc<AppState>) -> HashSet<PathBuf> {
+    let mut targets = HashSet::new();
 
-    let resolve_ids = |paths: &HashSet<PathBuf>| -> Vec<String> {
-        paths
-            .iter()
-            .filter_map(|p| {
-                logic
-                    .get_album_id_by_path(p)
-                    .map(ToString::to_string)
-                    .or_else(|| {
-                        let rel = libdatamile::resolvers::rel_path(p, &music_directory);
-                        if rel.is_empty() { None } else { Some(rel) }
-                    })
-            })
-            .collect()
-    };
-
-    for id in resolve_ids(vanished_paths) {
-        log::info!("Detected removal of: {id}");
+    {
+        let graph = state.deps_graph.read().await;
+        for lock in &flags.changed_locks {
+            if let Some(meta) = graph.lock_to_meta.get(lock) {
+                targets.insert(meta.target.clone());
+            }
+        }
     }
 
-    for id in resolve_ids(changed_albums) {
-        log::info!("Detected change in: {id}");
-    }
+    targets.extend(flags.changed_paths.iter().cloned());
+    targets
 }
 
-async fn recompile_changed_albums(
-    changed_albums: HashSet<PathBuf>,
+async fn recompile_targets(
+    targets: HashSet<PathBuf>,
     active_writes: Arc<Mutex<HashSet<PathBuf>>>,
     config_path: PathBuf,
 ) -> Vec<RecompiledAlbumItem> {
+    if targets.is_empty() {
+        return Vec::new();
+    }
+
     let resolved_lua_config = if let Ok(Ok(cfg)) =
         tokio::task::spawn_blocking(libdatamile::lua::ResolvedConfig::load).await
     {
         Arc::new(cfg)
     } else {
-        log::error!("Failed to load resolved config for album update");
+        log::error!("Failed to load resolved config for entity update");
         return Vec::new();
     };
 
     tokio::task::spawn_blocking(move || {
         let config_ref = &resolved_lua_config;
-        let config_path_ref = &config_path;
 
-        changed_albums
+        targets
             .into_par_iter()
             .filter(|p| p.exists())
-            .map_init(
-                || match libdatamile::lua::LuaEngine::new() {
-                    Ok(engine) => match engine.evaluate_config(config_path_ref) {
-                        Ok(_) => Some(engine),
+            .flat_map_iter(|target| {
+                let engine = match libdatamile::lua::LuaEngine::new() {
+                    Ok(engine) => match engine.evaluate_config(&config_path) {
+                        Ok(_) => engine,
                         Err(e) => {
                             log::error!(
                                 "Failed to evaluate config in inotify handler: {e}"
                             );
-                            None
+                            return Vec::new().into_iter();
                         }
                     },
                     Err(e) => {
                         log::error!(
                             "Failed to initialize Lua engine in inotify handler: {e}"
                         );
-                        None
+                        return Vec::new().into_iter();
                     }
-                },
-                |engine_opt, album_path| {
-                    recompile_single_album(
-                        &album_path,
-                        config_ref,
-                        engine_opt.as_ref(),
-                        &active_writes,
-                    )
-                },
-            )
-            .flatten()
+                };
+
+                let roots = match crate::compile::media::discover_targets(
+                    &engine,
+                    &target,
+                    Some(std::slice::from_ref(&target)),
+                ) {
+                    Ok(roots) => roots,
+                    Err(e) => {
+                        log::error!(
+                            "Root discovery failed for {}: {e}",
+                            target.display()
+                        );
+                        return Vec::new().into_iter();
+                    }
+                };
+
+                roots
+                    .into_iter()
+                    .filter_map(|root| {
+                        recompile_root(&root, config_ref, &engine, &active_writes)
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
             .collect::<Vec<_>>()
     })
     .await
     .unwrap_or_default()
 }
 
-fn recompile_single_album(
-    album_path: &Path,
+fn recompile_root(
+    root: &crate::compile::media::RootTarget,
     config: &libdatamile::lua::ResolvedConfig,
-    engine_opt: Option<&libdatamile::lua::LuaEngine>,
+    engine: &libdatamile::lua::LuaEngine,
     active_writes: &Arc<Mutex<HashSet<PathBuf>>>,
 ) -> Option<RecompiledAlbumItem> {
-    let canon = album_path
-        .canonicalize()
-        .unwrap_or_else(|_| album_path.to_path_buf());
-    let canon_display = canon.display();
-
-    let Some(engine) = engine_opt else {
-        log::error!(
-            "Skipping recompilation of {canon_display} due to Lua engine init failure"
-        );
-        return None;
-    };
-
-    let roots = match crate::compile::media::discover_roots(
-        engine,
-        &canon,
-        Some(std::slice::from_ref(&canon)),
-    ) {
-        Ok(roots) => roots,
-        Err(e) => {
-            log::error!("Root discovery failed for {canon_display}: {e}");
-            return None;
-        }
-    };
-
-    let (root_type, root_source) = roots.first()?;
-
     let cache_root = libdatamile::utils::expand_path(&config.app.storage.cache);
-    let res = match crate::compile::media::compile_root(
-        engine,
-        root_type,
-        root_source,
-        &cache_root,
-    ) {
+    let res = match crate::compile::media::compile_root(engine, root, &cache_root) {
         Ok(res) => res,
         Err(e) => {
-            log::error!("Compilation failed for {canon_display}: {e}");
+            log::error!("Compilation failed for {}: {e}", root.target.display());
             return None;
         }
     };
 
-    let eval_res = match engine.evaluate_album_logic(&res.lock_json) {
+    let eval_res = match engine.evaluate_entity_logic(&root.root_type, &res.lock_json) {
         Ok(eval) => eval,
         Err(e) => {
-            log::error!("Logic evaluation failed for {canon_display}: {e}");
+            log::error!("Logic evaluation failed for {}: {e}", root.target.display());
             return None;
         }
     };
@@ -221,7 +207,10 @@ fn recompile_single_album(
     let lock_json = match serde_json::to_string_pretty(&res.lock_json) {
         Ok(json) => json,
         Err(e) => {
-            log::error!("Failed to serialize lock JSON for {canon_display}: {e}");
+            log::error!(
+                "Failed to serialize lock JSON for {}: {e}",
+                root.target.display()
+            );
             return None;
         }
     };
@@ -240,108 +229,86 @@ fn recompile_single_album(
         log::info!("Updated lock: {}", res.id);
     }
 
-    let entity_dir = if res.path.is_dir() {
-        res.path.clone()
-    } else {
-        res.path
-            .parent()
-            .map_or_else(|| res.path.clone(), PathBuf::from)
-    };
-
-    Some((
-        entity_dir,
-        res.id,
+    Some(RecompiledAlbumItem {
+        root_type: res.root_type,
+        target: res.target,
+        lock_path: res.lock_path,
+        id: res.id,
         lock_json,
-        Some(eval_res),
-        res.dependencies,
-    ))
+        eval_res: Some(eval_res),
+        files: res.files,
+        dirs: res.dirs,
+    })
 }
 
-fn remove_vanished_albums(
-    vanished_paths: &HashSet<PathBuf>,
+fn remove_vanished_locks(
+    vanished_locks: &HashSet<PathBuf>,
     logic: &mut crate::server::logic::LogicEngine,
     deps_graph: &mut crate::server::state::DependencyGraph,
-    origin: IngestOrigin,
     outcome: &mut IngestOutcome,
 ) {
-    let dead_paths: Vec<PathBuf> = logic
-        .albums
-        .values()
-        .map(|a| a.path.clone())
-        .filter(|path| {
-            vanished_paths.iter().any(|vanished| {
-                path.starts_with(vanished)
-                    || (vanished.starts_with(path) && !path.join("album.toml").exists())
-            })
-        })
-        .collect();
-
-    for dead_path in dead_paths {
-        if let Some(dead_id) = logic.remove_album_by_path(&dead_path) {
-            if origin == IngestOrigin::External {
-                log::info!("Removed album: {dead_id}");
-            }
-            deps_graph.remove_album(&dead_path);
-            outcome.deps_modified = true;
+    for lock in vanished_locks {
+        if let Some(dead_id) = logic.remove_by_lock(lock) {
             outcome.removed_ids.push(dead_id);
         }
+        deps_graph.remove_lock(lock);
+        outcome.deps_modified = true;
     }
 }
 
 fn ingest_recompiled_items(
     items: Vec<RecompiledAlbumItem>,
-    music_directory: &Path,
+    media_directory: &Path,
     logic: &mut crate::server::logic::LogicEngine,
     deps_graph: &mut crate::server::state::DependencyGraph,
-    origin: IngestOrigin,
     outcome: &mut IngestOutcome,
 ) {
-    for (album_path, album_id, lock_json, eval_res, dependencies) in items {
-        let canon = album_path
-            .canonicalize()
-            .unwrap_or_else(|_| album_path.clone());
-        if let Some(eval) = eval_res {
-            match logic.ingest_pre_evaluated(
-                &album_path,
-                &album_id,
-                &lock_json,
-                eval,
-                music_directory,
-            ) {
-                Ok(()) => {
-                    deps_graph.update_album_deps(album_path, dependencies);
-                    outcome.deps_modified = true;
-                    if let Some(entry) = logic.get_album_dict(&album_id) {
-                        outcome
-                            .updated_dict_entries
-                            .insert(album_id, entry.to_owned());
-                    }
-                }
-                Err(e) => {
-                    let canon_display = canon.display();
-                    log::error!("Failed to ingest album at {canon_display}: {e}");
-                }
-            }
-        } else if !album_path.exists()
-            && let Some(dead_id) = logic.remove_album_by_path(&album_path)
-        {
-            if origin == IngestOrigin::External {
-                log::info!("Removed album: {dead_id}");
-            }
-            deps_graph.remove_album(&album_path);
-            outcome.deps_modified = true;
-            outcome.removed_ids.push(dead_id);
+    for item in items {
+        let Some(eval) = item.eval_res else {
+            continue;
+        };
+
+        let ingest = logic.ingest_entity(crate::server::logic::EntityIngest {
+            root_type: &item.root_type,
+            target: &item.target,
+            lock_path: &item.lock_path,
+            id: &item.id,
+            lock_json: &item.lock_json,
+            eval_res: eval,
+            music_directory: media_directory,
+        });
+
+        if let Err(e) = ingest {
+            log::error!("Failed to ingest entity at {}: {e}", item.target.display());
+            continue;
+        }
+
+        deps_graph.update_lock(
+            item.lock_path,
+            RootMeta {
+                root_type: item.root_type,
+                target: item.target,
+                files: item.files,
+                dirs: item.dirs,
+            },
+        );
+        outcome.deps_modified = true;
+
+        if let Some(entry) = logic.get_album_dict(&item.id) {
+            outcome
+                .updated_dict_entries
+                .insert(item.id, entry.to_owned());
         }
     }
 }
 
 pub async fn ingest_and_broadcast_albums(
-    vanished_paths: HashSet<PathBuf>,
+    vanished_locks: HashSet<PathBuf>,
     recompiled_items: Vec<RecompiledAlbumItem>,
     origin: IngestOrigin,
     state: &Arc<AppState>,
 ) {
-    let (music_directory, cache_root) = {
+    let (media_directory, cache_root) = {
         let guard = state.config.read().await;
         (guard.music_directory.clone(), guard.cache_root.clone())
     };
@@ -354,20 +321,13 @@ pub async fn ingest_and_broadcast_albums(
         let mut deps_graph = deps_graph_arc.blocking_write();
         let mut outcome = IngestOutcome::default();
 
-        remove_vanished_albums(
-            &vanished_paths,
-            &mut logic,
-            &mut deps_graph,
-            origin,
-            &mut outcome,
-        );
+        remove_vanished_locks(&vanished_locks, &mut logic, &mut deps_graph, &mut outcome);
 
         ingest_recompiled_items(
             recompiled_items,
-            &music_directory,
+            &media_directory,
             &mut logic,
             &mut deps_graph,
-            origin,
             &mut outcome,
         );
 
@@ -376,7 +336,7 @@ pub async fn ingest_and_broadcast_albums(
         let graph_pruned = deps_graph.prune();
         if outcome.deps_modified || graph_pruned {
             let deps_json_path =
-                crate::update::cache::deps_graph_path(&cache_root, &music_directory);
+                crate::update::cache::deps_graph_path(&cache_root, &media_directory);
             if let Err(e) = deps_graph.save_to_file(&deps_json_path) {
                 log::error!("Failed to persist dependency graph: {e}");
             }
@@ -398,6 +358,12 @@ pub async fn ingest_and_broadcast_albums(
     })
     .await
     .unwrap_or_else(|_| (IngestOutcome::default(), HashMap::new()));
+
+    if origin == IngestOrigin::External {
+        for id in &outcome.removed_ids {
+            log::info!("Removed entity: {id}");
+        }
+    }
 
     if !outcome.updated_dict_entries.is_empty() || !outcome.removed_ids.is_empty() {
         let _ = state.tx.send(

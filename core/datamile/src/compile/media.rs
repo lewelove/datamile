@@ -8,13 +8,24 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 mod tests;
 
+/// A root entity discovered from Lua. `lock_path` is the canonical identity:
+/// two roots may share a directory (file-backed types) without colliding.
+#[derive(Clone, Debug)]
+pub struct RootTarget {
+    pub root_type: String,
+    pub target: PathBuf,
+    pub lock_path: PathBuf,
+    pub source: Value,
+}
+
 pub struct MediaBuild {
     pub root_type: String,
-    pub path: PathBuf,
+    pub target: PathBuf,
     pub id: String,
     pub lock_path: PathBuf,
     pub lock_json: Value,
-    pub dependencies: HashSet<PathBuf>,
+    pub files: HashSet<PathBuf>,
+    pub dirs: HashSet<PathBuf>,
 }
 
 /// Collects prepared contexts whose children failed to compile.
@@ -42,7 +53,8 @@ pub fn discover_roots(
             Some(paths) => {
                 let mut found = Vec::new();
                 for path in paths {
-                    found.extend(engine.media_select(&root_type, &recursive_scope(path))?);
+                    found
+                        .extend(engine.media_select(&root_type, &recursive_scope(path))?);
                 }
                 found
             }
@@ -68,20 +80,50 @@ pub fn discover_roots(
     Ok(roots)
 }
 
+/// Resolve root targets, including their canonical lock paths.
+pub fn discover_targets(
+    engine: &LuaEngine,
+    target: &Path,
+    specific: Option<&[PathBuf]>,
+) -> Result<Vec<RootTarget>> {
+    let mut out = Vec::new();
+    for (root_type, source) in discover_roots(engine, target, specific)? {
+        let target_path = source_path(&source)
+            .with_context(|| format!("media type '{root_type}' has no source path"))?
+            .to_path_buf();
+
+        let Some(lock_path) = engine.media_lock(&root_type, &source)? else {
+            continue;
+        };
+
+        out.push(RootTarget {
+            root_type,
+            target: target_path,
+            lock_path,
+            source,
+        });
+    }
+    Ok(out)
+}
+
 pub fn compile_root(
     engine: &LuaEngine,
-    root_type: &str,
-    source: &Value,
+    root: &RootTarget,
     cache_root: &Path,
 ) -> Result<MediaBuild> {
-    let root_path = source_path(source)
-        .with_context(|| format!("media type '{root_type}' has no source path"))?;
-
     take_dependencies(engine);
+    take_directories(engine);
 
-    let mut dependencies = HashSet::new();
-    let value = compile_entity(engine, root_type, source, cache_root, &mut dependencies)?;
-    dependencies.extend(take_dependencies(engine));
+    let mut files = HashSet::new();
+    let value = compile_entity(
+        engine,
+        &root.root_type,
+        &root.source,
+        cache_root,
+        &mut files,
+    )?;
+    files.extend(take_dependencies(engine));
+    let dirs = take_directories(engine);
 
     let id = value
         .get("id")
@@ -89,24 +131,18 @@ pub fn compile_root(
         .unwrap_or_default()
         .to_string();
 
-    let lock_path = engine.media_lock(root_type, source)?.with_context(|| {
-        format!(
-            "media type '{root_type}' has no lock path for {}",
-            root_path.display()
-        )
-    })?;
-
     let lock_json = json!({
-        root_type: value
+        root.root_type.clone(): value
     });
 
     Ok(MediaBuild {
-        root_type: root_type.to_string(),
-        path: root_path.to_path_buf(),
+        root_type: root.root_type.clone(),
+        target: root.target.clone(),
         id,
-        lock_path,
+        lock_path: root.lock_path.clone(),
         lock_json,
-        dependencies,
+        files,
+        dirs,
     })
 }
 
@@ -260,4 +296,11 @@ fn take_dependencies(engine: &LuaEngine) -> HashSet<PathBuf> {
         .lua
         .app_data_ref::<EngineContext>()
         .map_or_else(HashSet::new, |ctx| ctx.take_dependencies())
+}
+
+fn take_directories(engine: &LuaEngine) -> HashSet<PathBuf> {
+    engine
+        .lua
+        .app_data_ref::<EngineContext>()
+        .map_or_else(HashSet::new, |ctx| ctx.take_directories())
 }

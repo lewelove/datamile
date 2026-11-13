@@ -16,27 +16,31 @@ pub enum TrustState {
     BrokenAssets,
 }
 
+/// Verify a compiled lock for any root type. Relative provenance resolves
+/// against the lock's own directory.
 pub fn verify_trust(
-    album_root: &Path,
+    lock_path: &Path,
+    root_type: &str,
     expected_id: Option<&str>,
 ) -> Result<TrustState, DatamileError> {
-    let lock_path = album_root.join("album.lock.json");
     if !lock_path.exists() {
         return Ok(TrustState::Missing);
     }
 
     let lock_content =
-        fs::read_to_string(&lock_path).map_err(DatamileError::ManifestIoError)?;
+        fs::read_to_string(lock_path).map_err(DatamileError::ManifestIoError)?;
 
     let lock_json: serde_json::Value =
         serde_json::from_str(&lock_content).map_err(DatamileError::JsonError)?;
 
-    let Some(album_data) = lock_json.get("album") else {
+    let Some(entity) = lock_json.get(root_type) else {
         return Ok(TrustState::Missing);
     };
 
+    let entity_root = lock_path.parent().unwrap_or(lock_path);
+
     if let Some(expected) = expected_id {
-        let lock_id = album_data
+        let lock_id = entity
             .get("id")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
@@ -45,26 +49,34 @@ pub fn verify_trust(
         }
     }
 
-    if check_manifest_mtimes(album_root, album_data) == TrustState::BrokenIntent {
+    if check_manifest_mtimes(entity_root, entity) == TrustState::BrokenIntent {
         return Ok(TrustState::BrokenIntent);
     }
 
-    if check_image_integrity(album_root, album_data) == TrustState::BrokenAssets {
+    if check_image_integrity(entity_root, entity) == TrustState::BrokenAssets {
         return Ok(TrustState::BrokenAssets);
     }
 
-    if check_tracks_integrity(album_root, &lock_json) == TrustState::BrokenPhysics {
+    if is_virtual(entity) {
+        return Ok(TrustState::Valid);
+    }
+
+    if check_physics(entity, entity_root) == TrustState::BrokenPhysics {
         return Ok(TrustState::BrokenPhysics);
     }
 
     Ok(TrustState::Valid)
 }
 
-fn check_manifest_mtimes(
-    album_root: &Path,
-    album_data: &serde_json::Value,
-) -> TrustState {
-    if let Some(manifests) = album_data
+fn is_virtual(entity: &serde_json::Value) -> bool {
+    entity
+        .pointer("/objects/info/virtual")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn check_manifest_mtimes(entity_root: &Path, entity: &serde_json::Value) -> TrustState {
+    if let Some(manifests) = entity
         .pointer("/objects/manifests")
         .and_then(serde_json::Value::as_object)
     {
@@ -78,11 +90,7 @@ fn check_manifest_mtimes(
                     .get("mtime")
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0);
-                let abs_path = if Path::new(rel_path).is_absolute() {
-                    PathBuf::from(rel_path)
-                } else {
-                    album_root.join(rel_path)
-                };
+                let abs_path = resolve(entity_root, rel_path);
 
                 let current_mtime = fs::metadata(&abs_path)
                     .and_then(|meta| meta.modified())
@@ -101,14 +109,8 @@ fn check_manifest_mtimes(
     TrustState::Valid
 }
 
-fn check_image_integrity(
-    album_root: &Path,
-    album_data: &serde_json::Value,
-) -> TrustState {
-    if let Some(images) = album_data
-        .get("images")
-        .and_then(serde_json::Value::as_object)
-    {
+fn check_image_integrity(entity_root: &Path, entity: &serde_json::Value) -> TrustState {
+    if let Some(images) = entity.get("images").and_then(serde_json::Value::as_object) {
         for entries in images.values().filter_map(serde_json::Value::as_array) {
             for entry in entries {
                 let Some(file) = entry.pointer("/source/file") else {
@@ -121,11 +123,7 @@ fn check_image_integrity(
                 if path_str.is_empty() {
                     continue;
                 }
-                let abs_path = if Path::new(path_str).is_absolute() {
-                    PathBuf::from(path_str)
-                } else {
-                    album_root.join(path_str)
-                };
+                let abs_path = resolve(entity_root, path_str);
                 if !abs_path.exists() {
                     return TrustState::BrokenAssets;
                 }
@@ -143,67 +141,96 @@ fn check_image_integrity(
     TrustState::Valid
 }
 
-fn check_tracks_integrity(
-    album_root: &Path,
-    lock_json: &serde_json::Value,
-) -> TrustState {
-    let is_virtual = lock_json
-        .pointer("/album/objects/info/virtual")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
+/// Walk every compiled entity: a parent location plus any child arrays whose
+/// elements carry their own provenance.
+fn check_physics(entity: &serde_json::Value, entity_root: &Path) -> TrustState {
+    match entity {
+        serde_json::Value::Object(map) => {
+            if let Some(location) = map.get("location")
+                && !location_matches(location, entity_root)
+            {
+                return TrustState::BrokenPhysics;
+            }
 
-    if is_virtual {
-        return TrustState::Valid;
-    }
-
-    if let Some(tracks) = lock_json
-        .pointer("/album/tracks")
-        .and_then(serde_json::Value::as_array)
-    {
-        for track in tracks {
-            if let Some(file) = track.get("location") {
-                let rel_path = file
-                    .get("path")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("");
-                if rel_path.is_empty() {
+            for (key, value) in map {
+                if matches!(key.as_str(), "location" | "images" | "tags" | "objects") {
+                    continue;
+                }
+                if check_physics(value, entity_root) == TrustState::BrokenPhysics {
                     return TrustState::BrokenPhysics;
                 }
-
-                let abs_path = if Path::new(rel_path).is_absolute() {
-                    PathBuf::from(rel_path)
-                } else {
-                    album_root.join(rel_path)
-                };
-                let Ok(meta) = fs::metadata(&abs_path) else {
-                    return TrustState::BrokenPhysics;
-                };
-
-                let lock_track_mtime = file
-                    .get("mtime")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0);
-                let lock_track_size = file
-                    .get("byte_size")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0);
-
-                let current_track_mtime = meta.modified().map_or(0, |t| {
-                    t.duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs()
-                });
-                let current_track_size = meta.len();
-
-                if lock_track_mtime != current_track_mtime
-                    || lock_track_size != current_track_size
+            }
+            TrustState::Valid
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                // Leaf entities are physical; containers delegate to their children.
+                let missing_location = item.get("id").is_some()
+                    && item.get("location").is_none()
+                    && !has_child_entities(item);
+                if missing_location
+                    || check_physics(item, entity_root) == TrustState::BrokenPhysics
                 {
                     return TrustState::BrokenPhysics;
                 }
-            } else {
-                return TrustState::BrokenPhysics;
             }
+            TrustState::Valid
         }
+        _ => TrustState::Valid,
     }
-    TrustState::Valid
+}
+
+fn has_child_entities(item: &serde_json::Value) -> bool {
+    item.as_object().is_some_and(|map| {
+        map.iter().any(|(key, value)| {
+            !matches!(key.as_str(), "location" | "images" | "tags" | "objects")
+                && value
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(serde_json::Value::is_object))
+        })
+    })
+}
+
+fn location_matches(location: &serde_json::Value, entity_root: &Path) -> bool {
+    let rel_path = location
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if rel_path.is_empty() {
+        return false;
+    }
+
+    let abs_path = resolve(entity_root, rel_path);
+    let Ok(meta) = fs::metadata(&abs_path) else {
+        return false;
+    };
+
+    let lock_mtime = location
+        .get("mtime")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let current_mtime = meta.modified().map_or(0, |t| {
+        t.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    });
+
+    if lock_mtime != 0 && lock_mtime != current_mtime {
+        return false;
+    }
+
+    let lock_size = location
+        .get("byte_size")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+
+    lock_size == 0 || lock_size == meta.len()
+}
+
+fn resolve(entity_root: &Path, path_str: &str) -> PathBuf {
+    if Path::new(path_str).is_absolute() {
+        PathBuf::from(path_str)
+    } else {
+        entity_root.join(path_str)
+    }
 }

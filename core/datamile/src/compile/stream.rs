@@ -9,22 +9,24 @@ use std::sync::{Arc, Mutex};
 
 pub struct CompiledItem {
     pub root_type: String,
-    pub path: PathBuf,
+    pub target: PathBuf,
     pub id: String,
     pub lock_path: PathBuf,
     pub lock_val: Value,
     pub eval_res: Option<Value>,
-    pub deps: HashSet<PathBuf>,
+    pub files: HashSet<PathBuf>,
+    pub dirs: HashSet<PathBuf>,
 }
 
 pub struct StreamContext {
-    pub roots: Vec<(String, Value)>,
+    pub roots: Vec<media::RootTarget>,
     pub config: Arc<libdatamile::lua::ResolvedConfig>,
     pub cache_root: PathBuf,
     pub target: ExportTarget,
     pub jobs: Option<usize>,
-    pub ingest_tx:
-        Option<tokio::sync::mpsc::Sender<crate::server::api::system::AlbumIngestPayload>>,
+    pub ingest_tx: Option<
+        tokio::sync::mpsc::Sender<crate::server::api::system::EntityIngestPayload>,
+    >,
     pub active_writes: Option<Arc<Mutex<HashSet<PathBuf>>>>,
     pub verbosity: LogVerbosity,
 }
@@ -138,8 +140,9 @@ fn spawn_builders(
                         None
                     }
                 },
-                |engine_opt, (root_type, root_source)| {
-                    let display = root_source
+                |engine_opt, root| {
+                    let display = root
+                        .source
                         .get("path")
                         .and_then(Value::as_str)
                         .unwrap_or("<virtual>");
@@ -153,17 +156,18 @@ fn spawn_builders(
                         return;
                     };
 
-                    match media::compile_root(engine, root_type, root_source, &cache_root) {
-                        Ok(out) => match engine.evaluate_album_logic(&out.lock_json) {
+                    match media::compile_root(engine, root, &cache_root) {
+                        Ok(out) => match engine.evaluate_entity_logic(&out.root_type, &out.lock_json) {
                             Ok(eval_res) => {
                                 let _ = dtx.blocking_send(CompiledItem {
                                     root_type: out.root_type,
-                                    path: out.path,
+                                    target: out.target,
                                     id: out.id,
                                     lock_path: out.lock_path,
                                     lock_val: out.lock_json,
                                     eval_res: Some(eval_res),
-                                    deps: out.dependencies,
+                                    files: out.files,
+                                    dirs: out.dirs,
                                 });
                             }
                             Err(e) => {
@@ -191,7 +195,10 @@ fn finalize(
     target: ExportTarget,
     active_writes: Option<&Arc<Mutex<HashSet<PathBuf>>>>,
     verbosity: LogVerbosity,
-) -> Result<(bool, Option<crate::server::api::system::AlbumIngestPayload>)> {
+) -> Result<(
+    bool,
+    Option<crate::server::api::system::EntityIngestPayload>,
+)> {
     let content = serde_json::to_string_pretty(&item.lock_val)?;
 
     if target == ExportTarget::Stdout {
@@ -202,22 +209,15 @@ fn finalize(
     let should_write = std::fs::read_to_string(&item.lock_path)
         .map_or(true, |existing| existing != content);
 
-    let entity_dir = if item.path.is_dir() {
-        item.path.clone()
-    } else {
-        item.path
-            .parent()
-            .map_or_else(|| item.path.clone(), PathBuf::from)
-    };
-
-    let payload = crate::server::api::system::AlbumIngestPayload {
-        album_dir: entity_dir,
+    let payload = crate::server::api::system::EntityIngestPayload {
+        root_type: item.root_type.clone(),
+        target: item.target,
+        lock_path: item.lock_path.clone(),
         id: item.id,
-        artist: String::new(),
-        album: String::new(),
         lock_json: content.clone(),
         eval_res: item.eval_res,
-        dependencies: item.deps.into_iter().collect(),
+        files: item.files.into_iter().collect(),
+        dirs: item.dirs.into_iter().collect(),
         modified: should_write,
     };
 

@@ -59,7 +59,7 @@ fn test_manifest_mtime_compiled_under_objects() {
     );
 
     assert_eq!(
-        verify_trust(root, Some("A")).expect("trust"),
+        verify_trust(&root.join("album.lock.json"), "album", Some("A")).expect("trust"),
         TrustState::BrokenIntent
     );
 }
@@ -93,7 +93,7 @@ fn test_tracks_integrity_reads_location() {
     );
 
     assert_eq!(
-        verify_trust(root, Some("A")).expect("trust"),
+        verify_trust(&root.join("album.lock.json"), "album", Some("A")).expect("trust"),
         TrustState::Valid
     );
 }
@@ -127,7 +127,7 @@ fn test_tracks_integrity_detects_size_change() {
     );
 
     assert_eq!(
-        verify_trust(root, Some("A")).expect("trust"),
+        verify_trust(&root.join("album.lock.json"), "album", Some("A")).expect("trust"),
         TrustState::BrokenPhysics
     );
 }
@@ -149,7 +149,7 @@ fn test_tracks_integrity_requires_location() {
     );
 
     assert_eq!(
-        verify_trust(root, Some("A")).expect("trust"),
+        verify_trust(&root.join("album.lock.json"), "album", Some("A")).expect("trust"),
         TrustState::BrokenPhysics
     );
 }
@@ -172,7 +172,108 @@ fn test_tracks_integrity_skips_virtual_albums() {
     );
 
     assert_eq!(
-        verify_trust(root, Some("A")).expect("trust"),
+        verify_trust(&root.join("album.lock.json"), "album", Some("A")).expect("trust"),
         TrustState::Valid
+    );
+}
+
+/// A file-backed root stores its own location in the lock and resolves it
+/// against the lock directory.
+#[test]
+fn test_file_backed_root_location() {
+    let tmp = album_root();
+    let root = tmp.path();
+    let film = root.join("Dune.mkv");
+    fs::write(&film, b"video").expect("film");
+
+    fs::write(
+        root.join("Dune.lock.json"),
+        serde_json::to_string_pretty(&json!({
+            "film": {
+                "id": "Dune",
+                "location": {
+                    "kind": "file",
+                    "path": film.to_string_lossy(),
+                    "mtime": mtime_secs(&film),
+                    "byte_size": byte_size(&film),
+                }
+            }
+        }))
+        .expect("serialize"),
+    )
+    .expect("lock");
+
+    let lock = root.join("Dune.lock.json");
+    assert_eq!(
+        verify_trust(&lock, "film", Some("Dune")).expect("trust"),
+        TrustState::Valid
+    );
+
+    fs::remove_file(&film).expect("remove");
+    assert_eq!(
+        verify_trust(&lock, "film", Some("Dune")).expect("trust"),
+        TrustState::BrokenPhysics
+    );
+}
+
+/// Asking for the wrong root type cannot trust a foreign lock.
+#[test]
+fn test_root_type_must_match() {
+    let tmp = album_root();
+    let root = tmp.path();
+    write_lock(
+        root,
+        &json!({ "album": { "id": "A", "objects": { "info": { "virtual": true } } } }),
+    );
+
+    assert_eq!(
+        verify_trust(&root.join("album.lock.json"), "film", None).expect("trust"),
+        TrustState::Missing
+    );
+}
+
+/// Physics checks recurse through nested child arrays (show -> season -> episode).
+#[test]
+fn test_nested_children_physics() {
+    let tmp = album_root();
+    let root = tmp.path();
+    let episode = root.join("ep1.mkv");
+    fs::write(&episode, b"episode").expect("episode");
+
+    write_lock(
+        root,
+        &json!({
+            "show": {
+                "id": "Show",
+                "seasons": [
+                    {
+                        "id": "Season 1",
+                        "episodes": [
+                            {
+                                "id": "ep1",
+                                "location": {
+                                    "kind": "file",
+                                    "path": "ep1.mkv",
+                                    "mtime": mtime_secs(&episode),
+                                    "byte_size": byte_size(&episode),
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        }),
+    );
+
+    let lock = root.join("album.lock.json");
+    assert_eq!(
+        verify_trust(&lock, "show", None).expect("trust"),
+        TrustState::Valid
+    );
+
+    fs::remove_file(&episode).expect("remove");
+    assert_eq!(
+        verify_trust(&lock, "show", None).expect("trust"),
+        TrustState::BrokenPhysics
     );
 }

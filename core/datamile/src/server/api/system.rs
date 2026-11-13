@@ -12,17 +12,17 @@ use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct AlbumIngestPayload {
-    pub album_dir: PathBuf,
+pub struct EntityIngestPayload {
+    pub root_type: String,
+    pub target: PathBuf,
+    pub lock_path: PathBuf,
     pub id: String,
-    #[serde(default)]
-    pub artist: String,
-    #[serde(default)]
-    pub album: String,
     pub lock_json: String,
     pub eval_res: Option<serde_json::Value>,
     #[serde(default)]
-    pub dependencies: Vec<PathBuf>,
+    pub files: Vec<PathBuf>,
+    #[serde(default)]
+    pub dirs: Vec<PathBuf>,
     #[serde(default)]
     pub modified: bool,
 }
@@ -90,12 +90,12 @@ pub async fn get_tracked_albums(State(state): State<Arc<AppState>>) -> Response 
         .full_rescan_needed
         .swap(false, std::sync::atomic::Ordering::Relaxed);
     let tracked: Vec<String> = state
-        .tracked_albums
+        .tracked_roots
         .lock()
         .map_or_else(|_| Vec::new(), |mut guard| guard.drain().collect());
     Json(json!({
         "full_rescan": full_rescan,
-        "tracked_albums": tracked
+        "tracked_roots": tracked
     }))
     .into_response()
 }
@@ -189,19 +189,11 @@ pub async fn trigger_reload(
 
 pub async fn ingest_reload_payloads(
     State(state): State<Arc<AppState>>,
-    Json(payloads): Json<Vec<AlbumIngestPayload>>,
+    Json(payloads): Json<Vec<EntityIngestPayload>>,
 ) -> Response {
     let recompiled_items: Vec<RecompiledAlbumItem> = payloads
         .into_iter()
-        .map(|p| {
-            (
-                p.album_dir,
-                p.id,
-                p.lock_json,
-                p.eval_res,
-                p.dependencies.into_iter().collect(),
-            )
-        })
+        .map(crate::server::inotify::handler::RecompiledAlbumItem::from)
         .collect();
 
     crate::server::inotify::handler::ingest_and_broadcast_albums(
@@ -263,6 +255,7 @@ pub async fn run_query(
             results.push(json!({
                 "id": id,
                 "path": record.path,
+                "lock_path": record.lock_path,
                 "lock": lock_json,
             }));
         }

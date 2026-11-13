@@ -27,8 +27,11 @@ pub struct CoverLookupItem {
 
 #[derive(Clone, Debug)]
 pub struct AlbumRecord {
+    pub root_type: String,
     pub id: String,
+    /// Entity target: the album directory, or a single media file.
     pub path: PathBuf,
+    pub lock_path: PathBuf,
     pub title: String,
     pub artist: String,
     pub raw_json: Arc<str>,
@@ -58,6 +61,17 @@ pub struct TrackLookupItem {
     pub album_id: String,
 }
 
+/// One compiled entity ready to enter the read model.
+pub struct EntityIngest<'a> {
+    pub root_type: &'a str,
+    pub target: &'a Path,
+    pub lock_path: &'a Path,
+    pub id: &'a str,
+    pub lock_json: &'a str,
+    pub eval_res: Value,
+    pub music_directory: &'a Path,
+}
+
 pub struct LogicEngine {
     pub config_path: PathBuf,
     pub manifest: LogicManifest,
@@ -68,8 +82,8 @@ pub struct LogicEngine {
     pub(crate) shelves_cache: HashMap<String, Vec<u32>>,
     pub(crate) next_uid: u32,
     pub albums: HashMap<u32, AlbumRecord>,
-    pub id_to_uid: HashMap<String, u32>,
-    pub path_to_uid: HashMap<PathBuf, u32>,
+    pub id_to_uid: HashMap<(String, String), u32>,
+    pub lock_to_uid: HashMap<PathBuf, u32>,
     pub cover_lookup: HashMap<String, CoverLookupItem>,
     pub track_lookup: HashMap<String, TrackLookupItem>,
     pub(crate) evaluated_logic: HashMap<u32, Value>,
@@ -91,7 +105,7 @@ impl LogicEngine {
             next_uid: 1,
             albums: HashMap::new(),
             id_to_uid: HashMap::new(),
-            path_to_uid: HashMap::new(),
+            lock_to_uid: HashMap::new(),
             cover_lookup: HashMap::new(),
             track_lookup: HashMap::new(),
             evaluated_logic: HashMap::new(),
@@ -103,7 +117,8 @@ impl LogicEngine {
             let mut new_evaluated = HashMap::new();
             for (&uid, record) in &self.albums {
                 if let Ok(parsed) = serde_json::from_str::<Value>(&record.raw_json)
-                    && let Ok(res) = engine.evaluate_album_logic(&parsed)
+                    && let Ok(res) =
+                        engine.evaluate_entity_logic(&record.root_type, &parsed)
                 {
                     new_evaluated.insert(uid, res);
                 }
@@ -124,7 +139,7 @@ impl LogicEngine {
         self.orders_cache.clear();
         self.shelves_cache.clear();
         self.id_to_uid.clear();
-        self.path_to_uid.clear();
+        self.lock_to_uid.clear();
         self.albums.clear();
         self.cover_lookup.clear();
         self.next_uid = 1;
@@ -132,63 +147,74 @@ impl LogicEngine {
         self.evaluated_logic.clear();
     }
 
-    pub fn remove_album_by_path(&mut self, path: &Path) -> Option<String> {
-        let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let uid = self.path_to_uid.remove(&canon)?;
+    pub fn remove_by_lock(&mut self, lock_path: &Path) -> Option<String> {
+        let uid = self.lock_to_uid.remove(lock_path)?;
         let id = self.albums.get(&uid)?.id.clone();
-        self.remove_album_by_id(&id);
+        self.remove_uid(uid);
         Some(id)
     }
 
-    pub fn remove_album_by_id(&mut self, id: &str) {
-        let Some(uid) = self.id_to_uid.remove(id) else {
+    fn remove_uid(&mut self, uid: u32) {
+        self.evaluated_logic.remove(&uid);
+
+        let Some(record) = self.albums.remove(&uid) else {
             return;
         };
 
-        self.evaluated_logic.remove(&uid);
+        self.id_to_uid
+            .remove(&(record.root_type.clone(), record.id.clone()));
+        self.lock_to_uid.remove(&record.lock_path);
 
-        if let Some(record) = self.albums.remove(&uid) {
-            self.path_to_uid.remove(&record.path);
+        for uri in &record.track_uris {
+            self.track_lookup.remove(uri);
+        }
 
-            for uri in &record.track_uris {
-                self.track_lookup.remove(uri);
-            }
-
-            for (_, addr) in &record.cover_namespaces {
-                self.cover_lookup.remove(addr);
-            }
+        for (_, addr) in &record.cover_namespaces {
+            self.cover_lookup.remove(addr);
         }
     }
 
-    fn validate_and_cleanup_paths(
+    /// Any entity carrying this id, regardless of root type.
+    pub fn uid_for_id(&self, id: &str) -> Option<u32> {
+        self.id_to_uid
+            .iter()
+            .find_map(|((_, candidate), uid)| (candidate == id).then_some(*uid))
+    }
+
+    fn validate_and_cleanup(
         &mut self,
-        album_dir_canon: &Path,
+        root_type: &str,
+        lock_path: &Path,
+        target: &Path,
         id: &str,
     ) -> Result<()> {
-        if let Some(existing_record) = self.get_album_record(id)
-            && existing_record.path != album_dir_canon
+        let key = (root_type.to_string(), id.to_string());
+        if let Some(existing_uid) = self.id_to_uid.get(&key)
+            && let Some(existing) = self.albums.get(existing_uid)
+            && existing.lock_path != lock_path
         {
-            if existing_record.path.exists() {
+            if existing.lock_path.exists() {
                 return Err(DatamileError::DuplicateAlbumId {
                     id: id.to_string(),
-                    path_a: existing_record.path.clone(),
-                    path_b: album_dir_canon.to_path_buf(),
+                    path_a: existing.lock_path.clone(),
+                    path_b: lock_path.to_path_buf(),
                 }
                 .into());
             }
-            let old_path = existing_record.path.clone();
-            self.remove_album_by_path(&old_path);
+
+            let uid = *existing_uid;
+            self.remove_uid(uid);
         }
 
-        if let Some(old_uid) = self.path_to_uid.get(album_dir_canon)
-            && let Some(old_record) = self.albums.get(old_uid)
-            && old_record.id != id
+        if let Some(old_uid) = self.lock_to_uid.get(lock_path)
+            && let Some(old) = self.albums.get(old_uid)
+            && (old.id != id || old.root_type != root_type)
         {
-            let old_id = old_record.id.clone();
-            self.remove_album_by_id(&old_id);
+            let uid = *old_uid;
+            self.remove_uid(uid);
         }
 
-        self.remove_album_by_id(id);
+        let _ = target;
 
         Ok(())
     }
@@ -341,25 +367,27 @@ impl LogicEngine {
         cover_namespaces
     }
 
-    pub fn ingest_pre_evaluated(
-        &mut self,
-        album_dir: &Path,
-        id: &str,
-        metadata_json: &str,
-        eval_res: Value,
-        music_directory: &Path,
-    ) -> Result<()> {
-        let album_dir_canon = album_dir
+    pub fn ingest_entity(&mut self, ingest: EntityIngest<'_>) -> Result<()> {
+        let EntityIngest {
+            root_type,
+            target,
+            lock_path,
+            id,
+            lock_json: metadata_json,
+            eval_res,
+            music_directory,
+        } = ingest;
+        let album_dir_canon = target
             .canonicalize()
-            .unwrap_or_else(|_| album_dir.to_path_buf());
-        self.validate_and_cleanup_paths(&album_dir_canon, id)?;
-
-        let uid = self.next_uid;
-        self.next_uid += 1;
+            .unwrap_or_else(|_| target.to_path_buf());
+        let lock_path = lock_path
+            .canonicalize()
+            .unwrap_or_else(|_| lock_path.to_path_buf());
+        self.validate_and_cleanup(root_type, &lock_path, &album_dir_canon, id)?;
 
         let parsed: Value = serde_json::from_str(metadata_json)?;
 
-        let Some(album) = parsed.get("album") else {
+        let Some(album) = parsed.get(root_type) else {
             return Ok(());
         };
 
@@ -368,6 +396,8 @@ impl LogicEngine {
             .and_then(Value::as_str)
             .unwrap_or(id)
             .to_string();
+        let uid = self.next_uid;
+        self.next_uid += 1;
         let tags = album.get("tags").cloned().unwrap_or_else(|| json!({}));
         let objects = album.get("objects").cloned().unwrap_or_else(|| json!({}));
         let info = objects.get("info").cloned().unwrap_or_else(|| json!({}));
@@ -383,31 +413,19 @@ impl LogicEngine {
             .unwrap_or(0);
         let total_discs = info.get("total_discs").and_then(Value::as_u64).unwrap_or(1);
 
-        let track_uris = album.get("tracks").and_then(Value::as_array).map_or_else(
-            Vec::new,
-            |tracks| {
-                self.ingest_tracks_and_lookup(
-                    tracks,
-                    &album_dir_canon,
-                    &entity_id,
-                    music_directory,
-                )
-            },
-        );
+        let track_uris = child_with_locations(album).map_or_else(Vec::new, |tracks| {
+            self.ingest_tracks_and_lookup(
+                tracks,
+                &album_dir_canon,
+                &entity_id,
+                music_directory,
+            )
+        });
 
         let cover_namespaces = self.ingest_images(album, &album_dir_canon);
 
-        let title = tags
-            .get("album")
-            .and_then(Value::as_str)
-            .unwrap_or("Unknown")
-            .to_string();
-
-        let artist = tags
-            .get("albumartist")
-            .and_then(Value::as_str)
-            .unwrap_or("Unknown")
-            .to_string();
+        let title = first_tag(&tags, &["album", "title", "name"]);
+        let artist = first_tag(&tags, &["albumartist", "author", "artist"]);
 
         let entry = json!({
             "id": entity_id,
@@ -421,8 +439,10 @@ impl LogicEngine {
         let dict_raw = RawValue::from_string(dict_str)?;
 
         let record = AlbumRecord {
+            root_type: root_type.to_string(),
             id: entity_id.clone(),
             path: album_dir_canon.clone(),
+            lock_path: lock_path.clone(),
             title,
             artist,
             raw_json: Arc::from(metadata_json),
@@ -435,8 +455,9 @@ impl LogicEngine {
         };
 
         self.albums.insert(uid, record);
-        self.id_to_uid.insert(entity_id, uid);
-        self.path_to_uid.insert(album_dir_canon, uid);
+        self.id_to_uid
+            .insert((root_type.to_string(), entity_id), uid);
+        self.lock_to_uid.insert(lock_path, uid);
         self.evaluated_logic.insert(uid, eval_res);
 
         Ok(())
@@ -444,7 +465,15 @@ impl LogicEngine {
 
     #[must_use]
     pub fn get_album_record(&self, id: &str) -> Option<&AlbumRecord> {
-        let uid = self.id_to_uid.get(id)?;
+        let uid = self.uid_for_id(id)?;
+        self.albums.get(&uid)
+    }
+
+    #[must_use]
+    pub fn get_entity(&self, root_type: &str, id: &str) -> Option<&AlbumRecord> {
+        let uid = self
+            .id_to_uid
+            .get(&(root_type.to_string(), id.to_string()))?;
         self.albums.get(uid)
     }
 
@@ -454,10 +483,11 @@ impl LogicEngine {
     }
 
     #[must_use]
-    pub fn get_album_id_by_path(&self, path: &Path) -> Option<&str> {
-        let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let uid = self.path_to_uid.get(&canon)?;
-        self.albums.get(uid).map(|r| r.id.as_str())
+    pub fn get_album_id_by_target(&self, target: &Path) -> Option<&str> {
+        self.albums
+            .values()
+            .find(|record| record.path == target)
+            .map(|record| record.id.as_str())
     }
 
     #[must_use]
@@ -478,4 +508,52 @@ impl LogicEngine {
         let record = self.get_album_record(id)?;
         Some(Arc::clone(&record.raw_json))
     }
+
+    #[must_use]
+    pub fn get_entity_json(&self, root_type: &str, id: &str) -> Option<Arc<str>> {
+        let record = self.get_entity(root_type, id)?;
+        Some(Arc::clone(&record.raw_json))
+    }
+
+    /// Playback URIs in compiled order, optionally limited to one disc.
+    #[must_use]
+    pub fn track_uris_for(&self, id: &str, disc: Option<u32>) -> Vec<String> {
+        let Some(record) = self.get_album_record(id) else {
+            return Vec::new();
+        };
+
+        record
+            .track_uris
+            .iter()
+            .filter(|uri| {
+                disc.is_none_or(|wanted| {
+                    self.track_lookup
+                        .get(*uri)
+                        .is_some_and(|track| track.disc_no == wanted)
+                })
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+/// First child array whose elements carry their own provenance.
+fn child_with_locations(entity: &Value) -> Option<&Vec<Value>> {
+    entity.as_object()?.iter().find_map(|(key, value)| {
+        if matches!(key.as_str(), "tags" | "objects" | "images" | "location") {
+            return None;
+        }
+        let items = value.as_array()?;
+        items
+            .iter()
+            .any(|item| item.get("location").is_some())
+            .then_some(items)
+    })
+}
+
+fn first_tag(tags: &Value, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| tags.get(*key).and_then(Value::as_str))
+        .unwrap_or("Unknown")
+        .to_string()
 }

@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 pub struct ChangeFlags {
     pub config: bool,
-    pub changed_albums: HashSet<PathBuf>,
+    pub changed_locks: HashSet<PathBuf>,
+    pub changed_paths: HashSet<PathBuf>,
     pub vanished_paths: HashSet<PathBuf>,
 }
 
@@ -29,48 +30,36 @@ fn classify_path_change(
         flags.config = true;
     }
 
-    if let Some(albums) = ctx
-        .deps_graph
-        .file_to_albums
-        .get(p_canon)
-        .or_else(|| ctx.deps_graph.file_to_albums.get(p))
-    {
-        for album_path in albums {
-            flags.changed_albums.insert(album_path.clone());
+    if let Some(locks) = ctx.deps_graph.locks_for_file(p_canon) {
+        flags.changed_locks.extend(locks.iter().cloned());
+    }
+
+    for ancestor in p_canon.ancestors() {
+        if !ancestor.starts_with(ctx.music_directory) {
+            break;
+        }
+        if let Some(locks) = ctx.deps_graph.locks_for_dir(ancestor) {
+            flags.changed_locks.extend(locks.iter().cloned());
         }
     }
 
     if !p.exists() {
         flags.vanished_paths.insert(p_canon.to_path_buf());
         flags.vanished_paths.insert(p.to_path_buf());
+        return;
+    }
 
-        if let Some(parent) = p.parent() {
-            let parent_canon = parent
-                .canonicalize()
-                .unwrap_or_else(|_| parent.to_path_buf());
-            if let Some(album_path) =
-                find_enclosing_album_dir(&parent_canon, ctx.music_directory)
-            {
-                flags.changed_albums.insert(album_path);
-            }
-        }
-    } else if p_canon.starts_with(ctx.music_directory) {
-        if let Some(album_path) = find_enclosing_album_dir(p_canon, ctx.music_directory) {
-            flags.changed_albums.insert(album_path);
-        } else if p_canon.is_dir()
-            && let Ok(found) = libdatamile::scanner::find_target_albums(p_canon)
-        {
-            for album_path in found {
-                flags.changed_albums.insert(album_path);
-            }
-        }
+    // A new directory may hold a root whose marker appeared with it.
+    if p_canon.is_dir() && p_canon.starts_with(ctx.music_directory) {
+        flags.changed_paths.insert(p_canon.to_path_buf());
     }
 }
 
 pub async fn classify_events(paths: &[PathBuf], state: &Arc<AppState>) -> ChangeFlags {
     let mut flags = ChangeFlags {
         config: false,
-        changed_albums: HashSet::new(),
+        changed_locks: HashSet::new(),
+        changed_paths: HashSet::new(),
         vanished_paths: HashSet::new(),
     };
 
@@ -103,32 +92,11 @@ pub async fn classify_events(paths: &[PathBuf], state: &Arc<AppState>) -> Change
     drop(deps_graph);
     drop(active);
 
-    if !flags.changed_albums.is_empty()
-        && let Ok(mut tracked) = state.tracked_albums.lock()
-    {
-        for album_path in &flags.changed_albums {
-            tracked.insert(album_path.to_string_lossy().to_string());
+    if let Ok(mut tracked) = state.tracked_roots.lock() {
+        for lock in &flags.changed_locks {
+            tracked.insert(lock.to_string_lossy().to_string());
         }
     }
 
     flags
-}
-
-fn find_enclosing_album_dir(path: &Path, music_directory: &Path) -> Option<PathBuf> {
-    let mut curr = if path.is_dir() {
-        path.to_path_buf()
-    } else {
-        path.parent()?.to_path_buf()
-    };
-
-    while curr.starts_with(music_directory) && curr != music_directory {
-        if curr.join("album.toml").exists() {
-            return Some(curr);
-        }
-        let Some(parent) = curr.parent() else {
-            break;
-        };
-        curr = parent.to_path_buf();
-    }
-    None
 }

@@ -88,7 +88,7 @@ async fn sync_watches(
     }
 
     let deps_graph = state.deps_graph.read().await;
-    for dep_file in deps_graph.file_to_albums.keys() {
+    for dep_file in deps_graph.file_to_locks.keys() {
         if !dep_file.starts_with(config_dir)
             && !dep_file.starts_with(&guard.music_directory)
             && let Some(parent) = dep_file.parent()

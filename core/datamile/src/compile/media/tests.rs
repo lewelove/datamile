@@ -1,8 +1,18 @@
-use super::compile_root;
+use super::{RootTarget, compile_root};
 use libdatamile::lua::LuaEngine;
 use serde_json::json;
 use std::fs;
+use std::path::Path;
 use tempfile::tempdir;
+
+fn root_target(root: &Path) -> RootTarget {
+    RootTarget {
+        root_type: "root".to_string(),
+        target: root.to_path_buf(),
+        lock_path: root.join("root.lock.json"),
+        source: json!({ "path": root.to_string_lossy() }),
+    }
+}
 
 /// Leaves finalize before their parents so parents aggregate compiled children
 /// (3-level chain: root -> middle -> leaf).
@@ -42,13 +52,7 @@ fn compile_root_runs_bottom_up() {
     "#;
     engine.lua.load(code).exec().expect("register");
 
-    let build = compile_root(
-        &engine,
-        "root",
-        &json!({ "path": root.to_string_lossy() }),
-        tmp.path(),
-    )
-    .expect("compile");
+    let build = compile_root(&engine, &root_target(&root), tmp.path()).expect("compile");
 
     let entity = &build.lock_json["root"];
     assert_eq!(entity["id"], "root:middle:1");
@@ -80,13 +84,7 @@ fn compile_root_uses_child_type_select() {
     "#;
     engine.lua.load(code).exec().expect("register");
 
-    let build = compile_root(
-        &engine,
-        "root",
-        &json!({ "path": root.to_string_lossy() }),
-        tmp.path(),
-    )
-    .expect("compile");
+    let build = compile_root(&engine, &root_target(&root), tmp.path()).expect("compile");
 
     assert_eq!(build.lock_json["root"]["leaves"][0]["tags"]["kind"], "item");
 }

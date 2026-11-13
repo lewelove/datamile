@@ -4,6 +4,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Last observed stat for every file a compiled root depends on.
+pub type LibraryCache = HashMap<PathBuf, FileStat>;
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FileStat {
     pub mtime: u128,
@@ -57,16 +60,16 @@ pub fn get_lua_config_hash(dependencies: &[PathBuf]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-pub fn load_cache(path: &Path) -> HashMap<String, FileStat> {
+pub fn load_cache(path: &Path) -> LibraryCache {
     if let Ok(content) = fs::read_to_string(path)
-        && let Ok(cache) = serde_json::from_str::<HashMap<String, FileStat>>(&content)
+        && let Ok(cache) = serde_json::from_str::<LibraryCache>(&content)
     {
         return cache;
     }
-    HashMap::new()
+    LibraryCache::new()
 }
 
-pub fn save_cache(cache: &HashMap<String, FileStat>, path: &Path) -> Result<()> {
+pub fn save_cache(cache: &LibraryCache, path: &Path) -> Result<()> {
     let content = serde_json::to_string_pretty(cache)?;
     fs::write(path, content)?;
     Ok(())

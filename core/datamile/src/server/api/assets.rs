@@ -557,3 +557,21 @@ pub async fn get_album_metadata(
     }
     StatusCode::NOT_FOUND.into_response()
 }
+
+pub async fn get_entity_metadata(
+    Path((root_type, id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    let json_opt = {
+        let logic = state.logic.read().await;
+        logic.get_entity_json(&root_type, &id)
+    };
+    if let Some(data) = json_opt {
+        return (
+            [(header::CONTENT_TYPE, "application/json")],
+            data.to_string(),
+        )
+            .into_response();
+    }
+    StatusCode::NOT_FOUND.into_response()
+}

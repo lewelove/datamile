@@ -1,189 +1,167 @@
 use crate::compile::LogVerbosity;
+use crate::compile::media::{RootTarget, discover_targets};
 use crate::server::state::{DependencyGraph, UpdateScope};
-use crate::update::cache::{FileStat, get_lua_config_hash};
+use crate::update::cache::{FileStat, LibraryCache};
 use crate::update::client::ForceMode;
-use crate::update::verify::{find_missing_paths, verify_albums_parallel};
+use crate::update::verify::{CacheIndex, verify_targets};
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use libdatamile::lua::LuaEngine;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct WorkQueueContext<'a> {
+    pub engine: &'a LuaEngine,
     pub scope: &'a UpdateScope,
-    pub music_directory: &'a Path,
-    pub cache: &'a HashMap<String, FileStat>,
+    pub media_directory: &'a Path,
+    pub cache: &'a LibraryCache,
     pub deps_graph: &'a DependencyGraph,
     pub force: ForceMode,
     pub effective_jobs: Option<usize>,
-    pub tracked: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
+    /// Lock paths the server already tracks; avoids a full discovery walk.
+    pub tracked: Option<Vec<PathBuf>>,
     pub verbosity: LogVerbosity,
 }
 
-fn filter_dirty_albums(
-    albums: Vec<PathBuf>,
-    ctx: &WorkQueueContext<'_>,
-) -> Result<Vec<PathBuf>> {
-    let results = verify_albums_parallel(
-        albums,
-        ctx.cache,
-        ctx.deps_graph,
-        ctx.force,
-        ctx.effective_jobs,
-        ctx.music_directory,
-    )?;
-    Ok(results
-        .into_iter()
-        .filter_map(|(path, is_dirty)| if is_dirty { Some(path) } else { None })
-        .collect())
+pub struct WorkQueue {
+    pub roots: Vec<RootTarget>,
+    pub missing: Vec<PathBuf>,
 }
 
-fn scan_scoped_paths(
-    paths: &HashSet<PathBuf>,
-    music_dir: &Path,
-    cache: &HashMap<String, FileStat>,
-) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut albums_set = HashSet::new();
-    let mut missing_set = HashSet::new();
-
-    for p in paths {
-        let p_canon = p.canonicalize().unwrap_or_else(|_| p.clone());
-        if let Ok(found) = libdatamile::scanner::find_target_albums(&p_canon) {
-            for album in found {
-                albums_set.insert(album);
-            }
+pub fn resolve_work_queue(ctx: &WorkQueueContext<'_>) -> Result<WorkQueue> {
+    let mut roots = match (&ctx.tracked, ctx.force) {
+        (Some(tracked), ForceMode::Preserve) => {
+            tracked_targets(ctx.engine, tracked, ctx.deps_graph)?
         }
+        _ => discover(ctx.engine, ctx.scope, ctx.media_directory)?,
+    };
+    roots.sort_by(|a, b| a.lock_path.cmp(&b.lock_path));
+
+    let mut missing = match &ctx.tracked {
+        Some(tracked) if ctx.force == ForceMode::Preserve => {
+            let found: HashSet<&PathBuf> =
+                roots.iter().map(|root| &root.lock_path).collect();
+            tracked
+                .iter()
+                .filter(|lock| !found.contains(lock))
+                .cloned()
+                .collect()
+        }
+        _ => missing_locks(ctx.deps_graph, ctx.scope, ctx.media_directory, &roots),
+    };
+    missing.sort();
+    missing.dedup();
+
+    if ctx.verbosity == LogVerbosity::Verbose && !roots.is_empty() {
+        log::info!("Verifying {} entities...", roots.len());
     }
 
-    let all_found: Vec<PathBuf> = albums_set.iter().cloned().collect();
+    let cache = CacheIndex::new(ctx.cache);
+    let dirty =
+        verify_targets(roots, &cache, ctx.deps_graph, ctx.force, ctx.effective_jobs)?;
 
-    for p in paths {
-        let p_canon = p.canonicalize().unwrap_or_else(|_| p.clone());
-        let target_albums = if p_canon.exists() {
-            &all_found[..]
-        } else {
-            &[][..]
-        };
-        let missing = find_missing_paths(target_albums, music_dir, &p_canon, cache);
-        for m in missing {
-            missing_set.insert(m);
-        }
-    }
-
-    let mut albums_vec: Vec<PathBuf> = albums_set.into_iter().collect();
-    albums_vec.sort();
-    let mut missing_vec: Vec<PathBuf> = missing_set.into_iter().collect();
-    missing_vec.sort();
-    (albums_vec, missing_vec)
+    Ok(WorkQueue {
+        roots: dirty,
+        missing,
+    })
 }
 
-fn discover_scope_albums(
+fn discover(
+    engine: &LuaEngine,
     scope: &UpdateScope,
-    music_dir: &Path,
-    cache: &HashMap<String, FileStat>,
-) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    media_directory: &Path,
+) -> Result<Vec<RootTarget>> {
     match scope {
-        UpdateScope::All => {
-            let albums = libdatamile::scanner::find_target_albums(music_dir)?;
-            let missing = find_missing_paths(&albums, music_dir, music_dir, cache);
-            Ok((albums, missing))
+        UpdateScope::All => discover_targets(engine, media_directory, None),
+        UpdateScope::Paths(paths) => {
+            let mut roots = Vec::new();
+            for path in paths {
+                roots.extend(discover_targets(engine, path, None)?);
+            }
+            Ok(roots)
         }
-        UpdateScope::Paths(paths) => Ok(scan_scoped_paths(paths, music_dir, cache)),
     }
 }
 
-pub fn resolve_work_queue(
-    mut ctx: WorkQueueContext<'_>,
-) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
-    if ctx.force == ForceMode::Preserve
-        && let Some((wq, mp)) = ctx.tracked.take()
-    {
-        if ctx.verbosity == LogVerbosity::Verbose && !wq.is_empty() {
-            log::info!("Verifying {} tracked albums...", wq.len());
-        }
-        let verified_wq = filter_dirty_albums(wq, &ctx)?;
-        return Ok((verified_wq, mp));
-    }
-
-    let (all_albums, mp) =
-        discover_scope_albums(ctx.scope, ctx.music_directory, ctx.cache)?;
-
-    if ctx.verbosity == LogVerbosity::Verbose && !all_albums.is_empty() {
-        log::info!("Verifying {} albums...", all_albums.len());
-    }
-
-    let wq = filter_dirty_albums(all_albums, &ctx)?;
-    Ok((wq, mp))
-}
-
-pub fn update_cache_entries(
-    cache: &mut HashMap<String, FileStat>,
+fn tracked_targets(
+    engine: &LuaEngine,
+    tracked: &[PathBuf],
     deps_graph: &DependencyGraph,
-    work_queue: &[PathBuf],
-    missing_paths: &[PathBuf],
-    music_directory: &Path,
-    verbosity: LogVerbosity,
-) {
-    for album_root in work_queue {
-        let album_root_canon = album_root
-            .canonicalize()
-            .unwrap_or_else(|_| album_root.clone());
-        let album_id =
-            libdatamile::resolvers::rel_path(&album_root_canon, music_directory);
-        let prefix = if album_id.is_empty() {
-            String::new()
-        } else {
-            format!("{album_id}/")
+) -> Result<Vec<RootTarget>> {
+    let mut roots = Vec::new();
+
+    for lock in tracked {
+        let Some(meta) = deps_graph.lock_to_meta.get(lock) else {
+            continue;
         };
 
-        cache.retain(|k, _| {
-            if prefix.is_empty() {
-                k.contains('/')
-            } else {
-                !k.starts_with(&prefix)
-            }
-        });
-
-        for entry in walkdir::WalkDir::new(&album_root_canon)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
-            let p = entry.path();
-            if p.is_file() {
-                let rel = libdatamile::resolvers::rel_path(p, music_directory);
-                if let Ok(m) = entry.metadata() {
-                    cache.insert(rel, FileStat::from(&m));
-                }
-            }
-        }
-
-        if let Some(external_deps) = deps_graph.album_to_files.get(&album_root_canon) {
-            for dep_path in external_deps {
-                if !dep_path.starts_with(&album_root_canon)
-                    && let Ok(m) = dep_path.metadata()
-                {
-                    let rel = libdatamile::resolvers::rel_path(dep_path, music_directory);
-                    cache.insert(rel, FileStat::from(&m));
-                }
-            }
-        }
+        let found = discover_targets(
+            engine,
+            &meta.target,
+            Some(std::slice::from_ref(&meta.target)),
+        )?;
+        roots.extend(found.into_iter().filter(|root| &root.lock_path == lock));
     }
 
-    for missing in missing_paths {
-        let album_id = libdatamile::resolvers::rel_path(missing, music_directory);
-        let prefix = format!("{album_id}/");
+    Ok(roots)
+}
 
-        if verbosity == LogVerbosity::Verbose {
-            log::info!("Removed album: {album_id}");
+fn missing_locks(
+    deps_graph: &DependencyGraph,
+    scope: &UpdateScope,
+    media_directory: &Path,
+    discovered: &[RootTarget],
+) -> Vec<PathBuf> {
+    let found: HashSet<&PathBuf> =
+        discovered.iter().map(|root| &root.lock_path).collect();
+
+    let mut missing = match scope {
+        UpdateScope::All => deps_graph.locks_under(media_directory),
+        UpdateScope::Paths(paths) => paths
+            .iter()
+            .flat_map(|path| deps_graph.locks_under(path))
+            .collect(),
+    };
+
+    missing.retain(|lock| !found.contains(lock));
+    missing
+}
+
+/// Rebuild the baseline from the graph after a pass. Everything the roots
+/// inspected is re-statted so the next pass compares against current disk state.
+pub fn rebuild_cache(cache: &mut LibraryCache, deps_graph: &DependencyGraph) {
+    cache.clear();
+
+    for meta in deps_graph.lock_to_meta.values() {
+        for file in &meta.files {
+            insert_stat(cache, file);
         }
 
-        cache.retain(|k, _| !k.starts_with(&prefix));
+        for dir in &meta.dirs {
+            let Ok(entries) = fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    insert_stat(cache, &path);
+                }
+            }
+        }
+
+        if !meta.target.is_dir() {
+            insert_stat(cache, &meta.target);
+        }
     }
 }
 
-pub async fn try_get_server_tracked_albums(
-    music_directory: &Path,
-) -> Option<(Vec<PathBuf>, Vec<PathBuf>)> {
+fn insert_stat(cache: &mut LibraryCache, path: &Path) {
+    if let Ok(meta) = path.metadata() {
+        cache.insert(path.to_path_buf(), FileStat::from(&meta));
+    }
+}
+
+pub async fn try_get_server_tracked_roots() -> Option<Vec<PathBuf>> {
     let resp = reqwest::Client::new()
         .get("http://127.0.0.1:8000/api/internal/tracked_albums")
         .timeout(std::time::Duration::from_millis(500))
@@ -200,26 +178,14 @@ pub async fn try_get_server_tracked_albums(
         return None;
     }
 
-    let tracked_arr = data.get("tracked_albums")?.as_array()?;
-    let mut work_queue = Vec::new();
-    let mut missing_paths = Vec::new();
-
-    for item in tracked_arr {
-        if let Some(p_str) = item.as_str() {
-            let p = if Path::new(p_str).is_absolute() {
-                PathBuf::from(p_str)
-            } else {
-                music_directory.join(p_str)
-            };
-            if p.exists() {
-                work_queue.push(p);
-            } else {
-                missing_paths.push(p);
-            }
-        }
-    }
-
-    Some((work_queue, missing_paths))
+    let tracked = data.get("tracked_roots")?.as_array()?;
+    Some(
+        tracked
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(PathBuf::from)
+            .collect(),
+    )
 }
 
 pub fn check_lua_config_changed(
@@ -227,13 +193,13 @@ pub fn check_lua_config_changed(
     cache_root: &Path,
     verbosity: LogVerbosity,
 ) -> (bool, PathBuf, String) {
-    let lua_hash = get_lua_config_hash(dependencies);
+    let lua_hash = crate::update::cache::get_lua_config_hash(dependencies);
     let lua_hash_file = cache_root.join("config.blake3");
     let previous_lua_hash = fs::read_to_string(&lua_hash_file).unwrap_or_default();
     let config_changed = lua_hash != previous_lua_hash;
 
     if config_changed && verbosity == LogVerbosity::Verbose {
-        log::info!("Lua configuration changed. Re-evaluating album locks...");
+        log::info!("Lua configuration changed. Re-evaluating entity locks...");
     }
 
     (config_changed, lua_hash_file, lua_hash)

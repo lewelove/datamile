@@ -146,7 +146,7 @@ impl CompileArgs {
 
         let options = compile::CompileOptions {
             target_path: expanded,
-            specific_albums: None,
+            specific_paths: None,
             jobs: None,
             compile_flags: compile::CompileFlags {
                 mode,

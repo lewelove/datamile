@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 use tokio::sync::{RwLock, broadcast};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Default)]
 pub struct CoverTaskRegistry {
     tasks: Mutex<HashSet<PathBuf>>,
@@ -40,60 +43,108 @@ impl Drop for CoverTaskGuard {
     }
 }
 
+/// Everything one compiled root depends on. Keyed by lock path so two roots
+/// may share a directory or an id without colliding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RootMeta {
+    pub root_type: String,
+    pub target: PathBuf,
+    pub files: HashSet<PathBuf>,
+    pub dirs: HashSet<PathBuf>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DependencyGraph {
-    pub file_to_albums: HashMap<PathBuf, HashSet<PathBuf>>,
-    pub album_to_files: HashMap<PathBuf, HashSet<PathBuf>>,
+    pub file_to_locks: HashMap<PathBuf, HashSet<PathBuf>>,
+    pub dir_to_locks: HashMap<PathBuf, HashSet<PathBuf>>,
+    pub lock_to_meta: HashMap<PathBuf, RootMeta>,
 }
 
 impl DependencyGraph {
-    pub fn update_album_deps(&mut self, album_path: PathBuf, new_deps: HashSet<PathBuf>) {
-        self.remove_album(&album_path);
-
-        for dep in &new_deps {
-            self.file_to_albums
-                .entry(dep.clone())
-                .or_default()
-                .insert(album_path.clone());
-        }
-        self.album_to_files.insert(album_path, new_deps);
+    pub fn update_lock(&mut self, lock_path: PathBuf, meta: RootMeta) {
+        self.remove_lock(&lock_path);
+        self.index_lock(&lock_path, &meta);
+        self.lock_to_meta.insert(lock_path, meta);
     }
 
-    pub fn remove_album(&mut self, album_path: &Path) {
-        if let Some(deps) = self.album_to_files.remove(album_path) {
-            for dep in deps {
-                if let Some(albums) = self.file_to_albums.get_mut(&dep) {
-                    albums.remove(album_path);
-                    if albums.is_empty() {
-                        self.file_to_albums.remove(&dep);
-                    }
-                }
-            }
+    pub fn remove_lock(&mut self, lock_path: &Path) {
+        let Some(old) = self.lock_to_meta.remove(lock_path) else {
+            return;
+        };
+
+        for file in &old.files {
+            remove_edge(&mut self.file_to_locks, file, lock_path);
         }
+        for dir in &old.dirs {
+            remove_edge(&mut self.dir_to_locks, dir, lock_path);
+        }
+    }
+
+    fn index_lock(&mut self, lock_path: &Path, meta: &RootMeta) {
+        for file in &meta.files {
+            self.file_to_locks
+                .entry(file.clone())
+                .or_default()
+                .insert(lock_path.to_path_buf());
+        }
+        for dir in &meta.dirs {
+            self.dir_to_locks
+                .entry(dir.clone())
+                .or_default()
+                .insert(lock_path.to_path_buf());
+        }
+    }
+
+    pub fn locks_for_file(&self, path: &Path) -> Option<&HashSet<PathBuf>> {
+        self.file_to_locks.get(path)
+    }
+
+    pub fn locks_for_dir(&self, path: &Path) -> Option<&HashSet<PathBuf>> {
+        self.dir_to_locks.get(path)
+    }
+
+    /// Locks whose target or lock lives under `path`.
+    pub fn locks_under(&self, path: &Path) -> Vec<PathBuf> {
+        self.lock_to_meta
+            .iter()
+            .filter(|(lock, meta)| {
+                lock.starts_with(path) || meta.target.starts_with(path)
+            })
+            .map(|(lock, _)| lock.clone())
+            .collect()
     }
 
     pub fn prune(&mut self) -> bool {
-        let initial_albums_len = self.album_to_files.len();
-        self.album_to_files.retain(|album, _| album.exists());
-        let albums_removed = self.album_to_files.len() != initial_albums_len;
+        let before = self.lock_to_meta.len();
+        self.lock_to_meta
+            .retain(|lock, meta| lock.exists() && meta.target.exists());
 
-        if !albums_removed {
-            return false;
+        let removed = self.lock_to_meta.len() != before;
+        if removed {
+            self.reindex();
         }
 
-        let mut new_file_to_albums: HashMap<PathBuf, HashSet<PathBuf>> =
-            HashMap::with_capacity(self.file_to_albums.len());
-        for (album, deps) in &self.album_to_files {
-            for dep in deps {
-                new_file_to_albums
-                    .entry(dep.clone())
+        removed
+    }
+
+    fn reindex(&mut self) {
+        self.file_to_locks.clear();
+        self.dir_to_locks.clear();
+
+        for (lock, meta) in &self.lock_to_meta {
+            for file in &meta.files {
+                self.file_to_locks
+                    .entry(file.clone())
                     .or_default()
-                    .insert(album.clone());
+                    .insert(lock.clone());
+            }
+            for dir in &meta.dirs {
+                self.dir_to_locks
+                    .entry(dir.clone())
+                    .or_default()
+                    .insert(lock.clone());
             }
         }
-
-        self.file_to_albums = new_file_to_albums;
-        true
     }
 
     pub fn load_from_file(path: &Path) -> Self {
@@ -151,7 +202,8 @@ pub struct AppState {
     pub tx: broadcast::Sender<String>,
     pub config: RwLock<AppConfig>,
     pub mpd_engine: MpdEngine,
-    pub tracked_albums: Arc<Mutex<HashSet<String>>>,
+    /// Lock paths of roots the inotify classifier saw change.
+    pub tracked_roots: Arc<Mutex<HashSet<String>>>,
     pub full_rescan_needed: Arc<AtomicBool>,
     pub active_writes: Arc<Mutex<HashSet<PathBuf>>>,
     pub cover_tasks: Arc<CoverTaskRegistry>,
@@ -171,4 +223,14 @@ pub struct AppConfig {
     pub config_dir: PathBuf,
     pub config_path: PathBuf,
     pub app: libdatamile::config::AppConfig,
+}
+
+fn remove_edge(map: &mut HashMap<PathBuf, HashSet<PathBuf>>, key: &Path, lock: &Path) {
+    let Some(locks) = map.get_mut(key) else {
+        return;
+    };
+    locks.remove(lock);
+    if locks.is_empty() {
+        map.remove(key);
+    }
 }

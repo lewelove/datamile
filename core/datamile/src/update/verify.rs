@@ -1,51 +1,48 @@
+use crate::compile::media::RootTarget;
 use crate::server::state::DependencyGraph;
-use crate::update::cache::FileStat;
+use crate::update::cache::{FileStat, LibraryCache};
 use crate::update::client::ForceMode;
 use anyhow::Result;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-pub fn find_missing_paths(
-    all_albums: &[PathBuf],
-    library_root: &Path,
-    scan_root: &Path,
-    cache: &HashMap<String, FileStat>,
-) -> Vec<PathBuf> {
-    let mut missing_paths = Vec::new();
-    let current_album_ids: HashSet<String> = all_albums
-        .iter()
-        .map(|p| libdatamile::resolvers::rel_path(p, library_root))
-        .collect();
-
-    let mut cached_album_ids = HashSet::new();
-    for rel_path in cache.keys() {
-        if rel_path == "album.toml" {
-            cached_album_ids.insert(String::new());
-        } else if let Some(album_id) = rel_path.strip_suffix("/album.toml") {
-            cached_album_ids.insert(album_id.to_string());
-        }
-    }
-
-    for cached_id in cached_album_ids {
-        let full_cached_path = library_root.join(&cached_id);
-        if full_cached_path.starts_with(scan_root)
-            && !current_album_ids.contains(&cached_id)
-        {
-            missing_paths.push(full_cached_path);
-        }
-    }
-    missing_paths
+/// Cache stats indexed by parent directory so a directory listing can be
+/// compared to the previous pass without scanning the whole cache.
+pub struct CacheIndex<'a> {
+    pub stats: &'a LibraryCache,
+    by_dir: HashMap<PathBuf, HashSet<PathBuf>>,
 }
 
-pub fn verify_albums_parallel(
-    albums: Vec<PathBuf>,
-    cache: &HashMap<String, FileStat>,
+impl<'a> CacheIndex<'a> {
+    pub fn new(stats: &'a LibraryCache) -> Self {
+        let mut by_dir: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
+
+        for path in stats.keys() {
+            let Some(parent) = path.parent() else {
+                continue;
+            };
+            by_dir
+                .entry(parent.to_path_buf())
+                .or_default()
+                .insert(path.clone());
+        }
+
+        Self { stats, by_dir }
+    }
+}
+
+pub fn verify_targets(
+    roots: Vec<RootTarget>,
+    cache: &CacheIndex<'_>,
     deps_graph: &DependencyGraph,
     force: ForceMode,
     jobs: Option<usize>,
-    library_root: &Path,
-) -> Result<Vec<(PathBuf, bool)>> {
+) -> Result<Vec<RootTarget>> {
+    if force == ForceMode::Force {
+        return Ok(roots);
+    }
+
     let default_parallelism =
         std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let pool = rayon::ThreadPoolBuilder::new()
@@ -53,108 +50,71 @@ pub fn verify_albums_parallel(
         .build()?;
 
     Ok(pool.install(|| {
-        albums
+        roots
             .into_par_iter()
-            .map(|album_root| {
-                let is_dirty = force == ForceMode::Force
-                    || is_album_dirty(&album_root, cache, deps_graph, library_root);
-                (album_root, is_dirty)
-            })
+            .filter(|root| is_dirty(root, cache, deps_graph))
             .collect()
     }))
 }
 
-fn is_album_dirty(
-    album_root: &Path,
-    cache: &HashMap<String, FileStat>,
-    deps_graph: &DependencyGraph,
-    library_root: &Path,
-) -> bool {
-    let album_root_canon = album_root
-        .canonicalize()
-        .unwrap_or_else(|_| album_root.to_path_buf());
-
-    let lock_path = album_root_canon.join("album.lock.json");
-    if !lock_path.exists() {
+fn is_dirty(root: &RootTarget, cache: &CacheIndex<'_>, graph: &DependencyGraph) -> bool {
+    if !root.lock_path.exists() {
         return true;
     }
 
-    if !album_root_canon.join("album.toml").exists() {
+    let Some(meta) = graph.lock_to_meta.get(&root.lock_path) else {
         return true;
-    }
-
-    let album_id = libdatamile::resolvers::rel_path(&album_root_canon, library_root);
-    let prefix = if album_id.is_empty() {
-        String::new()
-    } else {
-        format!("{album_id}/")
     };
 
-    if deep_verify_dirty(&album_root_canon, cache, &prefix, library_root) {
+    if meta.root_type != root.root_type || meta.target != root.target {
         return true;
     }
 
-    if let Some(external_deps) = deps_graph.album_to_files.get(&album_root_canon) {
-        for dep_path in external_deps {
-            if !dep_path.starts_with(&album_root_canon) {
-                let Ok(m) = dep_path.metadata() else {
-                    return true;
-                };
-                let stat = FileStat::from(&m);
+    if !meta.target.is_dir() && file_changed(&meta.target, cache) {
+        return true;
+    }
 
-                let rel_dep = libdatamile::resolvers::rel_path(dep_path, library_root);
-                if cache.get(&rel_dep) != Some(&stat) {
-                    return true;
-                }
-            }
+    for file in &meta.files {
+        if file_changed(file, cache) {
+            return true;
         }
     }
 
-    false
+    meta.dirs.iter().any(|dir| dir_dirty(dir, cache))
 }
 
-fn deep_verify_dirty(
-    album_root: &Path,
-    cache: &HashMap<String, FileStat>,
-    prefix: &str,
-    library_root: &Path,
-) -> bool {
-    let mut album_files_changed = false;
-    let mut seen_paths = HashSet::new();
+fn file_changed(path: &Path, cache: &CacheIndex<'_>) -> bool {
+    let Ok(meta) = path.metadata() else {
+        return true;
+    };
 
-    for entry in walkdir::WalkDir::new(album_root)
-        .follow_links(true)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        let p = entry.path();
-        if p.is_file() {
-            let rel = libdatamile::resolvers::rel_path(p, library_root);
-            let Ok(m) = entry.metadata() else {
-                return true;
-            };
-            let stat = FileStat::from(&m);
+    cache.stats.get(path) != Some(&FileStat::from(&meta))
+}
 
-            if cache.get(&rel) != Some(&stat) {
-                album_files_changed = true;
-                break;
-            }
-            seen_paths.insert(rel);
+/// A recorded directory is dirty when a file was added, removed, or modified
+/// since the last pass.
+fn dir_dirty(dir: &Path, cache: &CacheIndex<'_>) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return true;
+    };
+
+    let mut listed = HashSet::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else {
+            return true;
+        };
+        if !meta.is_file() {
+            continue;
         }
+        if cache.stats.get(&path) != Some(&FileStat::from(&meta)) {
+            return true;
+        }
+        listed.insert(path);
     }
 
-    if !album_files_changed {
-        for k in cache.keys() {
-            let matches_album = if prefix.is_empty() {
-                !k.contains('/') && !k.starts_with('/')
-            } else {
-                k.starts_with(prefix)
-            };
-            if matches_album && !seen_paths.contains(k) {
-                return true;
-            }
-        }
-    }
-
-    album_files_changed
+    cache
+        .by_dir
+        .get(dir)
+        .is_some_and(|known| known.iter().any(|path| !listed.contains(path)))
 }

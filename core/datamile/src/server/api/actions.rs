@@ -31,7 +31,9 @@ async fn resolve_playing_target(state: &AppState) -> Option<String> {
         .await
         .ok()?;
     let canon = dir.canonicalize().unwrap_or(dir);
-    logic.get_album_id_by_path(&canon).map(ToString::to_string)
+    logic
+        .get_album_id_by_target(&canon)
+        .map(ToString::to_string)
 }
 
 async fn resolve_param_target(
@@ -63,7 +65,7 @@ async fn resolve_param_target(
     if let Some(dir) = params.get("directory") {
         let p = libdatamile::utils::expand_path(dir);
         let p_canon = p.canonicalize().unwrap_or(p);
-        if let Some(id) = logic.get_album_id_by_path(&p_canon) {
+        if let Some(id) = logic.get_album_id_by_target(&p_canon) {
             return vec![id.to_string()];
         }
     }

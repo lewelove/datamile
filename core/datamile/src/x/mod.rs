@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tokio::net::TcpStream;
-use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DebugMode {
@@ -26,6 +25,7 @@ pub struct TargetFlags {
 pub struct ResolvedAlbumTarget {
     pub id: String,
     pub path: PathBuf,
+    pub lock_path: PathBuf,
     pub lock: serde_json::Value,
 }
 
@@ -48,9 +48,46 @@ async fn resolve_by_query(query_str: &str) -> Result<Vec<ResolvedAlbumTarget>> {
     Ok(items)
 }
 
+fn load_engine(config_path: &Path) -> Result<libdatamile::lua::LuaEngine> {
+    let engine = libdatamile::lua::LuaEngine::new()?;
+    engine.evaluate_config(config_path)?;
+    Ok(engine)
+}
+
+fn discover(
+    engine: &libdatamile::lua::LuaEngine,
+    path: &Path,
+) -> Vec<ResolvedAlbumTarget> {
+    let Ok(roots) = crate::compile::media::discover_targets(engine, path, None) else {
+        return Vec::new();
+    };
+
+    roots
+        .into_iter()
+        .filter_map(|root| {
+            let content = std::fs::read_to_string(&root.lock_path).ok()?;
+            let lock_json: serde_json::Value = serde_json::from_str(&content).ok()?;
+            let id = lock_json
+                .get(&root.root_type)
+                .and_then(|entity| entity.get("id"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+
+            Some(ResolvedAlbumTarget {
+                id,
+                path: root.target,
+                lock_path: root.lock_path,
+                lock: lock_json,
+            })
+        })
+        .collect()
+}
+
 async fn resolve_by_id(
     id: &str,
     music_directory: &Path,
+    config_path: &Path,
 ) -> Result<Vec<ResolvedAlbumTarget>> {
     let client = reqwest::Client::new();
     let q_resp = client
@@ -67,123 +104,48 @@ async fn resolve_by_id(
         return Ok(vec![matched]);
     }
 
-    let mut results = Vec::new();
-    for entry in WalkDir::new(music_directory)
-        .follow_links(true)
+    let engine = load_engine(config_path)?;
+    Ok(discover(&engine, music_directory)
         .into_iter()
-        .filter_map(Result::ok)
-    {
-        if entry.file_name() == "album.lock.json"
-            && let Ok(content) = std::fs::read_to_string(entry.path())
-            && let Ok(lock_json) = serde_json::from_str::<serde_json::Value>(&content)
-            && lock_json.pointer("/album/id").and_then(|v| v.as_str()) == Some(id)
-            && let Some(parent) = entry.path().parent()
-        {
-            results.push(ResolvedAlbumTarget {
-                id: id.to_string(),
-                path: parent
-                    .canonicalize()
-                    .unwrap_or_else(|_| parent.to_path_buf()),
-                lock: lock_json,
-            });
-            break;
-        }
-    }
-    Ok(results)
+        .find(|target| target.id == id)
+        .into_iter()
+        .collect())
 }
 
-async fn resolve_by_playing(music_directory: &Path) -> Result<Vec<ResolvedAlbumTarget>> {
+async fn resolve_by_playing(
+    music_directory: &Path,
+    config_path: &Path,
+) -> Result<Vec<ResolvedAlbumTarget>> {
     let playing_album_dir = get_playing_album(&music_directory.to_string_lossy()).await?;
-    let lock_path = playing_album_dir.join("album.lock.json");
-    if lock_path.exists()
-        && let Ok(content) = std::fs::read_to_string(&lock_path)
-        && let Ok(lock_json) = serde_json::from_str::<serde_json::Value>(&content)
-    {
-        let id = lock_json
-            .pointer("/album/id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        Ok(vec![ResolvedAlbumTarget {
-            id,
-            path: playing_album_dir
-                .canonicalize()
-                .unwrap_or(playing_album_dir),
-            lock: lock_json,
-        }])
-    } else {
-        Ok(Vec::new())
-    }
-}
+    let engine = load_engine(config_path)?;
 
-fn resolve_by_scan(root: &Path) -> Vec<ResolvedAlbumTarget> {
-    let mut results = Vec::new();
-    for entry in WalkDir::new(root)
-        .follow_links(true)
+    Ok(discover(&engine, &playing_album_dir)
         .into_iter()
-        .filter_map(Result::ok)
-    {
-        if entry.file_name() == "album.lock.json"
-            && let Ok(content) = std::fs::read_to_string(entry.path())
-            && let Ok(lock_json) = serde_json::from_str::<serde_json::Value>(&content)
-            && let Some(parent) = entry.path().parent()
-        {
-            let id = lock_json
-                .pointer("/album/id")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            results.push(ResolvedAlbumTarget {
-                id,
-                path: parent
-                    .canonicalize()
-                    .unwrap_or_else(|_| parent.to_path_buf()),
-                lock: lock_json,
-            });
-        }
-    }
-    results
-}
-
-fn resolve_by_dir(dir: &Path) -> Vec<ResolvedAlbumTarget> {
-    let p = expand_path(dir.to_str().unwrap_or("."));
-    let lock_path = p.join("album.lock.json");
-    if lock_path.exists()
-        && let Ok(content) = std::fs::read_to_string(&lock_path)
-        && let Ok(lock_json) = serde_json::from_str::<serde_json::Value>(&content)
-    {
-        let id = lock_json
-            .pointer("/album/id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        vec![ResolvedAlbumTarget {
-            id,
-            path: p.canonicalize().unwrap_or(p),
-            lock: lock_json,
-        }]
-    } else {
-        Vec::new()
-    }
+        .take(1)
+        .collect())
 }
 
 pub async fn resolve_target_albums(
     music_directory: &Path,
     target: &TargetFlags,
+    config_path: &Path,
 ) -> Result<Vec<ResolvedAlbumTarget>> {
     if let Some(query_str) = &target.query {
         resolve_by_query(query_str).await
     } else if let Some(id) = &target.id {
-        resolve_by_id(id, music_directory).await
+        resolve_by_id(id, music_directory, config_path).await
     } else if target.playing {
-        resolve_by_playing(music_directory).await
+        resolve_by_playing(music_directory, config_path).await
     } else if target.library {
-        Ok(resolve_by_scan(music_directory))
+        let engine = load_engine(config_path)?;
+        Ok(discover(&engine, music_directory))
     } else if let Some(dir) = &target.recursive {
-        Ok(resolve_by_scan(&expand_path(dir)))
+        let engine = load_engine(config_path)?;
+        Ok(discover(&engine, &expand_path(dir)))
     } else {
         let dir_str = target.directory.as_deref().unwrap_or(".");
-        Ok(resolve_by_dir(Path::new(dir_str)))
+        let engine = load_engine(config_path)?;
+        Ok(discover(&engine, &expand_path(dir_str)))
     }
 }
 
@@ -205,7 +167,8 @@ pub async fn execute(
         .canonicalize()
         .unwrap_or_else(|_| expand_path(&config.app.storage.music_directory));
 
-    let resolved_targets = resolve_target_albums(&music_directory, &target).await?;
+    let resolved_targets =
+        resolve_target_albums(&music_directory, &target, &config.path).await?;
 
     let albums_payload: Vec<serde_json::Value> = resolved_targets
         .iter()
@@ -255,6 +218,8 @@ pub async fn get_playing_track_url() -> Result<String> {
     Ok(song.song.url)
 }
 
+/// Walk upward from the playing track until a shallow media selection yields a
+/// root whose lock exists.
 pub async fn get_playing_album(lib_root: &str) -> Result<PathBuf> {
     let rel_path = get_playing_track_url().await?;
     let clean_rel = rel_path.trim_start_matches('/');
@@ -268,17 +233,25 @@ pub async fn get_playing_album(lib_root: &str) -> Result<PathBuf> {
         .map(Path::to_path_buf)
         .context("Invalid track path")?;
 
-    while curr.starts_with(&root) && curr != root {
-        if curr.join("album.toml").exists()
-            || curr.join("metadata.toml").exists()
-            || curr.join("album.lock.json").exists()
-        {
-            return Ok(curr);
+    let config_path = libdatamile::lua::resolve_config_path().unwrap_or_default();
+    let engine = load_engine(&config_path).ok();
+
+    if let Some(engine) = engine.as_ref() {
+        while curr.starts_with(&root) && curr != root {
+            if let Ok(roots) = crate::compile::media::discover_targets(
+                engine,
+                &curr,
+                Some(std::slice::from_ref(&curr)),
+            ) && let Some(found) = roots.iter().find(|r| r.lock_path.exists())
+            {
+                return Ok(found.target.clone());
+            }
+
+            let Some(parent) = curr.parent() else {
+                break;
+            };
+            curr = parent.to_path_buf();
         }
-        let Some(parent) = curr.parent() else {
-            break;
-        };
-        curr = parent.to_path_buf();
     }
 
     full_path

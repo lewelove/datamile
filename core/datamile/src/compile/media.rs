@@ -154,6 +154,19 @@ fn compile_entity(
     cache_root: &Path,
     dependencies: &mut HashSet<PathBuf>,
 ) -> Result<Value> {
+    // The entity's own directory is always watched so new files (a dropped
+    // track or cover) mark it dirty even when no hook listed it.
+    if let Some(path) = source_path(source) {
+        let dir = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        if let Some(ctx) = engine.lua.app_data_ref::<EngineContext>() {
+            ctx.record_dir(dir);
+        }
+    }
+
     let prepared = engine.media_prepare(type_name, source).with_context(|| {
         format!("failed to prepare {type_name} at {}", source_label(source))
     })?;

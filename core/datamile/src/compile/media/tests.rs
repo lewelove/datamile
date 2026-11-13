@@ -88,3 +88,30 @@ fn compile_root_uses_child_type_select() {
 
     assert_eq!(build.lock_json["root"]["leaves"][0]["tags"]["kind"], "item");
 }
+
+/// The entity directory is always a dependency, so dropping a new file into
+/// it later marks the root dirty even if no hook scanned the directory.
+#[test]
+fn compile_root_records_entity_directory() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path().join("root");
+    fs::create_dir_all(&root).expect("dirs");
+
+    let engine = LuaEngine::new().expect("engine");
+    let code = r#"
+        d.media.type("root")
+        d.compile.root.lock(function(t) return t.path .. "/root.lock.json" end)
+        d.compile.root.id(function(ctx) return "root" end)
+    "#;
+    engine.lua.load(code).exec().expect("register");
+
+    let build = compile_root(&engine, &root_target(&root), tmp.path()).expect("compile");
+
+    assert!(
+        build
+            .dirs
+            .contains(&root.canonicalize().expect("canonicalize")),
+        "entity directory missing from {:?}",
+        build.dirs
+    );
+}

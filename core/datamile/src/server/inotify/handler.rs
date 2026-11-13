@@ -81,12 +81,24 @@ pub async fn process_events(flags: ChangeFlags, state: &Arc<AppState>) {
         for path in &flags.vanished_paths {
             locks.extend(graph.locks_under(path));
         }
+
+        drop(graph);
+
+        // A marker or target that no longer yields a lock removes the entity.
+        if recompiled.complete {
+            for lock in &flags.changed_locks {
+                if !recompiled.discovered.contains(lock) {
+                    locks.insert(lock.clone());
+                }
+            }
+        }
+
         locks
     };
 
     ingest_and_broadcast_albums(
         vanished_locks,
-        recompiled,
+        recompiled.items,
         IngestOrigin::External,
         state,
     )
@@ -109,13 +121,28 @@ async fn resolve_targets(flags: &ChangeFlags, state: &Arc<AppState>) -> HashSet<
     targets
 }
 
+#[derive(Default)]
+struct TargetOutcome {
+    items: Vec<RecompiledAlbumItem>,
+    discovered: Vec<PathBuf>,
+}
+
+#[derive(Default)]
+struct RecompileOutcome {
+    items: Vec<RecompiledAlbumItem>,
+    /// Locks the selectors still yield for the attempted targets.
+    discovered: HashSet<PathBuf>,
+    /// False when discovery never ran, so absence proves nothing.
+    complete: bool,
+}
+
 async fn recompile_targets(
     targets: HashSet<PathBuf>,
     active_writes: Arc<Mutex<HashSet<PathBuf>>>,
     config_path: PathBuf,
-) -> Vec<RecompiledAlbumItem> {
+) -> RecompileOutcome {
     if targets.is_empty() {
-        return Vec::new();
+        return RecompileOutcome::default();
     }
 
     let resolved_lua_config = if let Ok(Ok(cfg)) =
@@ -124,61 +151,70 @@ async fn recompile_targets(
         Arc::new(cfg)
     } else {
         log::error!("Failed to load resolved config for entity update");
-        return Vec::new();
+        return RecompileOutcome::default();
     };
 
-    tokio::task::spawn_blocking(move || {
+    let outcomes = tokio::task::spawn_blocking(move || {
         let config_ref = &resolved_lua_config;
 
         targets
             .into_par_iter()
             .filter(|p| p.exists())
-            .flat_map_iter(|target| {
-                let engine = match libdatamile::lua::LuaEngine::new() {
-                    Ok(engine) => match engine.evaluate_config(&config_path) {
-                        Ok(_) => engine,
-                        Err(e) => {
-                            log::error!(
-                                "Failed to evaluate config in inotify handler: {e}"
-                            );
-                            return Vec::new().into_iter();
+            .map_init(
+                || {
+                    libdatamile::lua::LuaEngine::new().ok().and_then(
+                        |engine| match engine.evaluate_config(&config_path) {
+                            Ok(_) => Some(engine),
+                            Err(e) => {
+                                log::error!(
+                                    "Failed to evaluate config in inotify handler: {e}"
+                                );
+                                None
+                            }
+                        },
+                    )
+                },
+                |engine_opt, target| {
+                    let mut outcome = TargetOutcome::default();
+                    let Some(engine) = engine_opt.as_ref() else {
+                        return outcome;
+                    };
+
+                    let Ok(roots) = crate::compile::media::discover_targets(
+                        engine,
+                        &target,
+                        Some(std::slice::from_ref(&target)),
+                    ) else {
+                        log::error!("Root discovery failed for {}", target.display());
+                        return outcome;
+                    };
+
+                    for root in roots {
+                        outcome.discovered.push(root.lock_path.clone());
+                        if let Some(item) =
+                            recompile_root(&root, config_ref, engine, &active_writes)
+                        {
+                            outcome.items.push(item);
                         }
-                    },
-                    Err(e) => {
-                        log::error!(
-                            "Failed to initialize Lua engine in inotify handler: {e}"
-                        );
-                        return Vec::new().into_iter();
                     }
-                };
 
-                let roots = match crate::compile::media::discover_targets(
-                    &engine,
-                    &target,
-                    Some(std::slice::from_ref(&target)),
-                ) {
-                    Ok(roots) => roots,
-                    Err(e) => {
-                        log::error!(
-                            "Root discovery failed for {}: {e}",
-                            target.display()
-                        );
-                        return Vec::new().into_iter();
-                    }
-                };
-
-                roots
-                    .into_iter()
-                    .filter_map(|root| {
-                        recompile_root(&root, config_ref, &engine, &active_writes)
-                    })
-                    .collect::<Vec<_>>()
-                    .into_iter()
-            })
+                    outcome
+                },
+            )
             .collect::<Vec<_>>()
     })
     .await
-    .unwrap_or_default()
+    .unwrap_or_default();
+
+    let mut merged = RecompileOutcome {
+        complete: true,
+        ..RecompileOutcome::default()
+    };
+    for outcome in outcomes {
+        merged.items.extend(outcome.items);
+        merged.discovered.extend(outcome.discovered);
+    }
+    merged
 }
 
 fn recompile_root(

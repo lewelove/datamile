@@ -1,150 +1,155 @@
-# Dale Milestones
+# Datamile Milestones
 
-This document describes the system design and architecture milestones I have in mind for Dale.
+Future work only. Implemented design is the code; `notes/docs/` was deleted because
+the generic media model superseded it.
 
-## Lua Driven Manifest Engine
+Reference points for current state:
 
-The `dale manifest` should be a Lua function. It is designed to manifest data from physical filesystem state into plaintext files. The definition is:
+- Media compile: `core/datamile/src/compile/media.rs`, `core/libdatamile/src/lua/compiler.lua`
+- Lock schema: `{ id, tags, objects, images, location, <children>[] }`
+- Logic: `core/datamile/src/server/logic/{mod,query}.rs`
+- Covers: `core/datamile/src/compile/images.rs`, `core/datamile/src/server/api/assets.rs`
 
-```lua
-d.manifest("name", {
-  cluster = function(dir) return { dir } end -- example of default implementation
-  write = function(dir) 
-    return {
-      path = "manifest_name.toml/json",
-      content = "" or {} -- either string to validate and write verbatim or table to be serialized
-    }
-  end
-})
+---
+
+## 1. MPD API Standardization
+
+Every MPD-facing route moves under `/api/mpd/`. The current flat namespace
+(`/api/play`, `/api/queue`, `/api/toggle-pause`, ...) is a v0 artifact.
+
+```
+/api/mpd/albums/{id}                     GET     lock payload
+/api/mpd/albums/{id}/play                POST    replace queue, play from 0
+/api/mpd/albums/{id}/queue               POST    {"position": "tail"|"next"}
+/api/mpd/albums/{id}/discs/{n}/play      POST    disc only
+/api/mpd/albums/{id}/discs/{n}/queue     POST    {"position": "tail"|"next"}
+/api/mpd/control/{action}                POST    stateless toggles, see below
 ```
 
-The `cluster` runs first. It takes the directory path from `--dir` option in CLI call. It must return an array of directory paths. All paths are canonicalized by Rust and validated to be directories and exist.
+Control actions:
 
-Then for every directory path in this array runs `write`. It always returns Lua table containing two keys: `file` and `content`.
+- `toggle_pause`, `toggle_repeat`, `toggle_random`, `toggle_oneshot`, `toggle_consume`
+- `toggle_single` — cycles single <-> normal
+- `volume_delta` — `-100..=100`, normalized
+- `seek_delta` — milliseconds, normalized
 
-The file format to write will be inferred from the `file` path extension. We allow both TOML and JSON as valid extensions.
+Bare `/api/mpd/` returns the INIT dict.
 
-If JSON and returned Lua table -> serialize into a sorted standard JSON -> write to path
-If JSON and returned a string -> check the string to be valid JSON -> write to path unchanged -> else throw error
+Unchanged and out of scope: `/api/state`, `/api/internal/*`, `/ws`, `/api/actions/{name}`.
 
-Same with TOML
+---
 
-## `Tantivy` Based Full Text Search Engine
+## 2. Library / View API
 
-## Redesign `/api/covers/`
+Clients currently compose views through `/api/internal/query`, which is not a
+public contract. Two endpoints replace it:
 
-`/api/covers/` is a simple GET HTTP request and must comply with web standards. The signature:
-
-`/api/covers/{address}.{format}?size={positive_integer}&filter={filter}&quality={1-100}`
-
-Let's define M as the `max(width, height)` of the master cover requested by address.
-
-- `format` defines the image format send over the wire: `qoi`, `bmp`, `png`, `jpg`, `webp` (lossy). Required.
-- `size` defines the resize parameter of the largest side of the image served. Falls back to the M.
-- `filter` defines the interpolation algorithm to use for the resize. Defaults to `catmullrom`. Ignored if size == M.
-- `quality` defines the quality of the lossy image served. For lossless formats it is ignored. For lossy defaults to 100.
-
-## `/api/internal/prewarm_covers_cache`
-
-This asynchronous POST endpoint is designed to be used by interfaces. It populates Dale's serverside cover cache for instant `/api/covers/` request. Interface decides which covers it will need beforehand, and POSTs a JSON containing the same parameters as in `/api/covers/`.
-
-This endpoint is designed to fail fast for each requested cover candidate with already warm cache.
-
-The parametrization combination logic must follow the `/api/covers/` one. `format`, `size`, and `filter` are required. The `quality` is required if and only if `format` chosen was lossy, defaults to 100 when omitted.
-
-To filter covers scheduled for the prewarm we use `names` and `addresses` arrays.
-
-- `names` : Filters all `album.covers` candidates.
-- `addresses` : Filters all `album.covers.*.[].address` candidates.
-
-At least one of them is required. The pattern:
-- Only `names` / Only `addresses` -> run for specific filter.
-- Both `names` & `addresses` -> combine filters.
-
-Resulting files are saved under `{cache_dir}/covers/{address}/s{size}_{filter}[_q{quality}].{format}`, and are used as cache hit candidates for the `/api/covers/`. The `[_q{quality}]` is written ONLY for the lossy formats.
-
-## New `compile.album.cover` Lua Function
-
-The new function will allow to have multiple image files in album root as targets for pulling into a lock file. It returns either a single table with a `path` required or a table of such tables. 
-
-It is used to specify the `master` compile target, the params are:
-
-- `path` defines the relative to album root image path. Is either a string, or a table of strings, that define the fallback priority chain. If none of targets are valid image files, throw compilation error.
-- `width` / `height` define the dimensions of bounding box in pixels.
-- `fit` defines the fit algorithm. If `crop` -> fit in box by center crop. If `inside` -> fit in box without crop.
-- `filter` defines the resize filter used.
-
-All parameters are *required* and must be valid. Else throw compilation error.
-
-Examples:
-
-```lua
--- This one is default and is built in
-dale.compile.album.cover("main", function(ctx, m)
-  return {
-    path = {
-      "cover.png",
-      "cover.jpg",
-      "cover.jpeg",
-      "folder.png",
-      "folder.jpg",
-      "folder.jpeg",
-    }
-    width = 1080,
-    height = 1080,
-    fit = "crop",
-    filter = "catmullrom",
-  }
-end)
+```
+GET /api/library/      all declared primitives + actions + interfaces + labels
+GET /api/view          albums for one library + optional filter + order + grouper
+GET /api/album/{id}    single lock                        (already exists)
 ```
 
-Each `name` populates the `covers` object in `album.lock.json`:
+`GET /api/view` params: `library`, `filter`, `order`, `grouper`, `group`.
+Response: ordered `album.id` array, matching `LogicEngine::request_view`.
 
-```json
-{
-  "covers": {
-    "name": [
-      {
-        "address": "address_hash_string",
-        "width": 1,
-        "height": 1,
-        "fit": "fit",
-        "filter": "filter",
-        "source": {
-          "file": {
-            "path": "path/to/image",
-            "hash": "blake3-...",
-            "mtime": 1,
-            "byte_size": 1,
-          },
-          "info": {
-            "width": 1,
-            "height": 1,
-            // etc bitmap image file metadata
-          }
-        }
-      }
-    ]
-  }
-}
+`GET /api/library/` payload:
+
+- libraries: labels + which filters/groupers/orders are visible in them
+- cabinets: shelves + orders
+- shelves: labels
+- filters / groupers / orders: labels + types
+- actions / interfaces: labels + descriptions
+
+---
+
+## 3. Full-Text Search
+
+Replace the ad-hoc `search` key in `logic/query.rs` (substring over title +
+artist) with a real index.
+
+- Index is built in memory at config-eval time from scalars only.
+- Every registered `media.type(...).tag(key, fn)` becomes an index field
+  automatically; `datamile.search(name, fn)` overrides or adds fields.
+- A field returning non-scalar is a config evaluation error.
+- `GET /api/search?query=` takes a URI-encoded query string, returns `album.id[]`.
+- Syntax error returns an error body; clients freeze the view until a successful
+  response arrives.
+
+Decision pending: Tantivy versus a hand-rolled inverted index. Tantivy is a large
+dependency for a library of ~10^3 albums; measure before committing.
+
+---
+
+## 4. Cover Cache Completion
+
+Already live: master generation, derivative rendering, prewarm endpoint,
+`{size, filter, quality}` cache keys, address = content+params hash.
+Remaining:
+
+- Rename `/api/images/{file}` -> `/api/covers/{address}.{format}`.
+- Rename cache root `{cache_dir}/images/` -> `{cache_dir}/covers/`.
+- Document and freeze the address preimage:
+  `BLAKE3(fit_mode ‖ 0x00 ‖ width_LE ‖ height_LE ‖ filter ‖ 0x00 ‖ source_hash)[..16]`,
+  base64url no-pad.
+- Two-tier GC:
+  - Tier 1, on every update: delete `{cache_dir}/covers/{address}/` trees whose
+    address no longer belongs to any in-memory lock.
+  - Tier 2, derivative TTL: touch mtime on every derivative served; prune
+    derivatives older than `cover_cache_ttl_days` (default 3). `master.qoi` is
+    exempt and owned by tier 1.
+- Verify `ETag` / `If-None-Match` / `Cache-Control: immutable` on the serve path.
+
+---
+
+## 5. Seeded Random Order
+
+Deterministic shuffle as a built-in order:
+
+```
+keys  — list of lock paths, defaults to ["id"]
+seed  — arbitrary string, defaults to ""
 ```
 
-The `address` is a first 16 chars of a `BLAKE3(source.file.hash, width, height, fit, filter) -> URL Safe Base64`.
+Order = radix sort by `BLAKE3(seed ‖ key values)`. Same keys + same seed gives
+the same view on every reload. Implement as a Lua built-in order using
+`d.fn.hash_string`, not Rust.
 
-The master cover is saved under `{cache_dir}/covers/{address}/master.qoi`
+---
 
-## Two Tier Cover Cache GC
+## 6. Actions / `datamile x`
 
-Tier 1: Addressed Based Sweep. On each update of albums sweep delete all `{cache_dir}/covers/{address}/` directories that no longer belong to any album.
+- `--debug` is parsed and discarded (`_debug` in `x::execute`). Wire it up:
+  silence action noise by default, inherit stdout/stderr when set.
+- `datamile x` hands the terminal to the child process, matching
+  `datamile interface`.
+- Rework `musicbrainz_search` out of `actions/rework_needed/`: build
+  `artist:{albumartist} AND releasegroup:{album}` from a lock or a Discogs URL,
+  then `xdg-open` the MB advanced search.
 
-Tier 2: Derivative Time-To-Live. For each `/api/covers/` image served from cache (except `master.qoi`) update its `mtime` to `now`. On each `{cache_dir}/covers/` walk check each derivative image mtime against `cover_cache_ttl_days`. Prune if TTL is over.
+## 7. Interface Polish
 
-## New `tags` and `objects`
+- Derive every white/neutral from one OKLCH white via alpha instead of literal
+  per-element colors.
+- Add a last-played album object so QueueView always has something to render
+  when MPD is idle.
+- Drop inactive elements from the queue sidebar.
 
-Introduce new concepts: `tags` and `objects`.
+---
 
-The `tags` field replaces `keys` and adheres to the standard Vorbis comment notation. The object returned by the `dale.compile.album/track.tag` must be either a scalar, or a scalar list. If false -> throw compilation error. We also nest all root KV scalar data inside `tags` to unify structure. We define their existence through default overrideable Lua config shipped in the binary.
+## Rejected
 
-The `objects` filed has no such restrictions. Any valid JSON object can be written as an `object`. We introduce new `dale.compile.album/track.object` function similar to the `tag` one.
-
-We also introduce some new UI functionality based on existence of supported `tags`, like `musicbrainz_albumid`, etc.
+- `system.toml` / `date_generated` — `local` and `history` manifests cover it.
+- `datamile.compile.album.key` / `.tracks.key` docs — superseded by
+  `media.type(...).tag()` / `.object()`.
+- SQL filter expressions (`sql.where = "..."`) — filters are Lua predicates.
+- Addressable `Set` / `Sequence` / `Facet` primitives with BLAKE3 addresses —
+  `LogicEngine` caches bitmaps already; addresses add nothing over cache keys.
+- `/api/scripts/{name}` — `/api/actions/{name}` is the same thing.
+- `/api/config/files/{name}` — interfaces are separate processes and serve
+  their own assets.
+- Lua-driven manifest engine — media `input` callbacks already read sidecars;
+  no use case that plaintext manifests + Rust manifest do not cover.
+- `dl.*` / `vl.*` config namespace — now `datamile.*` (`d.*`).
+- `metadata.toml` — renamed to `album.toml`.
+- `cover-palette` action wrapper — the `theme` action already emits palettes.

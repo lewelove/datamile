@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -9,21 +11,57 @@ pub struct Chapter {
 }
 
 const ID3_MAGIC: &[u8] = b"ID3";
+const MP4_MAGIC: &[u8] = b"ftyp";
 const CHAP_FRAME: &[u8] = b"CHAP";
 const TIT2_FRAME: &[u8] = b"TIT2";
 const CHPL_ATOM: &[u8] = b"chpl";
+const MAX_ID3_TAG_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CHPL_BYTES: usize = 16 * 1024 * 1024;
+const MAX_MP4_DEPTH: usize = 8;
 
-/// Extract container chapter markers, if any.
+/// Extract container chapter markers without loading audio payloads.
 #[must_use]
 pub fn extract(path: &Path) -> Option<Vec<Chapter>> {
-    let data = std::fs::read(path).ok()?;
-    let mut chapters =
-        parse_id3v2_chapters(&data).or_else(|| parse_mp4_chapters(&data))?;
+    let mut file = File::open(path).ok()?;
+    let mut magic = [0u8; 12];
+    let read = file.read(&mut magic).ok()?;
 
+    let chapters = if read >= 3 && &magic[..3] == ID3_MAGIC {
+        file.seek(SeekFrom::Start(0)).ok()?;
+        read_id3_chapters(&mut file)?
+    } else if read >= 8 && &magic[4..8] == MP4_MAGIC {
+        let end = file.seek(SeekFrom::End(0)).ok()?;
+        walk_mp4(&mut file, 0, end, 0)?
+    } else {
+        return None;
+    };
+
+    normalize(chapters)
+}
+
+fn normalize(mut chapters: Vec<Chapter>) -> Option<Vec<Chapter>> {
     chapters.retain(|chapter| chapter.end_ms >= chapter.start_ms);
     chapters.sort_by_key(|chapter| chapter.start_ms);
 
     (!chapters.is_empty()).then_some(chapters)
+}
+
+fn read_id3_chapters<R: Read>(reader: &mut R) -> Option<Vec<Chapter>> {
+    let mut header = [0u8; 10];
+    reader.read_exact(&mut header).ok()?;
+
+    let size = synchsafe(&header[6..10]);
+    if size > MAX_ID3_TAG_BYTES {
+        return None;
+    }
+
+    let mut tag = Vec::with_capacity(header.len() + size);
+    tag.extend_from_slice(&header);
+    let mut body = vec![0u8; size];
+    reader.read_exact(&mut body).ok()?;
+    tag.extend_from_slice(&body);
+
+    parse_id3v2_chapters(&tag)
 }
 
 fn synchsafe(bytes: &[u8]) -> usize {
@@ -209,55 +247,99 @@ pub fn parse_id3v2_chapters(data: &[u8]) -> Option<Vec<Chapter>> {
     (!chapters.is_empty()).then_some(chapters)
 }
 
-fn atom_type(data: &[u8], pos: usize) -> Option<&[u8]> {
-    data.get(pos + 4..pos + 8)
+fn read_at<R: Read + Seek>(reader: &mut R, pos: u64, buf: &mut [u8]) -> Option<()> {
+    reader.seek(SeekFrom::Start(pos)).ok()?;
+    reader.read_exact(buf).ok()?;
+    Some(())
 }
 
-fn find_chpl(data: &[u8], depth: usize) -> Option<&[u8]> {
-    if depth > 8 {
+const fn is_mp4_container(kind: &[u8]) -> bool {
+    matches!(
+        kind,
+        b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"udta" | b"meta"
+    )
+}
+
+/// Walk top-level boxes by seeking past payloads. `mdat` is never read.
+fn walk_mp4<R: Read + Seek>(
+    reader: &mut R,
+    start: u64,
+    end: u64,
+    depth: usize,
+) -> Option<Vec<Chapter>> {
+    if depth > MAX_MP4_DEPTH || start >= end {
         return None;
     }
 
-    let mut pos = 0usize;
-    while pos + 8 <= data.len() {
-        let size =
-            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
-                as usize;
-        let kind = atom_type(data, pos)?;
-        let header = if size == 1 { 16 } else { 8 };
-        let end = if size == 0 || size == 1 {
-            data.len()
-        } else {
-            (pos + size).min(data.len())
+    let mut pos = start;
+    while pos + 8 <= end {
+        let mut header = [0u8; 16];
+        read_at(reader, pos, &mut header[..8])?;
+
+        let size32 = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+        let kind = [header[4], header[5], header[6], header[7]];
+        let (size, header_len) = match size32 {
+            0 => (end - pos, 8),
+            1 => {
+                read_at(reader, pos + 8, &mut header[8..16])?;
+                let size = u64::from_be_bytes([
+                    header[8], header[9], header[10], header[11], header[12], header[13],
+                    header[14], header[15],
+                ]);
+                (size, 16)
+            }
+            size => (u64::from(size), 8),
         };
-        if end <= pos + header {
-            break;
+
+        if size < header_len {
+            return None;
+        }
+        let atom_end = pos.checked_add(size)?;
+        if atom_end > end {
+            return None;
+        }
+        let payload_start = pos + header_len;
+
+        if kind.as_slice() == CHPL_ATOM {
+            return read_chpl(reader, payload_start, atom_end);
         }
 
-        let payload = &data[pos + header..end];
-        if kind == CHPL_ATOM {
-            return Some(payload);
-        }
-
-        let container = matches!(
-            kind,
-            b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"udta" | b"meta"
-        );
-        if container {
-            let nested = if kind == b"meta" && payload.len() >= 4 {
-                &payload[4..]
+        if is_mp4_container(&kind) {
+            let nested = if kind.as_slice() == b"meta" {
+                payload_start.checked_add(4)?
             } else {
-                payload
+                payload_start
             };
-            if let Some(found) = find_chpl(nested, depth + 1) {
-                return Some(found);
+            if nested < atom_end
+                && let Some(chapters) = walk_mp4(reader, nested, atom_end, depth + 1)
+            {
+                return Some(chapters);
             }
         }
 
-        if size == 0 {
-            break;
+        pos = atom_end;
+    }
+
+    None
+}
+
+fn read_chpl<R: Read + Seek>(
+    reader: &mut R,
+    start: u64,
+    end: u64,
+) -> Option<Vec<Chapter>> {
+    let len = usize::try_from(end.checked_sub(start)?).ok()?;
+    if len > MAX_CHPL_BYTES {
+        return None;
+    }
+
+    let mut payload = vec![0u8; len];
+    read_at(reader, start, &mut payload)?;
+
+    for offset in [8usize, 4usize, 5usize] {
+        if let Some(chapters) = parse_chpl_entries(&payload, offset) {
+            return Some(chapters);
         }
-        pos = end;
     }
 
     None
@@ -290,20 +372,6 @@ fn parse_chpl_entries(data: &[u8], offset: usize) -> Option<Vec<Chapter>> {
     }
 
     (!chapters.is_empty()).then_some(chapters)
-}
-
-/// Parse `QuickTime` `chpl` chapters. Accepts the common reserved-field layouts.
-#[must_use]
-pub fn parse_mp4_chapters(data: &[u8]) -> Option<Vec<Chapter>> {
-    let payload = find_chpl(data, 0)?;
-
-    for offset in [8usize, 4usize, 5usize] {
-        if let Some(chapters) = parse_chpl_entries(payload, offset) {
-            return Some(chapters);
-        }
-    }
-
-    None
 }
 
 #[cfg(test)]

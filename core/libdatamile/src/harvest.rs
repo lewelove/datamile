@@ -1,3 +1,4 @@
+use crate::chapters::Chapter;
 use anyhow::{Context, Result};
 use lofty::config::ParseOptions;
 use lofty::file::AudioFile;
@@ -14,6 +15,8 @@ pub const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "m4a", "m4b", "m4p", "m4r", "m4v", "mp4", "aac", "3gp", "ogg", "oga", "opus", "spx",
     "ape", "wv", "mpc", "mp+", "mpp",
 ];
+
+const HARVEST_CACHE_VERSION: u8 = 2;
 
 #[must_use]
 pub fn is_matching_extension<S: AsRef<str>>(ext: &str, candidates: &[S]) -> bool {
@@ -34,6 +37,8 @@ pub struct TrackJson {
     pub path: PathBuf,
     pub tags: HashMap<String, serde_json::Value>,
     pub physics: PhysicsData,
+    #[serde(default)]
+    pub chapters: Option<Vec<Chapter>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -93,22 +98,30 @@ pub fn harvest_file(path: &Path) -> Result<TrackJson> {
         path: path.to_path_buf(),
         tags,
         physics,
+        chapters: crate::chapters::extract(path),
     })
 }
 
-pub fn harvest_file_cached(path: &Path, cache_root: &Path) -> Result<TrackJson> {
-    let metadata = fs::metadata(path)?;
+pub(crate) fn cache_key(path: &Path, metadata: &fs::Metadata) -> String {
     let mtime = metadata
         .modified()
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let size = metadata.len();
-    let canon_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let key_str = format!(
+        "{HARVEST_CACHE_VERSION}:{}:{}:{mtime}",
+        path.display(),
+        metadata.len()
+    );
 
-    let cache_key_str = format!("{}:{size}:{mtime}", canon_path.display());
-    let key = blake3::hash(cache_key_str.as_bytes()).to_hex().to_string();
+    blake3::hash(key_str.as_bytes()).to_hex().to_string()
+}
+
+pub fn harvest_file_cached(path: &Path, cache_root: &Path) -> Result<TrackJson> {
+    let metadata = fs::metadata(path)?;
+    let canon_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let key = cache_key(&canon_path, &metadata);
 
     let cache_dir = cache_root.join("harvest");
     let cache_file = cache_dir.join(format!("{key}.json"));
@@ -215,3 +228,6 @@ fn extract_tags(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

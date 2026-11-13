@@ -53,15 +53,8 @@ fn write_track(dir: &Path, cache: &Path, name: &str, tags: &Value) {
     fs::write(&path, b"fake audio").expect("write track");
 
     let meta = fs::metadata(&path).expect("metadata");
-    let mtime = meta
-        .modified()
-        .expect("mtime")
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("epoch")
-        .as_nanos();
     let canon = path.canonicalize().expect("canonicalize");
-    let key_str = format!("{}:{}:{mtime}", canon.display(), meta.len());
-    let key = blake3::hash(key_str.as_bytes()).to_hex().to_string();
+    let key = crate::harvest::cache_key(&canon, &meta);
 
     let track = json!({
         "path": path,

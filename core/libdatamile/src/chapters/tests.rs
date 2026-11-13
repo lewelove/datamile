@@ -1,4 +1,14 @@
 use super::*;
+use std::path::{Path, PathBuf};
+
+fn atom(kind: &[u8], payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let size = u32::try_from(payload.len() + 8).unwrap();
+    out.extend_from_slice(&size.to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(payload);
+    out
+}
 
 fn id3_frame(id: &[u8], body: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -39,6 +49,29 @@ fn chap_body(id: &str, start: u32, end: u32, title: &str) -> Vec<u8> {
     body
 }
 
+fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).expect("write fixture");
+    path
+}
+
+fn chpl_payload() -> Vec<u8> {
+    let mut chpl = Vec::new();
+    chpl.extend_from_slice(&[0, 0, 0, 0]);
+    chpl.extend_from_slice(&[0, 0, 0, 0]);
+    chpl.push(2);
+    for (start, title) in [(0u64, "Intro"), (600_000_000, "Main")] {
+        chpl.extend_from_slice(&start.to_be_bytes());
+        chpl.push(u8::try_from(title.len()).unwrap());
+        chpl.extend_from_slice(title.as_bytes());
+    }
+    chpl
+}
+
+fn moov_with_chpl() -> Vec<u8> {
+    atom(b"moov", &atom(CHPL_ATOM, &chpl_payload()))
+}
+
 /// ID3v2.3 CHAP frames map into sorted chapter markers.
 #[test]
 fn parses_id3v23_chapters() {
@@ -53,7 +86,10 @@ fn parses_id3v23_chapters() {
     ));
     let tag = id3_tag(&body);
 
-    let chapters = parse_id3v2_chapters(&tag).expect("chapters");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = write_file(tmp.path(), "track.mp3", &tag);
+
+    let chapters = extract(&path).expect("chapters");
     assert_eq!(
         chapters,
         vec![
@@ -71,32 +107,35 @@ fn parses_id3v23_chapters() {
     );
 }
 
+/// Archived `mdat` boxes may precede `moov`; the walker must honor 64-bit sizes.
+#[test]
+fn extended_mdat_before_moov() {
+    let mut mp4 = atom(b"ftyp", b"isom");
+    let mut mdat = Vec::new();
+    mdat.extend_from_slice(&1u32.to_be_bytes());
+    mdat.extend_from_slice(b"mdat");
+    mdat.extend_from_slice(&24u64.to_be_bytes());
+    mdat.extend_from_slice(b"garbage!");
+    mp4.extend_from_slice(&mdat);
+    mp4.extend_from_slice(&moov_with_chpl());
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = write_file(tmp.path(), "book.m4b", &mp4);
+
+    let chapters = extract(&path).expect("chapters");
+    assert_eq!(chapters[0].title, "Intro");
+}
+
 /// MP4 `chpl` atoms map into chapter markers with derived end times.
 #[test]
 fn parses_mp4_chpl_chapters() {
-    let mut chpl = Vec::new();
-    chpl.extend_from_slice(&[0, 0, 0, 0]);
-    chpl.extend_from_slice(&[0, 0, 0, 0]);
-    chpl.push(2);
-    for (start, title) in [(0u64, "Intro"), (600_000_000, "Main")] {
-        chpl.extend_from_slice(&start.to_be_bytes());
-        chpl.push(u8::try_from(title.len()).unwrap());
-        chpl.extend_from_slice(title.as_bytes());
-    }
+    let mut mp4 = atom(b"ftyp", b"isom");
+    mp4.extend_from_slice(&moov_with_chpl());
 
-    let mut atom = Vec::new();
-    let size = u32::try_from(chpl.len() + 8).unwrap();
-    atom.extend_from_slice(&size.to_be_bytes());
-    atom.extend_from_slice(CHPL_ATOM);
-    atom.extend_from_slice(&chpl);
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = write_file(tmp.path(), "track.m4a", &mp4);
 
-    let mut moov = Vec::new();
-    let size = u32::try_from(atom.len() + 8).unwrap();
-    moov.extend_from_slice(&size.to_be_bytes());
-    moov.extend_from_slice(b"moov");
-    moov.extend_from_slice(&atom);
-
-    let chapters = parse_mp4_chapters(&moov).expect("chapters");
+    let chapters = extract(&path).expect("chapters");
     assert_eq!(chapters.len(), 2);
     assert_eq!(chapters[0].title, "Intro");
     assert_eq!(chapters[1].start_ms, 60_000);

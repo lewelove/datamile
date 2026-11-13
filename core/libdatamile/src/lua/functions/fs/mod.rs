@@ -175,7 +175,7 @@ fn fs_read_audio(lua: &Lua, path_str: Option<String>) -> mlua::Result<Table> {
     }
     out.set("tags", tags)?;
 
-    if let Some(chapters) = crate::chapters::extract(&path) {
+    if let Some(chapters) = track.chapters {
         let list = lua.create_table()?;
         for (index, chapter) in chapters.into_iter().enumerate() {
             let item = lua.create_table()?;

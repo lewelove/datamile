@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod fmt;
 pub mod r#fn;
 pub mod fs;
@@ -20,6 +21,7 @@ pub fn register_all(
 ) -> mlua::Result<()> {
     r#fn::register(lua, datamile_tbl)?;
     fmt::register(lua, datamile_tbl)?;
+    cache::register(lua, datamile_tbl, opts)?;
     fs::register(lua, datamile_tbl, opts)?;
     get::register(lua, datamile_tbl)?;
     iter::register(lua, datamile_tbl)?;

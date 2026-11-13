@@ -232,7 +232,6 @@ fn recompile_single_album(
     if should_write {
         if let Ok(mut active) = active_writes.lock() {
             active.insert(res.lock_path.clone());
-            active.insert(res.lock_path.clone());
         }
         if let Some(parent) = res.lock_path.parent() {
             let _ = std::fs::create_dir_all(parent);

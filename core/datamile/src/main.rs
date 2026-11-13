@@ -128,8 +128,6 @@ struct CompileArgs {
     intermediary: bool,
     #[arg(long)]
     pretty: bool,
-    #[arg(long, value_delimiter = ',')]
-    flags: Vec<String>,
 }
 
 impl CompileArgs {
@@ -148,7 +146,6 @@ impl CompileArgs {
 
         let options = compile::CompileOptions {
             target_path: expanded,
-            flags: self.flags,
             specific_albums: None,
             jobs: None,
             compile_flags: compile::CompileFlags {
@@ -160,7 +157,7 @@ impl CompileArgs {
             active_writes: None,
             verbosity: compile::LogVerbosity::Verbose,
         };
-        let _ = compile::run(options).await?;
+        let _ = compile::run(options).await?.into_result()?;
         Ok(())
     }
 }

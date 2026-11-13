@@ -1,4 +1,4 @@
-use crate::compile::{ExportTarget, LogVerbosity, media};
+use crate::compile::{CompileReport, ExportTarget, LogVerbosity, media};
 use anyhow::Result;
 use rayon::prelude::*;
 use serde_json::Value;
@@ -29,7 +29,7 @@ pub struct StreamContext {
     pub verbosity: LogVerbosity,
 }
 
-pub async fn run(ctx: StreamContext) -> Result<usize> {
+pub async fn run(ctx: StreamContext) -> Result<CompileReport> {
     let (dtx, mut drx) = tokio::sync::mpsc::channel::<CompiledItem>(512);
     let written_count = Arc::new(AtomicUsize::new(0));
     let errors = Arc::new(Mutex::new(None));
@@ -82,11 +82,12 @@ pub async fn run(ctx: StreamContext) -> Result<usize> {
     let _ = build_handle.await;
     let _ = direct_handle.await;
 
-    if let Some(err) = errors.lock().ok().and_then(|mut slot| slot.take()) {
-        return Err(err);
-    }
+    let error = errors.lock().ok().and_then(|mut slot| slot.take());
 
-    Ok(written_count.load(Ordering::Relaxed))
+    Ok(CompileReport {
+        written: written_count.load(Ordering::Relaxed),
+        error,
+    })
 }
 
 fn record_error(errors: &Arc<Mutex<Option<anyhow::Error>>>, err: anyhow::Error) {
@@ -224,7 +225,6 @@ fn finalize(
         if let Some(aw) = active_writes
             && let Ok(mut active) = aw.lock()
         {
-            active.insert(item.lock_path.clone());
             active.insert(item.lock_path.clone());
         } else if verbosity == LogVerbosity::Verbose {
             log::info!(

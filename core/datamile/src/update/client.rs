@@ -91,7 +91,7 @@ pub async fn run(
     let missing_count = missing_paths.len();
     let start_time = std::time::Instant::now();
 
-    let written_count = execute_compile_pass(
+    let report = execute_compile_pass(
         scan_root,
         &work_queue,
         &missing_paths,
@@ -113,7 +113,8 @@ pub async fn run(
     let elapsed = start_time.elapsed().as_millis();
     if verbosity == LogVerbosity::Verbose {
         log::info!(
-            "Update complete: {checked_count} checked ({written_count} modified), {missing_count} removed. Finished in {elapsed}ms."
+            "Update complete: {checked_count} checked ({} modified), {missing_count} removed. Finished in {elapsed}ms.",
+            report.written
         );
     }
 
@@ -124,7 +125,7 @@ pub async fn run(
         log::error!("Failed to persist dependency graph: {e}");
     }
 
-    Ok(())
+    report.into_result().map(|_| ())
 }
 
 async fn execute_compile_pass(
@@ -134,7 +135,7 @@ async fn execute_compile_pass(
     deps_graph: &mut DependencyGraph,
     jobs: Option<usize>,
     verbosity: LogVerbosity,
-) -> Result<usize> {
+) -> Result<compile::CompileReport> {
     let (ingest_tx, mut ingest_rx) =
         tokio::sync::mpsc::channel::<crate::server::api::system::AlbumIngestPayload>(512);
 
@@ -148,7 +149,6 @@ async fn execute_compile_pass(
 
     let compile_options = compile::CompileOptions {
         target_path: scan_root,
-        flags: vec!["default".to_string()],
         specific_albums: Some(work_queue.to_vec()),
         jobs,
         compile_flags: compile::CompileFlags {
@@ -161,12 +161,12 @@ async fn execute_compile_pass(
         verbosity,
     };
 
-    let written_count = compile::run(compile_options).await?;
+    let report = compile::run(compile_options).await?;
     let ingested_payloads = ingest_handle.await.unwrap_or_default();
 
     apply_ingested_deps(ingested_payloads, missing_paths, deps_graph);
 
-    Ok(written_count)
+    Ok(report)
 }
 
 fn apply_ingested_deps(

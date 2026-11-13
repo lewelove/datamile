@@ -33,7 +33,6 @@ pub struct CompileFlags {
 
 pub struct CompileOptions {
     pub target_path: PathBuf,
-    pub flags: Vec<String>,
     pub specific_albums: Option<Vec<PathBuf>>,
     pub jobs: Option<usize>,
     pub compile_flags: CompileFlags,
@@ -43,11 +42,24 @@ pub struct CompileOptions {
     pub verbosity: LogVerbosity,
 }
 
-pub async fn run(mut options: CompileOptions) -> Result<usize> {
-    let config = libdatamile::lua::ResolvedConfig::load().context("Config failed")?;
-    if !options.flags.contains(&"default".to_string()) {
-        options.flags.push("default".to_string());
+/// Outcome of a compile pass. A per-album failure does not abort the batch:
+/// callers persist state for the albums that succeeded, then surface `error`.
+pub struct CompileReport {
+    pub written: usize,
+    pub error: Option<anyhow::Error>,
+}
+
+impl CompileReport {
+    pub fn into_result(self) -> Result<usize> {
+        match self.error {
+            Some(err) => Err(err),
+            None => Ok(self.written),
+        }
     }
+}
+
+pub async fn run(options: CompileOptions) -> Result<CompileReport> {
+    let config = libdatamile::lua::ResolvedConfig::load().context("Config failed")?;
 
     let effective_jobs = options.jobs.or(config.app.compiler.jobs);
     let cache_root = libdatamile::utils::expand_path(&config.app.storage.cache);
@@ -77,7 +89,10 @@ pub async fn run(mut options: CompileOptions) -> Result<usize> {
     };
 
     if roots.is_empty() {
-        return Ok(0);
+        return Ok(CompileReport {
+            written: 0,
+            error: None,
+        });
     }
 
     if options.compile_flags.mode == CompileMode::Intermediary {
@@ -88,7 +103,10 @@ pub async fn run(mut options: CompileOptions) -> Result<usize> {
                 println!("{}", serde_json::to_string(&out)?);
             }
         }
-        return Ok(0);
+        return Ok(CompileReport {
+            written: 0,
+            error: None,
+        });
     }
 
     let ctx = stream::StreamContext {

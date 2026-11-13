@@ -294,7 +294,7 @@ async fn run_server_update_pass(
     let missing_count = missing_paths.len();
     let start_time = std::time::Instant::now();
 
-    let written_count = process_missing_and_compile(
+    let report = process_missing_and_compile(
         &state,
         CompilePassContext {
             scope: &scope,
@@ -322,7 +322,8 @@ async fn run_server_update_pass(
     let elapsed = start_time.elapsed().as_millis();
     emit_log(
         &format!(
-            "Update complete: {checked_count} checked ({written_count} modified), {missing_count} removed. Finished in {elapsed}ms."
+            "Update complete: {checked_count} checked ({} modified), {missing_count} removed. Finished in {elapsed}ms.",
+            report.written
         ),
         verbosity,
         &log_txs,
@@ -331,14 +332,14 @@ async fn run_server_update_pass(
     let _ = fs::write(&lua_hash_file, &lua_hash);
     save_cache(&cache, &base_cache_dir.join("library.json"))?;
 
-    Ok(())
+    report.into_result().map(|_| ())
 }
 
 async fn process_missing_and_compile(
     state: &Arc<AppState>,
     ctx: CompilePassContext<'_>,
     log_txs: &[tokio::sync::mpsc::Sender<String>],
-) -> Result<usize> {
+) -> Result<compile::CompileReport> {
     let (ingest_tx, ingest_handle) =
         spawn_server_ingest_handler(Arc::clone(state), ctx.verbosity, log_txs.to_vec());
 
@@ -385,7 +386,6 @@ async fn process_missing_and_compile(
 
     let compile_options = compile::CompileOptions {
         target_path: scan_root,
-        flags: vec!["default".to_string()],
         specific_albums: Some(ctx.work_queue.to_vec()),
         jobs: ctx.effective_jobs,
         compile_flags: compile::CompileFlags {
@@ -398,9 +398,9 @@ async fn process_missing_and_compile(
         verbosity: ctx.verbosity,
     };
 
-    let written_count = compile::run(compile_options).await?;
+    let report = compile::run(compile_options).await?;
 
     let _ = ingest_handle.await;
 
-    Ok(written_count)
+    Ok(report)
 }

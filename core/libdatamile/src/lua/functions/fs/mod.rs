@@ -216,28 +216,30 @@ fn fs_stat(lua: &Lua, path_str: Option<String>) -> mlua::Result<Option<Table>> {
     Ok(Some(out))
 }
 
+// mlua callbacks must return Result even when the body is infallible.
+#[allow(clippy::unnecessary_wraps)]
 fn fs_ext(_: &Lua, path: Option<String>) -> mlua::Result<Option<String>> {
-    let Some(path) = path else {
-        return Ok(None);
-    };
-
-    Ok(std::path::Path::new(&path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(str::to_ascii_lowercase))
+    Ok(path.and_then(|path| {
+        std::path::Path::new(&path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+    }))
 }
 
+// mlua callbacks must return Result even when the body is infallible.
+#[allow(clippy::unnecessary_wraps)]
 fn fs_stem(_: &Lua, path: Option<String>) -> mlua::Result<Option<String>> {
-    let Some(path) = path else {
-        return Ok(None);
-    };
-
-    Ok(std::path::Path::new(&path)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(ToString::to_string))
+    Ok(path.and_then(|path| {
+        std::path::Path::new(&path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(ToString::to_string)
+    }))
 }
 
+// mlua callbacks must return Result even when the body is infallible.
+#[allow(clippy::unnecessary_wraps)]
 fn fs_is_audio(
     _: &Lua,
     (path, exts): (String, Option<Vec<String>>),
@@ -249,13 +251,15 @@ fn fs_is_audio(
         return Ok(false);
     };
 
-    Ok(match exts {
-        Some(exts) => crate::harvest::is_matching_extension(ext, &exts),
-        None => crate::harvest::is_matching_extension(
-            ext,
-            crate::harvest::SUPPORTED_AUDIO_EXTENSIONS,
-        ),
-    })
+    Ok(exts.map_or_else(
+        || {
+            crate::harvest::is_matching_extension(
+                ext,
+                crate::harvest::SUPPORTED_AUDIO_EXTENSIONS,
+            )
+        },
+        |exts| crate::harvest::is_matching_extension(ext, &exts),
+    ))
 }
 
 fn create_fs_reader(

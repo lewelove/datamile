@@ -434,7 +434,7 @@ pub fn lua_system(
     }
 }
 
-fn launcher() -> &'static str {
+const fn launcher() -> &'static str {
     if cfg!(target_os = "macos") {
         "open"
     } else {

@@ -62,15 +62,22 @@ fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| char::from(b)).collect()
 }
 
-fn utf16(bytes: &[u8], big_endian: bool) -> String {
+#[derive(Clone, Copy)]
+enum Endian {
+    Little,
+    Big,
+}
+
+fn utf16(bytes: &[u8], endian: Endian) -> String {
     let mut units = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
-        let unit = if big_endian {
-            u16::from_be_bytes([pair[0], pair[1]])
-        } else {
-            u16::from_le_bytes([pair[0], pair[1]])
-        };
-        units.push(unit);
+    for pair in bytes.chunks(2) {
+        if let [a, b] = pair {
+            let unit = match endian {
+                Endian::Little => u16::from_le_bytes([*a, *b]),
+                Endian::Big => u16::from_be_bytes([*a, *b]),
+            };
+            units.push(unit);
+        }
     }
 
     String::from_utf16_lossy(&units)
@@ -82,14 +89,14 @@ fn decode_text(bytes: &[u8]) -> Option<String> {
         0 => latin1(body),
         1 => {
             if body.starts_with(&[0xff, 0xfe]) {
-                utf16(&body[2..], false)
+                utf16(&body[2..], Endian::Little)
             } else if body.starts_with(&[0xfe, 0xff]) {
-                utf16(&body[2..], true)
+                utf16(&body[2..], Endian::Big)
             } else {
-                utf16(body, false)
+                utf16(body, Endian::Little)
             }
         }
-        2 => utf16(body, true),
+        2 => utf16(body, Endian::Big),
         3 => String::from_utf8_lossy(body).into_owned(),
         _ => return None,
     };
@@ -146,7 +153,7 @@ fn parse_chap(data: &[u8], major: u8) -> Option<Chapter> {
     })
 }
 
-/// Parse ID3v2 CHAP frames. Unsupported or malformed tags yield `None`.
+/// Parse `ID3v2` CHAP frames. Unsupported or malformed tags yield `None`.
 #[must_use]
 pub fn parse_id3v2_chapters(data: &[u8]) -> Option<Vec<Chapter>> {
     if data.get(..3)? != ID3_MAGIC || data.len() < 10 {
@@ -168,17 +175,18 @@ pub fn parse_id3v2_chapters(data: &[u8]) -> Option<Vec<Chapter>> {
         raw.to_vec()
     };
 
-    let mut pos = 0usize;
-    if flags & 0x40 != 0 {
+    let mut pos = if flags & 0x40 != 0 {
         if body.len() < 4 {
             return None;
         }
-        pos = if major == 4 {
+        if major == 4 {
             synchsafe(&body[..4])
         } else {
             u32_be(&body[..4]) as usize + 4
-        };
-    }
+        }
+    } else {
+        0usize
+    };
 
     let mut chapters = Vec::new();
     while pos + 10 <= body.len() {
@@ -284,7 +292,7 @@ fn parse_chpl_entries(data: &[u8], offset: usize) -> Option<Vec<Chapter>> {
     (!chapters.is_empty()).then_some(chapters)
 }
 
-/// Parse QuickTime `chpl` chapters. Accepts the common reserved-field layouts.
+/// Parse `QuickTime` `chpl` chapters. Accepts the common reserved-field layouts.
 #[must_use]
 pub fn parse_mp4_chapters(data: &[u8]) -> Option<Vec<Chapter>> {
     let payload = find_chpl(data, 0)?;

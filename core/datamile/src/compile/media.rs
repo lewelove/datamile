@@ -40,19 +40,31 @@ impl Drop for CtxGuard<'_> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScopeMode {
+    Recursive,
+    Shallow,
+}
+
+impl ScopeMode {
+    const fn recursive(self) -> bool {
+        matches!(self, Self::Recursive)
+    }
+}
+
 pub fn discover_roots(
     engine: &LuaEngine,
     target: &Path,
     specific: Option<&[PathBuf]>,
 ) -> Result<Vec<(String, Value)>> {
-    discover_roots_in_scope(engine, target, specific, true)
+    discover_roots_in_scope(engine, target, specific, ScopeMode::Recursive)
 }
 
 fn discover_roots_in_scope(
     engine: &LuaEngine,
     target: &Path,
     specific: Option<&[PathBuf]>,
-    recursive: bool,
+    mode: ScopeMode,
 ) -> Result<Vec<(String, Value)>> {
     let mut roots = Vec::new();
     let mut seen = HashSet::new();
@@ -63,12 +75,12 @@ fn discover_roots_in_scope(
                 let mut found = Vec::new();
                 for path in paths {
                     found.extend(
-                        engine.media_select(&root_type, &path_scope(path, recursive))?,
+                        engine.media_select(&root_type, &path_scope(path, mode))?,
                     );
                 }
                 found
             }
-            None => engine.media_select(&root_type, &path_scope(target, recursive))?,
+            None => engine.media_select(&root_type, &path_scope(target, mode))?,
         };
 
         for source in candidates {
@@ -105,7 +117,7 @@ pub fn discover_targets_shallow(
     target: &Path,
 ) -> Result<Vec<RootTarget>> {
     resolve_targets(
-        discover_roots_in_scope(engine, target, None, false)?,
+        discover_roots_in_scope(engine, target, None, ScopeMode::Shallow)?,
         engine,
     )
 }
@@ -122,7 +134,7 @@ fn resolve_targets(
 
         if !target_path.is_dir() {
             return Err(libdatamile::error::DatamileError::RootTargetNotDirectory {
-                root_type: root_type.clone(),
+                root_type,
                 path: target_path,
             }
             .into());
@@ -281,10 +293,10 @@ fn compile_entity(
     Ok(Value::Object(out))
 }
 
-fn path_scope(path: &Path, recursive: bool) -> Value {
+fn path_scope(path: &Path, mode: ScopeMode) -> Value {
     json!({
         "path": path.to_string_lossy(),
-        "recursive": recursive,
+        "recursive": mode.recursive(),
     })
 }
 

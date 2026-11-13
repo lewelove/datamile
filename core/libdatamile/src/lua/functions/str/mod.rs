@@ -5,6 +5,8 @@ use mlua::{Lua, Table};
 
 const LUA_STR: &str = include_str!("mod.lua");
 
+// mlua callbacks must return Result even when the body is infallible.
+#[allow(clippy::unnecessary_wraps)]
 fn natcmp(_: &Lua, (a, b): (String, String)) -> mlua::Result<i32> {
     Ok(match alphanumeric_sort::compare_str(&a, &b) {
         std::cmp::Ordering::Less => -1,

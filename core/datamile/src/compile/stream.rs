@@ -31,7 +31,7 @@ pub struct StreamContext {
     pub verbosity: LogVerbosity,
 }
 
-pub fn register_id(
+pub(super) fn register_id(
     seen: &mut HashMap<String, PathBuf>,
     id: &str,
     lock_path: &Path,

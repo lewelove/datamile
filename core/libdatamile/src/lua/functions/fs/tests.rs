@@ -927,7 +927,7 @@ fn test_d_fs_files_filter_and_natural_sort() {
 
 /// Verify roots selects by marker or predicate, honors pruning, and recursive scopes.
 #[test]
-fn test_d_fs_roots_marker_predicate_and_recursive() {
+fn test_roots_marker_pred() {
     let engine = LuaEngine::new().expect("engine");
     let dir = TempDir::new();
     let root = dir.path_str();

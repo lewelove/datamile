@@ -45,6 +45,15 @@ pub fn discover_roots(
     target: &Path,
     specific: Option<&[PathBuf]>,
 ) -> Result<Vec<(String, Value)>> {
+    discover_roots_in_scope(engine, target, specific, true)
+}
+
+fn discover_roots_in_scope(
+    engine: &LuaEngine,
+    target: &Path,
+    specific: Option<&[PathBuf]>,
+    recursive: bool,
+) -> Result<Vec<(String, Value)>> {
     let mut roots = Vec::new();
     let mut seen = HashSet::new();
 
@@ -53,12 +62,13 @@ pub fn discover_roots(
             Some(paths) => {
                 let mut found = Vec::new();
                 for path in paths {
-                    found
-                        .extend(engine.media_select(&root_type, &recursive_scope(path))?);
+                    found.extend(
+                        engine.media_select(&root_type, &path_scope(path, recursive))?,
+                    );
                 }
                 found
             }
-            None => engine.media_select(&root_type, &recursive_scope(target))?,
+            None => engine.media_select(&root_type, &path_scope(target, recursive))?,
         };
 
         for source in candidates {
@@ -86,8 +96,26 @@ pub fn discover_targets(
     target: &Path,
     specific: Option<&[PathBuf]>,
 ) -> Result<Vec<RootTarget>> {
+    resolve_targets(discover_roots(engine, target, specific)?, engine)
+}
+
+/// Discover roots that anchor directly inside `target` without recursing.
+pub fn discover_targets_shallow(
+    engine: &LuaEngine,
+    target: &Path,
+) -> Result<Vec<RootTarget>> {
+    resolve_targets(
+        discover_roots_in_scope(engine, target, None, false)?,
+        engine,
+    )
+}
+
+fn resolve_targets(
+    roots: Vec<(String, Value)>,
+    engine: &LuaEngine,
+) -> Result<Vec<RootTarget>> {
     let mut out = Vec::new();
-    for (root_type, source) in discover_roots(engine, target, specific)? {
+    for (root_type, source) in roots {
         let target_path = source_path(&source)
             .with_context(|| format!("media type '{root_type}' has no source path"))?
             .to_path_buf();
@@ -253,10 +281,10 @@ fn compile_entity(
     Ok(Value::Object(out))
 }
 
-fn recursive_scope(path: &Path) -> Value {
+fn path_scope(path: &Path, recursive: bool) -> Value {
     json!({
         "path": path.to_string_lossy(),
-        "recursive": true,
+        "recursive": recursive,
     })
 }
 

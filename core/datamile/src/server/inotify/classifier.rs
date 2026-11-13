@@ -7,6 +7,8 @@ pub struct ChangeFlags {
     pub config: bool,
     pub changed_locks: HashSet<PathBuf>,
     pub changed_paths: HashSet<PathBuf>,
+    /// Parent directories whose immediate roots must be rediscovered.
+    pub shallow_paths: HashSet<PathBuf>,
     pub vanished_paths: HashSet<PathBuf>,
 }
 
@@ -30,7 +32,9 @@ fn classify_path_change(
         flags.config = true;
     }
 
+    let mut matched = false;
     if let Some(locks) = ctx.deps_graph.locks_for_file(p_canon) {
+        matched = true;
         flags.changed_locks.extend(locks.iter().cloned());
     }
 
@@ -39,6 +43,7 @@ fn classify_path_change(
             break;
         }
         if let Some(locks) = ctx.deps_graph.locks_for_dir(ancestor) {
+            matched = true;
             flags.changed_locks.extend(locks.iter().cloned());
         }
     }
@@ -52,6 +57,16 @@ fn classify_path_change(
     // A new directory may hold a root whose marker appeared with it.
     if p_canon.is_dir() && p_canon.starts_with(ctx.music_directory) {
         flags.changed_paths.insert(p_canon.to_path_buf());
+        return;
+    }
+
+    // A marker dropped into an untracked folder only reveals a root by
+    // inspecting that folder's immediate children.
+    if !matched
+        && p_canon.starts_with(ctx.music_directory)
+        && let Some(parent) = p_canon.parent()
+    {
+        flags.shallow_paths.insert(parent.to_path_buf());
     }
 }
 
@@ -60,6 +75,7 @@ pub async fn classify_events(paths: &[PathBuf], state: &Arc<AppState>) -> Change
         config: false,
         changed_locks: HashSet::new(),
         changed_paths: HashSet::new(),
+        shallow_paths: HashSet::new(),
         vanished_paths: HashSet::new(),
     };
 
@@ -99,4 +115,60 @@ pub async fn classify_events(paths: &[PathBuf], state: &Arc<AppState>) -> Change
     }
 
     flags
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::state::RootMeta;
+
+    /// Untracked files mark their parent for shallow discovery; files inside a
+    /// watched directory stay on the existing lock path.
+    #[test]
+    fn untracked_file_marks_parent_for_shallow_discovery() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let music = tmp.path().join("music");
+        let untracked = music.join("untracked");
+        let tracked = music.join("tracked");
+        std::fs::create_dir_all(&untracked).expect("untracked");
+        std::fs::create_dir_all(&tracked).expect("tracked");
+        let marker = untracked.join("album.toml");
+        std::fs::write(&marker, b"").expect("marker");
+
+        let lock = tracked.join("album.lock.json");
+        let mut graph = crate::server::state::DependencyGraph::default();
+        graph.update_lock(
+            lock,
+            RootMeta {
+                root_type: "album".to_string(),
+                target: tracked.clone(),
+                files: HashSet::new(),
+                dirs: HashSet::from([tracked.clone()]),
+            },
+        );
+
+        let empty_deps = HashSet::new();
+        let ctx = ClassifierContext {
+            config_dir: Path::new("/config"),
+            music_directory: &music,
+            deps: &empty_deps,
+            deps_graph: &graph,
+        };
+        let mut flags = ChangeFlags {
+            config: false,
+            changed_locks: HashSet::new(),
+            changed_paths: HashSet::new(),
+            shallow_paths: HashSet::new(),
+            vanished_paths: HashSet::new(),
+        };
+
+        let canon = marker.canonicalize().expect("canonicalize");
+        classify_path_change(&marker, &canon, &ctx, &mut flags);
+
+        assert_eq!(
+            flags.shallow_paths,
+            HashSet::from([untracked.canonicalize().expect("canonicalize")])
+        );
+        assert!(flags.changed_locks.is_empty());
+    }
 }

@@ -65,6 +65,7 @@ pub async fn process_events(flags: ChangeFlags, state: &Arc<AppState>) {
 
     if flags.changed_locks.is_empty()
         && flags.changed_paths.is_empty()
+        && flags.shallow_paths.is_empty()
         && flags.vanished_paths.is_empty()
     {
         return;
@@ -105,20 +106,57 @@ pub async fn process_events(flags: ChangeFlags, state: &Arc<AppState>) {
     .await;
 }
 
-async fn resolve_targets(flags: &ChangeFlags, state: &Arc<AppState>) -> HashSet<PathBuf> {
-    let mut targets = HashSet::new();
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum DiscoveryMode {
+    Recursive,
+    Shallow,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct DiscoveryTarget {
+    path: PathBuf,
+    mode: DiscoveryMode,
+}
+
+fn add_target(
+    targets: &mut HashMap<PathBuf, DiscoveryMode>,
+    path: PathBuf,
+    mode: DiscoveryMode,
+) {
+    match targets.get(&path) {
+        Some(DiscoveryMode::Recursive) => {}
+        _ => {
+            targets.insert(path, mode);
+        }
+    }
+}
+
+async fn resolve_targets(
+    flags: &ChangeFlags,
+    state: &Arc<AppState>,
+) -> HashSet<DiscoveryTarget> {
+    let mut targets = HashMap::new();
 
     {
         let graph = state.deps_graph.read().await;
         for lock in &flags.changed_locks {
             if let Some(meta) = graph.lock_to_meta.get(lock) {
-                targets.insert(meta.target.clone());
+                add_target(&mut targets, meta.target.clone(), DiscoveryMode::Recursive);
             }
         }
     }
 
-    targets.extend(flags.changed_paths.iter().cloned());
+    for path in &flags.changed_paths {
+        add_target(&mut targets, path.clone(), DiscoveryMode::Recursive);
+    }
+    for path in &flags.shallow_paths {
+        add_target(&mut targets, path.clone(), DiscoveryMode::Shallow);
+    }
+
     targets
+        .into_iter()
+        .map(|(path, mode)| DiscoveryTarget { path, mode })
+        .collect()
 }
 
 #[derive(Default)]
@@ -137,7 +175,7 @@ struct RecompileOutcome {
 }
 
 async fn recompile_targets(
-    targets: HashSet<PathBuf>,
+    targets: HashSet<DiscoveryTarget>,
     active_writes: Arc<Mutex<HashSet<PathBuf>>>,
     config_path: PathBuf,
 ) -> RecompileOutcome {
@@ -159,7 +197,7 @@ async fn recompile_targets(
 
         targets
             .into_par_iter()
-            .filter(|p| p.exists())
+            .filter(|target| target.path.exists())
             .map_init(
                 || {
                     libdatamile::lua::LuaEngine::new().ok().and_then(
@@ -180,12 +218,26 @@ async fn recompile_targets(
                         return outcome;
                     };
 
-                    let Ok(roots) = crate::compile::media::discover_targets(
-                        engine,
-                        &target,
-                        Some(std::slice::from_ref(&target)),
-                    ) else {
-                        log::error!("Root discovery failed for {}", target.display());
+                    let discovered = match target.mode {
+                        DiscoveryMode::Recursive => {
+                            crate::compile::media::discover_targets(
+                                engine,
+                                &target.path,
+                                Some(std::slice::from_ref(&target.path)),
+                            )
+                        }
+                        DiscoveryMode::Shallow => {
+                            crate::compile::media::discover_targets_shallow(
+                                engine,
+                                &target.path,
+                            )
+                        }
+                    };
+                    let Ok(roots) = discovered else {
+                        log::error!(
+                            "Root discovery failed for {}",
+                            target.path.display()
+                        );
                         return outcome;
                     };
 

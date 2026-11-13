@@ -47,3 +47,45 @@ fn test_filter_noop_on_empty_inputs() {
 
     assert!(removed_ids.is_empty());
 }
+
+use libdatamile::lua::LuaEngine;
+use std::fs;
+
+/// A marker dropped into a pre-existing untracked directory is found by a
+/// shallow discovery pass and compiles into a lock.
+#[test]
+fn shallow_discovery_compiles_new_marker() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let music = tmp.path().join("music");
+    let album = music.join("New Album");
+    fs::create_dir_all(&album).expect("album dir");
+
+    let engine = LuaEngine::new().expect("engine");
+    let code = r#"
+        d.media.type("album")
+        d.compile.album.lock(function(source)
+            return d.fs.joinpath(source.path, "album.lock.json")
+        end)
+        d.compile.album.select(function(scope)
+            return d.fs.roots(scope, "album.toml")
+        end)
+        d.compile.album.id(function(ctx) return "new-album" end)
+    "#;
+    engine.lua.load(code).exec().expect("register");
+
+    let before = crate::compile::media::discover_targets_shallow(&engine, &album)
+        .expect("shallow before");
+    assert!(before.is_empty());
+
+    fs::write(album.join("album.toml"), b"[album]").expect("marker");
+
+    let roots = crate::compile::media::discover_targets_shallow(&engine, &album)
+        .expect("shallow after");
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].target, album);
+
+    let build = crate::compile::media::compile_root(&engine, &roots[0], tmp.path())
+        .expect("compile");
+    assert_eq!(build.id, "new-album");
+    assert!(build.lock_path.ends_with("album.lock.json"));
+}

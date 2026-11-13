@@ -82,7 +82,7 @@ pub struct LogicEngine {
     pub(crate) shelves_cache: HashMap<String, Vec<u32>>,
     pub(crate) next_uid: u32,
     pub albums: HashMap<u32, AlbumRecord>,
-    pub id_to_uid: HashMap<(String, String), u32>,
+    pub id_to_uid: HashMap<String, u32>,
     pub lock_to_uid: HashMap<PathBuf, u32>,
     pub cover_lookup: HashMap<String, CoverLookupItem>,
     pub track_lookup: HashMap<String, TrackLookupItem>,
@@ -161,8 +161,7 @@ impl LogicEngine {
             return;
         };
 
-        self.id_to_uid
-            .remove(&(record.root_type.clone(), record.id.clone()));
+        self.id_to_uid.remove(&record.id);
         self.lock_to_uid.remove(&record.lock_path);
 
         for uri in &record.track_uris {
@@ -174,11 +173,9 @@ impl LogicEngine {
         }
     }
 
-    /// Any entity carrying this id, regardless of root type.
+    #[must_use]
     pub fn uid_for_id(&self, id: &str) -> Option<u32> {
-        self.id_to_uid
-            .iter()
-            .find_map(|((_, candidate), uid)| (candidate == id).then_some(*uid))
+        self.id_to_uid.get(id).copied()
     }
 
     fn validate_and_cleanup(
@@ -188,13 +185,12 @@ impl LogicEngine {
         target: &Path,
         id: &str,
     ) -> Result<()> {
-        let key = (root_type.to_string(), id.to_string());
-        if let Some(existing_uid) = self.id_to_uid.get(&key)
+        if let Some(existing_uid) = self.id_to_uid.get(id)
             && let Some(existing) = self.albums.get(existing_uid)
             && existing.lock_path != lock_path
         {
             if existing.lock_path.exists() {
-                return Err(DatamileError::DuplicateAlbumId {
+                return Err(DatamileError::DuplicateMediaId {
                     id: id.to_string(),
                     path_a: existing.lock_path.clone(),
                     path_b: lock_path.to_path_buf(),
@@ -455,8 +451,7 @@ impl LogicEngine {
         };
 
         self.albums.insert(uid, record);
-        self.id_to_uid
-            .insert((root_type.to_string(), entity_id), uid);
+        self.id_to_uid.insert(entity_id, uid);
         self.lock_to_uid.insert(lock_path, uid);
         self.evaluated_logic.insert(uid, eval_res);
 
@@ -471,10 +466,9 @@ impl LogicEngine {
 
     #[must_use]
     pub fn get_entity(&self, root_type: &str, id: &str) -> Option<&AlbumRecord> {
-        let uid = self
-            .id_to_uid
-            .get(&(root_type.to_string(), id.to_string()))?;
-        self.albums.get(uid)
+        let uid = self.id_to_uid.get(id)?;
+        let record = self.albums.get(uid)?;
+        (record.root_type == root_type).then_some(record)
     }
 
     #[must_use]
@@ -557,3 +551,6 @@ fn first_tag(tags: &Value, keys: &[&str]) -> String {
         .unwrap_or("Unknown")
         .to_string()
 }
+
+#[cfg(test)]
+mod tests;

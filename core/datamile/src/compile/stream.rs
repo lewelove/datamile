@@ -2,8 +2,8 @@ use crate::compile::{CompileReport, ExportTarget, LogVerbosity, media};
 use anyhow::Result;
 use rayon::prelude::*;
 use serde_json::Value;
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -31,6 +31,27 @@ pub struct StreamContext {
     pub verbosity: LogVerbosity,
 }
 
+pub fn register_id(
+    seen: &mut HashMap<String, PathBuf>,
+    id: &str,
+    lock_path: &Path,
+) -> Result<()> {
+    if let Some(existing) = seen.get(id) {
+        if existing != lock_path {
+            return Err(libdatamile::error::DatamileError::DuplicateMediaId {
+                id: id.to_string(),
+                path_a: existing.clone(),
+                path_b: lock_path.to_path_buf(),
+            }
+            .into());
+        }
+        return Ok(());
+    }
+
+    seen.insert(id.to_string(), lock_path.to_path_buf());
+    Ok(())
+}
+
 pub async fn run(ctx: StreamContext) -> Result<CompileReport> {
     let (dtx, mut drx) = tokio::sync::mpsc::channel::<CompiledItem>(512);
     let written_count = Arc::new(AtomicUsize::new(0));
@@ -46,7 +67,13 @@ pub async fn run(ctx: StreamContext) -> Result<CompileReport> {
     let direct_errors = Arc::clone(&errors);
 
     let direct_handle = tokio::spawn(async move {
+        let mut seen_ids = HashMap::new();
         while let Some(item) = drx.recv().await {
+            if let Err(err) = register_id(&mut seen_ids, &item.id, &item.lock_path) {
+                record_error(&direct_errors, err);
+                continue;
+            }
+
             let written_inner = Arc::clone(&written_ref);
             let active_ref = active_writes.clone();
             let lock_path = item.lock_path.clone();

@@ -115,3 +115,49 @@ fn compile_root_records_entity_directory() {
         build.dirs
     );
 }
+
+/// Root selections must resolve to an existing directory (Law 1).
+#[test]
+fn discover_rejects_non_directory_roots() {
+    let tmp = tempdir().expect("tempdir");
+    let file = tmp.path().join("film.mkv");
+    fs::write(&file, b"film").expect("file");
+
+    let engine = LuaEngine::new().expect("engine");
+    let code = r#"
+        d.media.type("film")
+        d.compile.film.lock(function(source) return source.path .. ".lock.json" end)
+        d.compile.film.select(function(scope) return { { path = scope.path } } end)
+    "#;
+    engine.lua.load(code).exec().expect("register");
+
+    let err = super::discover_targets(&engine, &file, None).expect_err("file root");
+    assert!(err.to_string().contains("not an existing directory"));
+
+    let missing = tmp.path().join("missing");
+    let err = super::discover_targets(&engine, &missing, None).expect_err("missing root");
+    assert!(err.to_string().contains("not an existing directory"));
+}
+
+/// Two distinct lockfiles may not compile to the same id (Law 2).
+#[test]
+fn compiler_rejects_duplicate_media_ids() {
+    let mut seen = std::collections::HashMap::new();
+    let film_lock = Path::new("/films/Dune/Dune.lock.json");
+    let audio_lock = Path::new("/books/Dune/Dune.lock.json");
+
+    super::super::stream::register_id(&mut seen, "Dune", film_lock).expect("first id");
+    let err = super::super::stream::register_id(&mut seen, "Dune", audio_lock)
+        .expect_err("duplicate id");
+    assert!(err.to_string().contains("Duplicate Media ID"));
+}
+
+/// Re-emitting the same id for the same lockfile is not a collision.
+#[test]
+fn compiler_allows_same_lock_duplicate_id() {
+    let mut seen = std::collections::HashMap::new();
+    let lock = Path::new("/films/Dune/Dune.lock.json");
+
+    super::super::stream::register_id(&mut seen, "Dune", lock).expect("first");
+    super::super::stream::register_id(&mut seen, "Dune", lock).expect("second");
+}

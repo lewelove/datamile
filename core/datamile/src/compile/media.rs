@@ -92,6 +92,14 @@ pub fn discover_targets(
             .with_context(|| format!("media type '{root_type}' has no source path"))?
             .to_path_buf();
 
+        if !target_path.is_dir() {
+            return Err(libdatamile::error::DatamileError::RootTargetNotDirectory {
+                root_type: root_type.clone(),
+                path: target_path,
+            }
+            .into());
+        }
+
         let Some(lock_path) = engine.media_lock(&root_type, &source)? else {
             continue;
         };

@@ -82,12 +82,17 @@ pub enum DatamileError {
         found: String,
     },
 
-    #[error("Duplicate Album ID '{id}': defined in both {path_a} and {path_b}")]
-    DuplicateAlbumId {
+    #[error("Duplicate Media ID '{id}': defined in both {path_a} and {path_b}")]
+    DuplicateMediaId {
         id: String,
         path_a: PathBuf,
         path_b: PathBuf,
     },
+
+    #[error(
+        "Root media type '{root_type}' selected {path}, which is not an existing directory"
+    )]
+    RootTargetNotDirectory { root_type: String, path: PathBuf },
 
     #[error("Invalid Cover Fit in {path} for '{namespace}': {message}")]
     InvalidCoverFit {

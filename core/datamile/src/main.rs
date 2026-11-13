@@ -1,6 +1,7 @@
 mod compile;
 mod harvest;
 mod interface;
+mod logging;
 mod manifest;
 mod query;
 mod server;
@@ -150,6 +151,7 @@ impl CompileArgs {
             },
             ingest_tx: None,
             active_writes: None,
+            log_txs: Vec::new(),
             verbosity: compile::LogVerbosity::Verbose,
         };
         let _ = compile::run(options).await?.into_result()?;

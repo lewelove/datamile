@@ -263,9 +263,56 @@ fn overlapping_scope_paths_dedupe_roots() {
         effective_jobs: Some(1),
         tracked: None,
         verbosity: LogVerbosity::Silent,
+        log_txs: &[],
     };
 
     let queue = resolve_work_queue(&ctx).expect("queue");
     assert_eq!(queue.roots.len(), 1);
     assert_eq!(queue.roots[0].target, album);
+}
+
+/// Progress messages reach every log subscriber, not just the server log.
+#[test]
+fn verifying_message_reaches_log_txs() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize");
+    let album = root.join("album");
+    fs::create_dir_all(&album).expect("album dir");
+    fs::write(album.join("album.toml"), b"[album]").expect("marker");
+    fs::write(album.join("album.lock.json"), b"{}").expect("lock");
+
+    let engine = LuaEngine::new().expect("engine");
+    let code = r#"
+        d.media.type("album")
+        d.compile.album.lock(function(t) return t.path .. "/album.lock.json" end)
+        d.compile.album.select(function(scope)
+            local marker = d.fs.joinpath(scope.path, "album.toml")
+            if d.fs.exists(marker) then
+                return { { path = scope.path } }
+            end
+            return {}
+        end)
+    "#;
+    engine.lua.load(code).exec().expect("register");
+
+    let scope = UpdateScope::Paths(HashSet::from([album]));
+    let cache = LibraryCache::new();
+    let graph = DependencyGraph::default();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let ctx = WorkQueueContext {
+        engine: &engine,
+        scope: &scope,
+        media_directory: &root,
+        cache: &cache,
+        deps_graph: &graph,
+        force: ForceMode::Force,
+        effective_jobs: Some(1),
+        tracked: None,
+        verbosity: LogVerbosity::Verbose,
+        log_txs: &[tx],
+    };
+
+    resolve_work_queue(&ctx).expect("queue");
+
+    assert_eq!(rx.try_recv().expect("message"), "Verifying 1 entities...");
 }

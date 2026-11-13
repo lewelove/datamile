@@ -1,4 +1,5 @@
 use crate::compile::{self, LogVerbosity};
+use crate::logging;
 use crate::server::state::RootMeta;
 use crate::server::state::{DependencyGraph, UpdateScope};
 use crate::update::cache::{
@@ -50,7 +51,7 @@ pub async fn run(
     let mut deps_graph = DependencyGraph::load_from_file(&deps_json_path);
 
     let (config_changed, lua_hash_file, lua_hash) =
-        check_lua_config_changed(&config.dependencies, &cache_root, verbosity);
+        check_lua_config_changed(&config.dependencies, &cache_root, verbosity, &[]);
     let effective_force = match force {
         ForceMode::Force => ForceMode::Force,
         ForceMode::Preserve => {
@@ -81,13 +82,12 @@ pub async fn run(
             effective_jobs,
             tracked: None,
             verbosity,
+            log_txs: &[],
         })?
     };
 
     if queue.roots.is_empty() && queue.missing.is_empty() {
-        if verbosity == LogVerbosity::Verbose {
-            log::info!("Library is up to date.");
-        }
+        logging::emit("Library is up to date.", verbosity, &[]);
         let _ = fs::write(&lua_hash_file, &lua_hash);
         save_cache(&cache, &base_cache_dir.join("library.json"))?;
         deps_graph.prune();
@@ -101,6 +101,8 @@ pub async fn run(
     let missing_count = queue.missing.len();
     let start_time = std::time::Instant::now();
 
+    apply_missing(&queue.missing, &mut deps_graph, verbosity);
+
     let report = execute_compile_pass(
         scan_root,
         &queue.roots,
@@ -110,16 +112,17 @@ pub async fn run(
     )
     .await?;
 
-    apply_missing(&queue.missing, &mut deps_graph);
     rebuild_cache(&mut cache, &deps_graph);
 
     let elapsed = start_time.elapsed().as_millis();
-    if verbosity == LogVerbosity::Verbose {
-        log::info!(
+    logging::emit(
+        &format!(
             "Update complete: {checked_count} checked ({} modified), {missing_count} removed. Finished in {elapsed}ms.",
             report.written
-        );
-    }
+        ),
+        verbosity,
+        &[],
+    );
 
     let _ = fs::write(&lua_hash_file, &lua_hash);
     save_cache(&cache, &base_cache_dir.join("library.json"))?;
@@ -161,6 +164,7 @@ async fn execute_compile_pass(
         },
         ingest_tx: Some(ingest_tx),
         active_writes: None,
+        log_txs: Vec::new(),
         verbosity,
     };
 
@@ -194,8 +198,17 @@ fn apply_ingested_deps(
     }
 }
 
-fn apply_missing(missing: &[PathBuf], deps_graph: &mut DependencyGraph) {
+fn apply_missing(
+    missing: &[PathBuf],
+    deps_graph: &mut DependencyGraph,
+    verbosity: LogVerbosity,
+) {
     for lock in missing {
+        let id = lock
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_string())
+            .unwrap_or_default();
+        logging::emit(&format!("Removed entity: {id}"), verbosity, &[]);
         deps_graph.remove_lock(lock);
     }
 }

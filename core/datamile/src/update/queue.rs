@@ -1,5 +1,6 @@
 use crate::compile::LogVerbosity;
 use crate::compile::media::{RootTarget, discover_targets};
+use crate::logging::{self, LogTx};
 use crate::server::state::{DependencyGraph, UpdateScope};
 use crate::update::cache::{FileStat, LibraryCache};
 use crate::update::client::ForceMode;
@@ -21,6 +22,7 @@ pub struct WorkQueueContext<'a> {
     /// Lock paths the server already tracks; avoids a full discovery walk.
     pub tracked: Option<Vec<PathBuf>>,
     pub verbosity: LogVerbosity,
+    pub log_txs: &'a [LogTx],
 }
 
 pub struct WorkQueue {
@@ -53,8 +55,9 @@ pub fn resolve_work_queue(ctx: &WorkQueueContext<'_>) -> Result<WorkQueue> {
     missing.sort();
     missing.dedup();
 
-    if ctx.verbosity == LogVerbosity::Verbose && !roots.is_empty() {
-        log::info!("Verifying {} entities...", roots.len());
+    if !roots.is_empty() {
+        let msg = format!("Verifying {} entities...", roots.len());
+        logging::emit(&msg, ctx.verbosity, ctx.log_txs);
     }
 
     let cache = CacheIndex::new(ctx.cache);
@@ -190,14 +193,19 @@ pub fn check_lua_config_changed(
     dependencies: &[PathBuf],
     cache_root: &Path,
     verbosity: LogVerbosity,
+    log_txs: &[LogTx],
 ) -> (bool, PathBuf, String) {
     let lua_hash = crate::update::cache::get_lua_config_hash(dependencies);
     let lua_hash_file = cache_root.join("config.blake3");
     let previous_lua_hash = fs::read_to_string(&lua_hash_file).unwrap_or_default();
     let config_changed = lua_hash != previous_lua_hash;
 
-    if config_changed && verbosity == LogVerbosity::Verbose {
-        log::info!("Lua configuration changed. Re-evaluating entity locks...");
+    if config_changed {
+        logging::emit(
+            "Lua configuration changed. Re-evaluating entity locks...",
+            verbosity,
+            log_txs,
+        );
     }
 
     (config_changed, lua_hash_file, lua_hash)

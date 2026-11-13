@@ -28,6 +28,7 @@ pub struct StreamContext {
         tokio::sync::mpsc::Sender<crate::server::api::system::EntityIngestPayload>,
     >,
     pub active_writes: Option<Arc<Mutex<HashSet<PathBuf>>>>,
+    pub log_txs: Vec<crate::logging::LogTx>,
     pub verbosity: LogVerbosity,
 }
 
@@ -63,6 +64,7 @@ pub async fn run(ctx: StreamContext) -> Result<CompileReport> {
     let written_ref = Arc::clone(&written_count);
     let ingest_tx = ctx.ingest_tx;
     let active_writes = ctx.active_writes.clone();
+    let log_txs = ctx.log_txs;
     let verbosity = ctx.verbosity;
     let direct_errors = Arc::clone(&errors);
 
@@ -76,9 +78,10 @@ pub async fn run(ctx: StreamContext) -> Result<CompileReport> {
 
             let written_inner = Arc::clone(&written_ref);
             let active_ref = active_writes.clone();
+            let txs = log_txs.clone();
             let lock_path = item.lock_path.clone();
             let res = tokio::task::spawn_blocking(move || {
-                finalize(item, target, active_ref.as_ref(), verbosity)
+                finalize(item, target, active_ref.as_ref(), &txs, verbosity)
             })
             .await;
 
@@ -221,6 +224,7 @@ fn finalize(
     item: CompiledItem,
     target: ExportTarget,
     active_writes: Option<&Arc<Mutex<HashSet<PathBuf>>>>,
+    log_txs: &[crate::logging::LogTx],
     verbosity: LogVerbosity,
 ) -> Result<(
     bool,
@@ -253,13 +257,14 @@ fn finalize(
             && let Ok(mut active) = aw.lock()
         {
             active.insert(item.lock_path.clone());
-        } else if verbosity == LogVerbosity::Verbose {
-            log::info!(
-                "Updated {} lock: {}",
-                item.root_type,
-                item.lock_path.display()
-            );
         }
+
+        let msg = format!(
+            "Updated {} lock: {}",
+            item.root_type,
+            item.lock_path.display()
+        );
+        crate::logging::emit(&msg, verbosity, log_txs);
         if let Some(parent) = item.lock_path.parent() {
             std::fs::create_dir_all(parent)?;
         }

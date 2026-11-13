@@ -40,6 +40,7 @@ pub struct CompileOptions {
         tokio::sync::mpsc::Sender<crate::server::api::system::EntityIngestPayload>,
     >,
     pub active_writes: Option<Arc<Mutex<HashSet<PathBuf>>>>,
+    pub log_txs: Vec<crate::logging::LogTx>,
     pub verbosity: LogVerbosity,
 }
 
@@ -118,6 +119,7 @@ pub async fn run(options: CompileOptions) -> Result<CompileReport> {
         jobs: effective_jobs,
         ingest_tx: options.ingest_tx,
         active_writes: options.active_writes,
+        log_txs: options.log_txs,
         verbosity: options.verbosity,
     };
 

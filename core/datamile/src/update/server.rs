@@ -1,4 +1,5 @@
 use crate::compile::{self, LogVerbosity};
+use crate::logging;
 use crate::server::inotify::handler::{IngestOrigin, RecompiledAlbumItem};
 use crate::server::state::{AppState, PendingUpdateParams, UpdateScope};
 use crate::update::cache::{
@@ -25,29 +26,8 @@ pub struct CompilePassContext<'a> {
     pub verbosity: LogVerbosity,
 }
 
-pub fn emit_log(
-    msg: &str,
-    verbosity: LogVerbosity,
-    log_txs: &[tokio::sync::mpsc::Sender<String>],
-) {
-    if verbosity == LogVerbosity::Verbose {
-        log::info!("{msg}");
-    }
-    for tx in log_txs {
-        if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) =
-            tx.try_send(msg.to_string())
-        {
-            log::warn!(
-                "Update log receiver queue full; dropping message for stream subscriber."
-            );
-        }
-    }
-}
-
 pub fn spawn_server_ingest_handler(
     state: Arc<AppState>,
-    verbosity: LogVerbosity,
-    log_txs: Vec<tokio::sync::mpsc::Sender<String>>,
 ) -> (
     tokio::sync::mpsc::Sender<crate::server::api::system::EntityIngestPayload>,
     tokio::task::JoinHandle<()>,
@@ -71,19 +51,11 @@ pub fn spawn_server_ingest_handler(
 
             let mut vanished = HashSet::new();
             let mut items = Vec::with_capacity(batch.len());
-            let mut logs = Vec::new();
 
             for payload in batch {
                 if payload.eval_res.is_none() {
                     vanished.insert(payload.lock_path);
                     continue;
-                }
-
-                if payload.modified
-                    && !payload.lock_json.is_empty()
-                    && !payload.id.is_empty()
-                {
-                    logs.push(format!("Updated lock: {}", payload.id));
                 }
 
                 items.push(RecompiledAlbumItem::from(payload));
@@ -96,10 +68,6 @@ pub fn spawn_server_ingest_handler(
                 &state,
             )
             .await;
-
-            for log_msg in &logs {
-                emit_log(log_msg, verbosity, &log_txs);
-            }
         }
     });
 
@@ -173,7 +141,7 @@ pub async fn run_server_update(
 
         if let Err(ref e) = res {
             let err_msg = format!("Update failed: {e}");
-            emit_log(&err_msg, current_verbosity, &current_log_txs);
+            logging::emit(&err_msg, current_verbosity, &current_log_txs);
         }
 
         last_res = res;
@@ -241,7 +209,7 @@ async fn run_server_update_pass(
     let mut cache = load_cache(&base_cache_dir.join("library.json"));
 
     let (config_changed, lua_hash_file, lua_hash) =
-        check_lua_config_changed(&dependencies, &cache_root, verbosity);
+        check_lua_config_changed(&dependencies, &cache_root, verbosity, &log_txs);
     let effective_force = match force {
         ForceMode::Force => ForceMode::Force,
         ForceMode::Preserve => {
@@ -277,11 +245,12 @@ async fn run_server_update_pass(
             effective_jobs,
             tracked,
             verbosity,
+            log_txs: &log_txs,
         })?
     };
 
     if queue.roots.is_empty() && queue.missing.is_empty() {
-        emit_log("Library is up to date.", verbosity, &log_txs);
+        logging::emit("Library is up to date.", verbosity, &log_txs);
         let _ = fs::write(&lua_hash_file, &lua_hash);
         save_cache(&cache, &base_cache_dir.join("library.json"))?;
         let deps_json_path = deps_graph_path(&cache_root, &media_directory);
@@ -320,7 +289,7 @@ async fn run_server_update_pass(
     drop(deps_graph_guard);
 
     let elapsed = start_time.elapsed().as_millis();
-    emit_log(
+    logging::emit(
         &format!(
             "Update complete: {checked_count} checked ({} modified), {missing_count} removed. Finished in {elapsed}ms.",
             report.written
@@ -340,15 +309,14 @@ async fn process_missing_and_compile(
     ctx: CompilePassContext<'_>,
     log_txs: &[tokio::sync::mpsc::Sender<String>],
 ) -> Result<compile::CompileReport> {
-    let (ingest_tx, ingest_handle) =
-        spawn_server_ingest_handler(Arc::clone(state), ctx.verbosity, log_txs.to_vec());
+    let (ingest_tx, ingest_handle) = spawn_server_ingest_handler(Arc::clone(state));
 
     for lock in ctx.missing {
         let id = lock
             .file_stem()
             .map(|stem| stem.to_string_lossy().to_string())
             .unwrap_or_default();
-        emit_log(&format!("Removed entity: {id}"), ctx.verbosity, log_txs);
+        logging::emit(&format!("Removed entity: {id}"), ctx.verbosity, log_txs);
         let _ = ingest_tx
             .send(crate::server::api::system::EntityIngestPayload {
                 root_type: String::new(),
@@ -386,6 +354,7 @@ async fn process_missing_and_compile(
         },
         ingest_tx: Some(ingest_tx),
         active_writes: Some(Arc::clone(&state.active_writes)),
+        log_txs: log_txs.to_vec(),
         verbosity: ctx.verbosity,
     };
 

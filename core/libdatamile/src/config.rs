@@ -45,6 +45,7 @@ pub struct InterfaceDef {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct StorageConfig {
+    #[serde(alias = "media_directory")]
     pub music_directory: String,
     pub cache: String,
     pub state: String,

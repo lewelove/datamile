@@ -236,10 +236,16 @@ pub fn parse_id3v2_chapters(data: &[u8]) -> Option<Vec<Chapter>> {
         if size == 0 || pos + 10 + size > body.len() {
             break;
         }
-        if frame_id == CHAP_FRAME
-            && let Some(chapter) = parse_chap(&body[pos + 10..pos + 10 + size], major)
-        {
-            chapters.push(chapter);
+        if frame_id == CHAP_FRAME {
+            let raw = &body[pos + 10..pos + 10 + size];
+            let data = if major == 4 && body[pos + 9] & 0x02 != 0 {
+                deunsync(raw)
+            } else {
+                raw.to_vec()
+            };
+            if let Some(chapter) = parse_chap(&data, major) {
+                chapters.push(chapter);
+            }
         }
         pos += 10 + size;
     }
@@ -336,13 +342,27 @@ fn read_chpl<R: Read + Seek>(
     let mut payload = vec![0u8; len];
     read_at(reader, start, &mut payload)?;
 
-    for offset in [8usize, 4usize, 5usize] {
-        if let Some(chapters) = parse_chpl_entries(&payload, offset) {
-            return Some(chapters);
-        }
+    let offset = match payload.first() {
+        Some(0) => 4,
+        Some(1) => 8,
+        _ => return None,
+    };
+    parse_chpl_entries(&payload, offset)
+}
+
+/// Give the last `chpl` chapter the file duration it cannot encode.
+#[must_use]
+pub(crate) fn close_last_chapter(
+    mut chapters: Vec<Chapter>,
+    duration_ms: u64,
+) -> Vec<Chapter> {
+    if let Some(last) = chapters.last_mut()
+        && last.end_ms == last.start_ms
+    {
+        last.end_ms = duration_ms.max(last.start_ms);
     }
 
-    None
+    chapters
 }
 
 fn parse_chpl_entries(data: &[u8], offset: usize) -> Option<Vec<Chapter>> {

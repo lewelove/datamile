@@ -16,7 +16,7 @@ pub const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "ape", "wv", "mpc", "mp+", "mpp",
 ];
 
-const HARVEST_CACHE_VERSION: u8 = 2;
+const HARVEST_CACHE_VERSION: u8 = 3;
 
 #[must_use]
 pub fn is_matching_extension<S: AsRef<str>>(ext: &str, candidates: &[S]) -> bool {
@@ -94,11 +94,15 @@ pub fn harvest_file(path: &Path) -> Result<TrackJson> {
     let mut tags = HashMap::new();
     extract_tags(&tagged_file, &mut tags);
 
+    let chapters = crate::chapters::extract(path).map(|chapters| {
+        crate::chapters::close_last_chapter(chapters, physics.duration_ms)
+    });
+
     Ok(TrackJson {
         path: path.to_path_buf(),
         tags,
         physics,
-        chapters: crate::chapters::extract(path),
+        chapters,
     })
 }
 

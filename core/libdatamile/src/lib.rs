@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod chapters;
 pub mod compiler;
 pub mod config;
 pub mod error;

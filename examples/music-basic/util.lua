@@ -40,22 +40,18 @@ function M.cover(path)
 end
 
 function M.info(tracks)
-    local duration = 0
     local discs = {}
-
     for _, item in ipairs(tracks or {}) do
-        duration = duration + (d.get(item, "objects.info.duration_milliseconds") or 0)
         discs[tostring(d.get(item, "tags.discnumber") or 1)] = true
     end
 
-    local total_discs = 0
-    for _ in pairs(discs) do
-        total_discs = total_discs + 1
-    end
+    local duration = d.list.sum(tracks or {}, function(item)
+        return d.get(item, "objects.info.duration_milliseconds") or 0
+    end)
 
     return {
         total_tracks = #(tracks or {}),
-        total_discs = math.max(total_discs, 1),
+        total_discs = math.max(d.tbl.count(discs), 1),
         duration_milliseconds = duration,
         duration_formatted = d.fmt.clock(duration),
     }

@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use crate::error::DatamileError;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -62,7 +65,7 @@ fn check_manifest_mtimes(
     album_data: &serde_json::Value,
 ) -> TrustState {
     if let Some(manifests) = album_data
-        .get("manifests")
+        .pointer("/objects/manifests")
         .and_then(serde_json::Value::as_object)
     {
         for m in manifests.values() {
@@ -158,7 +161,7 @@ fn check_tracks_integrity(
         .and_then(serde_json::Value::as_array)
     {
         for track in tracks {
-            if let Some(file) = track.pointer("/objects/file") {
+            if let Some(file) = track.get("location") {
                 let rel_path = file
                     .get("path")
                     .and_then(serde_json::Value::as_str)

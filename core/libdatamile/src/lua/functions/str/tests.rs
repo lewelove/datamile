@@ -474,3 +474,63 @@ fn test_d_str_utf_indexing() {
         .eval::<i64>();
     assert!(byteindex_err_idx.is_err());
 }
+
+/// Verify natural string comparison and leading integer extraction.
+#[test]
+fn test_d_str_natcmp_and_leading_int() {
+    let engine = LuaEngine::new().expect("engine");
+
+    let less: i32 = engine
+        .lua
+        .load("return d.str.natcmp('ep2', 'ep10')")
+        .eval()
+        .expect("natcmp");
+    assert_eq!(less, -1);
+
+    let equal: i32 = engine
+        .lua
+        .load("return d.str.natcmp('ep2', 'ep2')")
+        .eval()
+        .expect("natcmp");
+    assert_eq!(equal, 0);
+
+    let greater: i32 = engine
+        .lua
+        .load("return d.str.natcmp('ep10', 'ep2')")
+        .eval()
+        .expect("natcmp");
+    assert_eq!(greater, 1);
+
+    let cases = [
+        ("'03/12'", "3"),
+        ("' 01 - Intro'", "1"),
+        ("5", "5"),
+        ("5.9", "5"),
+        ("'abc'", "nil"),
+        ("nil", "nil"),
+        ("-1", "nil"),
+    ];
+    for (input, expected) in cases {
+        let code = format!("return d.str.leading_int({input})");
+        let out: mlua::Value = engine.lua.load(&code).eval().expect("leading_int");
+        let rendered = match out {
+            mlua::Value::Integer(i) => i.to_string(),
+            mlua::Value::Number(n) => n.to_string(),
+            mlua::Value::Nil => "nil".to_string(),
+            other => panic!("unexpected value {other:?}"),
+        };
+        assert_eq!(rendered, expected, "input {input}");
+    }
+}
+
+/// Verify percent-encoding.
+#[test]
+fn test_d_str_url_encode() {
+    let engine = LuaEngine::new().expect("engine");
+    let encoded: String = engine
+        .lua
+        .load("return d.str.url_encode('a b/c?d=e&f')")
+        .eval()
+        .expect("url_encode");
+    assert_eq!(encoded, "a%20b%2Fc%3Fd%3De%26f");
+}

@@ -31,6 +31,22 @@ function M.trim(s)
     return s:gsub("^%s+", ""):match("^.*%S") or ""
 end
 
+-- Track numbers may carry a total ("03/12"); only the leading integer matters.
+function M.leading_int(val)
+    if type(val) == "number" then
+        if val < 0 then
+            return nil
+        end
+        return math.floor(val)
+    end
+    if type(val) ~= "string" then
+        return nil
+    end
+
+    local digits = val:match("^%s*(%d+)")
+    return digits and tonumber(digits) or nil
+end
+
 function M.pesc(s)
     if type(s) ~= "string" then
         error(string.format("s: expected string, got %s", type(s)))

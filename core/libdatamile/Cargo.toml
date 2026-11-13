@@ -30,4 +30,5 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+urlencoding = { workspace = true }
 walkdir = { workspace = true }

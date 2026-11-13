@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 struct TargetAlbumEntry {
     path: PathBuf,
+    lock_path: PathBuf,
     lock: serde_json::Value,
 }
 
@@ -92,6 +93,7 @@ async fn resolve_target_entries(
         {
             list.push(TargetAlbumEntry {
                 path: record.path.clone(),
+                lock_path: record.lock_path.clone(),
                 lock: lock_json,
             });
         }
@@ -124,6 +126,7 @@ pub async fn execute_action(
         .map(|e| {
             json!({
                 "path": e.path.to_string_lossy(),
+                "lock_path": e.lock_path.to_string_lossy(),
                 "lock": e.lock
             })
         })

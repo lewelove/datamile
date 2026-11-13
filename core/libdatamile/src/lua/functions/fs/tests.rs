@@ -794,3 +794,202 @@ fn test_d_fs_find_releases_dir_handles() {
         fd_after.saturating_sub(fd_before)
     );
 }
+
+/// Verify pure path extension/stem helpers and audio extension matching.
+#[test]
+fn test_d_fs_ext_stem_and_is_audio() {
+    let engine = LuaEngine::new().expect("engine");
+
+    let code = r#"
+        return {
+            ext = d.fs.ext('a/b.FLAC'),
+            hidden = d.fs.ext('.hidden'),
+            noext = d.fs.ext('noext'),
+            stem = d.fs.stem('a/01 - Xtal.flac'),
+            hidden_stem = d.fs.stem('.hidden'),
+            flac = d.fs.is_audio('song.FLAC'),
+            custom = d.fs.is_audio('song.weird', { 'weird' }),
+            wrong = d.fs.is_audio('song.weird'),
+            no_ext = d.fs.is_audio('song'),
+        }
+    "#;
+    let res: Table = engine.lua.load(code).eval().expect("fs helpers");
+
+    assert_eq!(res.get::<String>("ext").unwrap(), "flac");
+    assert!(res.get::<Option<String>>("hidden").unwrap().is_none());
+    assert!(res.get::<Option<String>>("noext").unwrap().is_none());
+    assert_eq!(res.get::<String>("stem").unwrap(), "01 - Xtal");
+    assert_eq!(res.get::<String>("hidden_stem").unwrap(), ".hidden");
+    assert!(res.get::<bool>("flac").unwrap());
+    assert!(res.get::<bool>("custom").unwrap());
+    assert!(!res.get::<bool>("wrong").unwrap());
+    assert!(!res.get::<bool>("no_ext").unwrap());
+}
+
+/// Verify stat returns nil for missing paths but still records the parent directory.
+#[test]
+fn test_d_fs_stat_missing_records_parent() {
+    let engine = LuaEngine::new().expect("engine");
+    let dir = TempDir::new();
+    let missing = format!("{}/missing.toml", dir.path_str());
+
+    let code = format!(
+        r#"
+        local stat = d.fs.stat('{missing}')
+        return {{ missing = stat == nil }}
+    "#
+    );
+    let res: Table = engine.lua.load(&code).eval().expect("stat");
+    assert!(res.get::<bool>("missing").unwrap());
+
+    let dirs = engine
+        .lua
+        .app_data_ref::<crate::lua::EngineContext>()
+        .unwrap()
+        .take_directories();
+    assert!(dirs.contains(&dir.0.canonicalize().unwrap()));
+
+    let existing = TempFile::new("data");
+    let code = format!(
+        r#"
+        local stat = d.fs.stat('{}')
+        return {{ kind = stat.is_file, size = stat.byte_size }}
+    "#,
+        existing.path_str()
+    );
+    let res: Table = engine.lua.load(&code).eval().expect("stat existing");
+    assert!(res.get::<bool>("kind").unwrap());
+    assert_eq!(res.get::<u64>("size").unwrap(), 4);
+}
+
+/// Verify first returns the highest priority existing candidate and records the directory.
+#[test]
+fn test_d_fs_first_priority_and_dirty_tracking() {
+    let engine = LuaEngine::new().expect("engine");
+    let dir = TempDir::new();
+    let root = dir.path_str();
+    std::fs::write(dir.0.join("cover.png"), b"png").expect("cover");
+
+    let code = format!(r#"return d.fs.first('{root}', {{ 'cover.jpg', 'cover.png' }})"#);
+    let found: Option<String> = engine.lua.load(&code).eval().expect("first");
+    assert_eq!(found.unwrap(), format!("{root}/cover.png"));
+
+    let dirs = engine
+        .lua
+        .app_data_ref::<crate::lua::EngineContext>()
+        .unwrap()
+        .take_directories();
+    assert!(dirs.contains(&dir.0.canonicalize().unwrap()));
+
+    let missing: Option<String> = engine
+        .lua
+        .load("return d.fs.first('/tmp/datamile_no_such_dir_xyz', { 'a.json' })")
+        .eval()
+        .expect("first missing");
+    assert!(missing.is_none());
+}
+
+/// Verify files filters by extension, recurses, and sorts naturally by default.
+#[test]
+fn test_d_fs_files_filter_and_natural_sort() {
+    let engine = LuaEngine::new().expect("engine");
+    let dir = TempDir::new();
+    let root = dir.path_str();
+    std::fs::create_dir_all(dir.0.join("sub")).expect("sub");
+    for name in ["track10.flac", "track2.flac", "note.mp3", "sub/track1.flac"] {
+        std::fs::write(dir.0.join(name), b"x").expect("file");
+    }
+
+    let code = format!(
+        r#"
+        local out = {{}}
+        for _, path in ipairs(d.fs.files('{root}', {{ ext = 'FLAC' }})) do
+            table.insert(out, d.fs.basename(path))
+        end
+        return out
+    "#
+    );
+    let names: Vec<String> = engine.lua.load(&code).eval().expect("files");
+    assert_eq!(names, vec!["track1.flac", "track2.flac", "track10.flac"]);
+
+    let code = format!(
+        r#"
+        local out = {{}}
+        for _, path in ipairs(d.fs.files('{root}', {{ ext = {{ 'flac', 'mp3' }}, depth = 1, sort = 'lex' }})) do
+            table.insert(out, d.fs.basename(path))
+        end
+        return out
+    "#
+    );
+    let names: Vec<String> = engine.lua.load(&code).eval().expect("files lex");
+    assert_eq!(names, vec!["note.mp3", "track10.flac", "track2.flac"]);
+}
+
+/// Verify roots selects by marker or predicate, honors pruning, and recursive scopes.
+#[test]
+fn test_d_fs_roots_marker_predicate_and_recursive() {
+    let engine = LuaEngine::new().expect("engine");
+    let dir = TempDir::new();
+    let root = dir.path_str();
+    for path in ["A", "A/sub", "B"] {
+        std::fs::create_dir_all(dir.0.join(path)).expect("dirs");
+    }
+    for path in ["A/album.toml", "A/sub/album.toml", "B/album.toml"] {
+        std::fs::write(dir.0.join(path), b"").expect("marker");
+    }
+
+    let code = format!(
+        r#"
+        local out = {{}}
+        for _, seed in ipairs(d.fs.roots({{ path = '{root}', recursive = true }}, 'album.toml')) do
+            table.insert(out, d.fs.relpath('{root}', seed.path))
+        end
+        return out
+    "#
+    );
+    let names: Vec<String> = engine.lua.load(&code).eval().expect("roots prune");
+    assert_eq!(names, vec!["A", "B"]);
+
+    let code = format!(
+        r#"
+        local out = {{}}
+        for _, seed in ipairs(d.fs.roots({{ path = '{root}', recursive = true }}, {{ marker = 'album.toml', prune = false }})) do
+            table.insert(out, d.fs.relpath('{root}', seed.path))
+        end
+        return out
+    "#
+    );
+    let names: Vec<String> = engine.lua.load(&code).eval().expect("roots no prune");
+    assert_eq!(names, vec!["A", "A/sub", "B"]);
+
+    let code = format!(
+        r#"
+        local out = {{}}
+        for _, seed in ipairs(d.fs.roots({{ path = '{root}', recursive = true }}, function(path, entries)
+            for _, entry in ipairs(entries) do
+                if entry.name == 'album.toml' then
+                    return {{ label = d.fs.basename(path) }}, 'prune'
+                end
+            end
+            return false
+        end)) do
+            table.insert(out, seed.label)
+        end
+        return out
+    "#
+    );
+    let labels: Vec<String> = engine.lua.load(&code).eval().expect("roots predicate");
+    assert_eq!(labels, vec!["A", "B"]);
+
+    let code = format!(
+        r#"
+        local out = {{}}
+        for _, seed in ipairs(d.fs.roots({{ path = '{root}/A', recursive = false }}, 'album.toml')) do
+            table.insert(out, d.fs.basename(seed.path))
+        end
+        return out
+    "#
+    );
+    let names: Vec<String> = engine.lua.load(&code).eval().expect("roots shallow");
+    assert_eq!(names, vec!["A"]);
+}

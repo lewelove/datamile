@@ -178,13 +178,17 @@ fn fs_read_audio(lua: &Lua, path_str: Option<String>) -> mlua::Result<Table> {
     Ok(out)
 }
 
-fn fs_stat(lua: &Lua, path_str: Option<String>) -> mlua::Result<Table> {
-    let out = lua.create_table()?;
+fn fs_stat(lua: &Lua, path_str: Option<String>) -> mlua::Result<Option<Table>> {
     let Some(path) = parse_and_record_path(lua, path_str) else {
-        return Ok(out);
+        return Ok(None);
     };
 
-    let meta = std::fs::metadata(&path).map_err(mlua::Error::external)?;
+    let meta = match std::fs::metadata(&path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(mlua::Error::external(err)),
+    };
+    let out = lua.create_table()?;
     let mtime = meta
         .modified()
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
@@ -197,7 +201,49 @@ fn fs_stat(lua: &Lua, path_str: Option<String>) -> mlua::Result<Table> {
     out.set("byte_size", meta.len())?;
     out.set("is_file", meta.is_file())?;
     out.set("is_dir", meta.is_dir())?;
-    Ok(out)
+    Ok(Some(out))
+}
+
+fn fs_ext(_: &Lua, path: Option<String>) -> mlua::Result<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+
+    Ok(std::path::Path::new(&path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase))
+}
+
+fn fs_stem(_: &Lua, path: Option<String>) -> mlua::Result<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+
+    Ok(std::path::Path::new(&path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(ToString::to_string))
+}
+
+fn fs_is_audio(
+    _: &Lua,
+    (path, exts): (String, Option<Vec<String>>),
+) -> mlua::Result<bool> {
+    let Some(ext) = std::path::Path::new(&path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+    else {
+        return Ok(false);
+    };
+
+    Ok(match exts {
+        Some(exts) => crate::harvest::is_matching_extension(ext, &exts),
+        None => crate::harvest::is_matching_extension(
+            ext,
+            crate::harvest::SUPPORTED_AUDIO_EXTENSIONS,
+        ),
+    })
 }
 
 fn create_fs_reader(
@@ -271,6 +317,9 @@ pub fn register(
         "stat",
         lua.create_function(|lua, path_str: Option<String>| fs_stat(lua, path_str))?,
     )?;
+    fs_table.set("ext", lua.create_function(fs_ext)?)?;
+    fs_table.set("stem", lua.create_function(fs_stem)?)?;
+    fs_table.set("is_audio", lua.create_function(fs_is_audio)?)?;
     fs_table.set(
         "audio_extensions",
         lua.create_function(|lua, ()| {

@@ -304,6 +304,190 @@ function M.find(names, opts)
     return matches
 end
 
+function M.first(dir, candidates)
+    if type(dir) ~= "string" then
+        error(string.format("dir: expected string, got %s", type(dir)))
+    end
+    if type(candidates) == "string" then
+        candidates = { candidates }
+    end
+    if type(candidates) ~= "table" then
+        error(string.format("candidates: expected table, got %s", type(candidates)))
+    end
+
+    for _, name in ipairs(candidates) do
+        local candidate = M.joinpath(dir, name)
+        if M.exists(candidate) then
+            return candidate
+        end
+    end
+
+    -- Missing candidates already record the directory; an empty list does not.
+    if #candidates == 0 then
+        M.exists(dir)
+    end
+
+    return nil
+end
+
+function M.files(dir, opts)
+    opts = opts or {}
+    if type(dir) ~= "string" then
+        error(string.format("dir: expected string, got %s", type(dir)))
+    end
+
+    local exts = opts.ext
+    if type(exts) == "string" then
+        exts = { exts }
+    elseif exts ~= nil and type(exts) ~= "table" then
+        error(string.format("ext: expected string or table, got %s", type(exts)))
+    end
+
+    local accepted = {}
+    for _, ext in ipairs(exts or {}) do
+        accepted[ext:lower():gsub("^%.*", "")] = true
+    end
+
+    local result = {}
+    local depth = opts.depth or math.huge
+    for rel, kind in M.dir(dir, { depth = depth, follow = opts.follow or false }) do
+        if kind == "file" then
+            local full = M.joinpath(dir, rel)
+            local ext = M.ext(full)
+            if exts == nil or accepted[ext] then
+                table.insert(result, full)
+            end
+        end
+    end
+
+    local sort = opts.sort
+    if sort == nil then
+        sort = "natural"
+    end
+    if sort == false then
+        return result
+    end
+    if sort == "natural" then
+        table.sort(result, function(a, b)
+            return d.str.natcmp(a, b) < 0
+        end)
+        return result
+    end
+    if sort == "lex" then
+        table.sort(result)
+        return result
+    end
+
+    error(string.format("sort: expected 'natural', 'lex', or false, got %s", tostring(sort)))
+end
+
+local function dir_entries(dir_path)
+    local entries = {}
+    for name, kind in M.dir(dir_path, { depth = 1 }) do
+        table.insert(entries, {
+            name = name,
+            path = M.joinpath(dir_path, name),
+            type = kind,
+        })
+    end
+
+    return entries
+end
+
+local function marker_matcher(markers)
+    local wanted = {}
+    for _, marker in ipairs(markers) do
+        wanted[marker] = true
+    end
+
+    return function(_, entries)
+        for _, entry in ipairs(entries) do
+            if wanted[entry.name] then
+                return true
+            end
+        end
+        return false
+    end
+end
+
+function M.roots(scope, matcher_or_opts)
+    if type(scope) ~= "table" or type(scope.path) ~= "string" then
+        error("scope must be a table with a string path")
+    end
+
+    local opts = {}
+    local matcher
+    if type(matcher_or_opts) == "string" then
+        matcher = marker_matcher({ matcher_or_opts })
+        opts.prune = true
+    elseif type(matcher_or_opts) == "table" then
+        local markers = matcher_or_opts.marker
+        matcher = matcher_or_opts.match
+        if type(markers) == "string" then
+            markers = { markers }
+        end
+        if type(markers) == "table" and matcher == nil then
+            matcher = marker_matcher(markers)
+            opts.prune = matcher_or_opts.prune ~= false
+        else
+            opts.prune = matcher_or_opts.prune == true
+        end
+    elseif type(matcher_or_opts) == "function" then
+        matcher = matcher_or_opts
+    else
+        error("matcher must be a marker string, table, or function")
+    end
+
+    if type(matcher) ~= "function" then
+        error("matcher must provide a marker or match function")
+    end
+
+    local recursive = scope.recursive ~= false
+    local selected = {}
+
+    local function evaluate(dir_path)
+        local entries = dir_entries(dir_path)
+        local first, second = matcher(dir_path, entries)
+        if not first then
+            return false, false
+        end
+
+        local seed = { path = dir_path }
+        if type(first) == "table" then
+            seed = d.tbl.extend("force", seed, first)
+        end
+        table.insert(selected, seed)
+
+        local prune = opts.prune == true or second == "prune"
+        return true, prune
+    end
+
+    local _, root_pruned = evaluate(scope.path)
+    if not recursive or root_pruned then
+        table.sort(selected, function(a, b)
+            return d.str.natcmp(a.path, b.path) < 0
+        end)
+        return selected
+    end
+
+    for _, kind in M.dir(scope.path, {
+        depth = math.huge,
+        skip = function(_, full)
+            local _, prune = evaluate(full)
+            return not prune
+        end,
+    }) do
+        if kind == nil then
+            break
+        end
+    end
+
+    table.sort(selected, function(a, b)
+        return d.str.natcmp(a.path, b.path) < 0
+    end)
+    return selected
+end
+
 function M.root(source, marker)
     if source == nil or marker == nil then
         error("missing required arguments: source and marker")

@@ -12,7 +12,7 @@ end
 
 function M.tracks(path)
     local seeds = {}
-    for _, file in ipairs(d.fs.files(path, { ext = M.audio_extensions() })) do
+    for _, file in ipairs(d.fs.files(path, { depth = 1, ext = M.audio_extensions() })) do
         table.insert(seeds, { path = file, audio = d.fs.read_audio(file) })
     end
 

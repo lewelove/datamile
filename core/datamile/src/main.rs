@@ -14,6 +14,15 @@ use libdatamile::utils::expand_path;
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    #[arg(long, global = true, value_name = "DIR")]
+    config: Option<String>,
+    #[arg(
+        long = "media-directory",
+        alias = "media_directory",
+        global = true,
+        value_name = "DIR"
+    )]
+    media_directory: Option<String>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -297,5 +306,29 @@ fn init_logger() {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_logger();
-    Cli::parse().command.execute().await
+    let cli = Cli::parse();
+
+    if let Some(config) = cli.config {
+        let path = expand_path(&config);
+        let init = if path.is_dir() {
+            path.join("init.lua")
+        } else {
+            path
+        };
+
+        if !init.is_file() {
+            return Err(anyhow::anyhow!(
+                "config init.lua not found: {}",
+                init.display()
+            ));
+        }
+
+        libdatamile::lua::set_config_path_override(init);
+    }
+
+    if let Some(media_directory) = cli.media_directory {
+        libdatamile::lua::set_media_directory_override(expand_path(&media_directory));
+    }
+
+    cli.command.execute().await
 }

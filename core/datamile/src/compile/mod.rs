@@ -1,10 +1,6 @@
-pub mod album;
-pub mod build;
-pub mod context;
-pub mod covers;
+pub mod images;
+pub mod media;
 pub mod stream;
-pub mod tracks;
-pub mod utils;
 
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -54,37 +50,51 @@ pub async fn run(mut options: CompileOptions) -> Result<usize> {
     }
 
     let effective_jobs = options.jobs.or(config.app.compiler.jobs);
+    let cache_root = libdatamile::utils::expand_path(&config.app.storage.cache);
 
-    let albums = if let Some(l) = options.specific_albums {
-        l
-    } else {
-        libdatamile::scanner::find_target_albums(&options.target_path)?
-    };
-
-    if albums.is_empty() {
-        return Ok(0);
-    }
-
-    if options.compile_flags.mode == CompileMode::Intermediary {
+    let (roots, intermediary_outputs) = {
         let engine =
             libdatamile::lua::LuaEngine::new().context("Failed to create Lua engine")?;
         engine
             .evaluate_config(&config.path)
             .context("Failed to evaluate config in Lua engine")?;
-        for root in &albums {
-            let m = build::build(root, &config, &engine)?;
+
+        let roots = media::discover_roots(
+            &engine,
+            &options.target_path,
+            options.specific_albums.as_deref(),
+        )?;
+
+        let mut outputs = Vec::new();
+        if options.compile_flags.mode == CompileMode::Intermediary {
+            for (root_type, source) in &roots {
+                let out = media::compile_root(&engine, root_type, source, &cache_root)?;
+                outputs.push(out.lock_json);
+            }
+        }
+
+        (roots, outputs)
+    };
+
+    if roots.is_empty() {
+        return Ok(0);
+    }
+
+    if options.compile_flags.mode == CompileMode::Intermediary {
+        for out in intermediary_outputs {
             if options.compile_flags.pretty {
-                println!("{}", serde_json::to_string_pretty(&m.lock_json)?);
+                println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
-                println!("{}", serde_json::to_string(&m.lock_json)?);
+                println!("{}", serde_json::to_string(&out)?);
             }
         }
         return Ok(0);
     }
 
     let ctx = stream::StreamContext {
-        albums: albums.clone(),
+        roots,
         config: Arc::new(config),
+        cache_root,
         target: options.compile_flags.target,
         jobs: effective_jobs,
         ingest_tx: options.ingest_tx,

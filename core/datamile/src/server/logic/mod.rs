@@ -204,57 +204,60 @@ impl LogicEngine {
         let mut track_uris = Vec::new();
 
         for (track_idx, track) in tracks.iter().enumerate() {
-            let Some(tinfo) = track.get("info") else {
-                continue;
-            };
+            let tags = track.get("tags");
+            let objects = track.get("objects");
+            let info = objects.and_then(|o| o.get("info"));
 
             let rel = track
-                .get("file")
-                .and_then(|f| f.get("path"))
+                .get("location")
+                .and_then(|l| l.get("path"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
             if rel.is_empty() {
                 continue;
             }
 
-            let abs_track_path = album_dir_canon.join(rel);
+            let abs_track_path = if Path::new(rel).is_absolute() {
+                PathBuf::from(rel)
+            } else {
+                album_dir_canon.join(rel)
+            };
             let mpd_uri_raw = abs_track_path.strip_prefix(music_directory).map_or_else(
                 |_| abs_track_path.to_string_lossy().to_string(),
                 |p| p.to_string_lossy().to_string(),
             );
             let mpd_uri = mpd_uri_raw.trim_start_matches('/').to_string();
 
-            let track_no = match track.get("tracknumber") {
-                Some(Value::Number(n)) => {
-                    n.as_u64().and_then(|v| u32::try_from(v).ok()).unwrap_or(0)
+            let tag_u32 = |key: &str, default: u32| -> u32 {
+                match tags.and_then(|t| t.get(key)) {
+                    Some(Value::Number(n)) => n
+                        .as_u64()
+                        .and_then(|v| u32::try_from(v).ok())
+                        .unwrap_or(default),
+                    Some(Value::String(s)) => s.parse().unwrap_or(default),
+                    _ => default,
                 }
-                Some(Value::String(s)) => s.parse().unwrap_or(0),
-                _ => 0,
             };
-            let disc_no = match track.get("discnumber") {
-                Some(Value::Number(n)) => {
-                    n.as_u64().and_then(|v| u32::try_from(v).ok()).unwrap_or(1)
-                }
-                Some(Value::String(s)) => s.parse().unwrap_or(1),
-                _ => 1,
-            };
-            let title = track
-                .get("title")
+
+            let track_no = tag_u32("tracknumber", 0);
+            let disc_no = tag_u32("discnumber", 1);
+            let title = tags
+                .and_then(|t| t.get("title"))
                 .and_then(Value::as_str)
                 .unwrap_or("Unknown")
                 .to_string();
-            let artist = track
-                .get("artist")
+            let artist = tags
+                .and_then(|t| t.get("artist"))
                 .and_then(Value::as_str)
                 .unwrap_or("Unknown")
                 .to_string();
-            let duration = tinfo
-                .get("duration_formatted")
+            let duration = info
+                .and_then(|i| i.get("duration_formatted"))
                 .and_then(Value::as_str)
                 .unwrap_or("0:00")
                 .to_string();
-            let duration_ms = tinfo
-                .get("duration_milliseconds")
+            let duration_ms = info
+                .and_then(|i| i.get("duration_milliseconds"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
 
@@ -277,14 +280,14 @@ impl LogicEngine {
         track_uris
     }
 
-    fn ingest_covers(
+    fn ingest_images(
         &mut self,
         album: &Value,
         album_dir_canon: &Path,
     ) -> (Option<Value>, Option<Value>, Vec<(String, String)>) {
         let mut cover_namespaces = Vec::new();
         let main_cover = album
-            .get("covers")
+            .get("images")
             .and_then(|c| c.get("main"))
             .and_then(Value::as_array)
             .and_then(|arr| arr.first());
@@ -294,11 +297,11 @@ impl LogicEngine {
             .cloned();
         let cover_hash_val = main_cover.and_then(|m| m.get("address")).cloned();
 
-        let Some(covers) = album.get("covers").and_then(Value::as_object) else {
+        let Some(images) = album.get("images").and_then(Value::as_object) else {
             return (cover_path_val, cover_hash_val, cover_namespaces);
         };
 
-        for (ns, entries) in covers {
+        for (ns, entries) in images {
             let Some(entries_arr) = entries.as_array() else {
                 continue;
             };
@@ -370,9 +373,16 @@ impl LogicEngine {
         let Some(album) = parsed.get("album") else {
             return Ok(());
         };
-        let Some(info) = album.get("info") else {
-            return Ok(());
-        };
+
+        let entity_id = album
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or(id)
+            .to_string();
+        let tags = album.get("tags").cloned().unwrap_or_else(|| json!({}));
+        let objects = album.get("objects").cloned().unwrap_or_else(|| json!({}));
+        let info = objects.get("info").cloned().unwrap_or_else(|| json!({}));
+        let images = album.get("images").cloned().unwrap_or_else(|| json!({}));
 
         let duration_ms = info
             .get("duration_milliseconds")
@@ -384,20 +394,20 @@ impl LogicEngine {
             .unwrap_or(0);
         let total_discs = info.get("total_discs").and_then(Value::as_u64).unwrap_or(1);
 
-        let track_uris = parsed.get("tracks").and_then(Value::as_array).map_or_else(
+        let track_uris = album.get("tracks").and_then(Value::as_array).map_or_else(
             Vec::new,
             |tracks| {
                 self.ingest_tracks_and_lookup(
                     tracks,
                     &album_dir_canon,
-                    id,
+                    &entity_id,
                     music_directory,
                 )
             },
         );
 
         let (cover_path_val, cover_hash_val, cover_namespaces) =
-            self.ingest_covers(album, &album_dir_canon);
+            self.ingest_images(album, &album_dir_canon);
 
         let cover_path = cover_path_val
             .as_ref()
@@ -405,31 +415,34 @@ impl LogicEngine {
             .unwrap_or("cover.jpg")
             .to_string();
 
-        let title = album
+        let title = tags
             .get("album")
             .and_then(Value::as_str)
             .unwrap_or("Unknown")
             .to_string();
 
-        let artist = album
+        let artist = tags
             .get("albumartist")
             .and_then(Value::as_str)
             .unwrap_or("Unknown")
             .to_string();
 
         let entry = json!({
-            "id": id,
-            "album": album.get("album"),
-            "albumartist": album.get("albumartist"),
-            "date": album.get("date"),
+            "id": entity_id,
+            "album": tags.get("album"),
+            "albumartist": tags.get("albumartist"),
+            "date": tags.get("date"),
             "cover_path": cover_path_val,
             "cover_hash": cover_hash_val,
-            "covers": album.get("covers"),
+            "covers": images,
+            "images": images,
             "duration_formatted": info.get("duration_formatted"),
             "total_discs": info.get("total_discs"),
             "total_tracks": info.get("total_tracks"),
             "virtual": info.get("virtual"),
-            "keys": album.get("keys"),
+            "keys": tags,
+            "tags": tags,
+            "objects": objects,
             "colors": album.get("colors")
         });
 
@@ -437,7 +450,7 @@ impl LogicEngine {
         let dict_raw = RawValue::from_string(dict_str)?;
 
         let record = AlbumRecord {
-            id: id.to_string(),
+            id: entity_id.clone(),
             path: album_dir_canon.clone(),
             title,
             artist,
@@ -452,7 +465,7 @@ impl LogicEngine {
         };
 
         self.albums.insert(uid, record);
-        self.id_to_uid.insert(id.to_string(), uid);
+        self.id_to_uid.insert(entity_id, uid);
         self.path_to_uid.insert(album_dir_canon, uid);
         self.evaluated_logic.insert(uid, eval_res);
 

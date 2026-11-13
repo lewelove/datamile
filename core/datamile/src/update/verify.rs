@@ -20,9 +20,9 @@ pub fn find_missing_paths(
 
     let mut cached_album_ids = HashSet::new();
     for rel_path in cache.keys() {
-        if rel_path == "metadata.toml" {
+        if rel_path == "album.toml" {
             cached_album_ids.insert(String::new());
-        } else if let Some(album_id) = rel_path.strip_suffix("/metadata.toml") {
+        } else if let Some(album_id) = rel_path.strip_suffix("/album.toml") {
             cached_album_ids.insert(album_id.to_string());
         }
     }
@@ -79,8 +79,7 @@ fn is_album_dirty(
         return true;
     }
 
-    let meta_path = album_root_canon.join("metadata.toml");
-    if !meta_path.exists() {
+    if !album_root_canon.join("album.toml").exists() {
         return true;
     }
 

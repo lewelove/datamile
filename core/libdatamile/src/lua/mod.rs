@@ -13,10 +13,12 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const LUA_CORE: &str = include_str!("core.lua");
 const LUA_CONFIG: &str = include_str!("config.lua");
 const LUA_COMPILER: &str = include_str!("compiler.lua");
+const LUA_DEFAULTS: &str = include_str!("defaults.lua");
 const LUA_ACTIONS: &str = include_str!("actions.lua");
 const LUA_LOGIC: &str = include_str!("logic.lua");
 
@@ -304,6 +306,10 @@ impl LuaEngine {
             .exec()
             .map_err(|e| anyhow::anyhow!("{e}"))
             .context("Failed to load compiler.lua")?;
+        lua.load(LUA_DEFAULTS)
+            .exec()
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .context("Failed to load defaults.lua")?;
         lua.load(LUA_ACTIONS)
             .exec()
             .map_err(|e| anyhow::anyhow!("{e}"))
@@ -340,6 +346,19 @@ impl LuaEngine {
             .exec()
             .map_err(|e| anyhow::anyhow!("{e}"))
             .context("Failed to execute init.lua")?;
+
+        if let Some(media_directory) = MEDIA_DIRECTORY_OVERRIDE.get()
+            && let Ok(registry) = self.lua.globals().get::<Table>("REGISTRY")
+            && let Ok(config) = registry.get::<Table>("config")
+            && let Ok(storage) = config.get::<Table>("storage")
+        {
+            storage
+                .set(
+                    "music_directory",
+                    media_directory.to_string_lossy().as_ref(),
+                )
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
 
         let app_config: AppConfig = call_getter(&self.lua, "__DATAMILE_GET_CONFIG")?;
 
@@ -479,6 +498,99 @@ impl LuaEngine {
         Ok(json_res)
     }
 
+    pub fn media_roots(&self) -> Result<Vec<String>> {
+        let func: mlua::Function = self
+            .lua
+            .globals()
+            .get("__DATAMILE_MEDIA_ROOTS")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let table: Table = func.call(()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut roots = Vec::new();
+        for value in table.sequence_values::<String>() {
+            roots.push(value.map_err(|e| anyhow::anyhow!("{e}"))?);
+        }
+        Ok(roots)
+    }
+
+    pub fn media_select(
+        &self,
+        type_name: &str,
+        source: &serde_json::Value,
+    ) -> Result<Vec<serde_json::Value>> {
+        let func: mlua::Function = self
+            .lua
+            .globals()
+            .get("__DATAMILE_MEDIA_SELECT")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let lua_source = self
+            .lua
+            .to_value(source)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let table: Table = func
+            .call((type_name, lua_source))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut result = Vec::new();
+        for value in table.sequence_values::<mlua::Value>() {
+            let value = value.map_err(|e| anyhow::anyhow!("{e}"))?;
+            result.push(
+                self.lua
+                    .from_value(value)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?,
+            );
+        }
+        Ok(result)
+    }
+
+    pub fn media_lock(
+        &self,
+        type_name: &str,
+        source: &serde_json::Value,
+    ) -> Result<Option<PathBuf>> {
+        let func: mlua::Function = self
+            .lua
+            .globals()
+            .get("__DATAMILE_MEDIA_LOCK")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let lua_source = self
+            .lua
+            .to_value(source)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let value: mlua::Value = func
+            .call((type_name, lua_source))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        match value {
+            mlua::Value::String(s) => Ok(Some(PathBuf::from(
+                s.to_str().map_err(|e| anyhow::anyhow!("{e}"))?.to_string(),
+            ))),
+            mlua::Value::Nil => Ok(None),
+            other => Err(anyhow::anyhow!(
+                "media lock for {type_name} returned unsupported value: {other:?}"
+            )),
+        }
+    }
+
+    pub fn media_compile(
+        &self,
+        type_name: &str,
+        source: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let func: mlua::Function = self
+            .lua
+            .globals()
+            .get("__DATAMILE_MEDIA_COMPILE")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let lua_source = self
+            .lua
+            .to_value(source)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let value: mlua::Value = func
+            .call((type_name, lua_source))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        self.lua
+            .from_value(value)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
     pub fn execute_dispatcher(
         &self,
         ctx_val: &serde_json::Value,
@@ -599,8 +711,25 @@ impl LuaEngine {
     }
 }
 
+static CONFIG_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+static MEDIA_DIRECTORY_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_config_path_override(path: PathBuf) {
+    let _ = CONFIG_PATH_OVERRIDE.set(path);
+}
+
+pub fn set_media_directory_override(path: PathBuf) {
+    let _ = MEDIA_DIRECTORY_OVERRIDE.set(path);
+}
+
 #[must_use]
 pub fn resolve_config_path() -> Option<PathBuf> {
+    if let Some(override_path) = CONFIG_PATH_OVERRIDE.get()
+        && override_path.exists()
+    {
+        return Some(override_path.clone());
+    }
+
     if let Some(home_config) =
         dirs::home_dir().map(|h| h.join(".config/datamile/init.lua"))
         && home_config.exists()
@@ -610,6 +739,7 @@ pub fn resolve_config_path() -> Option<PathBuf> {
 
     if let Ok(env_path) = std::env::var("DATAMILE_CONFIG_PATH") {
         let p = PathBuf::from(env_path);
+        let p = if p.is_dir() { p.join("init.lua") } else { p };
         if p.exists() {
             return Some(p);
         }
@@ -685,6 +815,10 @@ impl ResolvedConfig {
             )
             .to_string_lossy()
             .to_string();
+        }
+        if let Some(media_directory) = MEDIA_DIRECTORY_OVERRIDE.get() {
+            evaluated.app.storage.music_directory =
+                media_directory.to_string_lossy().to_string();
         }
         if !evaluated.app.storage.cache.is_empty() {
             evaluated.app.storage.cache =

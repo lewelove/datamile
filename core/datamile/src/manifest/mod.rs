@@ -137,17 +137,17 @@ fn process_album_group<S: AsRef<str>>(
     if options.stdout {
         println!("{toml_content}");
     } else {
-        let out_path = anchor.join("metadata.toml");
+        let out_path = anchor.join("album.toml");
         if !options.force && out_path.exists() {
             log::warn!(
-                "Existing metadata.toml detected in {}. Use --force to overwrite.",
+                "Existing album.toml detected in {}. Use --force to overwrite.",
                 anchor.display()
             );
             return Ok(());
         }
 
         fs::write(&out_path, &toml_content)?;
-        log::info!("Generated metadata manifest: {}", out_path.display());
+        log::info!("Generated album manifest: {}", out_path.display());
     }
 
     Ok(())
@@ -164,8 +164,7 @@ fn find_harvestable_directories<S: AsRef<str>>(
     while let Some(Ok(entry)) = it.next() {
         if entry.file_type().is_dir() {
             let path = entry.path();
-            if overwrite == OverwriteMode::Preserve && path.join("metadata.toml").exists()
-            {
+            if overwrite == OverwriteMode::Preserve && path.join("album.toml").exists() {
                 it.skip_current_dir();
                 continue;
             }

@@ -11,6 +11,8 @@ actions/*
 
 notes/
 
+interfaces/web-app/config.json
+
 # Devenv
 .devenv*
 devenv.local.nix

@@ -46,7 +46,7 @@ pub fn verify_trust(
         return Ok(TrustState::BrokenIntent);
     }
 
-    if check_cover_integrity(album_root, album_data) == TrustState::BrokenAssets {
+    if check_image_integrity(album_root, album_data) == TrustState::BrokenAssets {
         return Ok(TrustState::BrokenAssets);
     }
 
@@ -75,7 +75,11 @@ fn check_manifest_mtimes(
                     .get("mtime")
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0);
-                let abs_path = album_root.join(rel_path);
+                let abs_path = if Path::new(rel_path).is_absolute() {
+                    PathBuf::from(rel_path)
+                } else {
+                    album_root.join(rel_path)
+                };
 
                 let current_mtime = fs::metadata(&abs_path)
                     .and_then(|meta| meta.modified())
@@ -94,15 +98,15 @@ fn check_manifest_mtimes(
     TrustState::Valid
 }
 
-fn check_cover_integrity(
+fn check_image_integrity(
     album_root: &Path,
     album_data: &serde_json::Value,
 ) -> TrustState {
-    if let Some(covers) = album_data
-        .get("covers")
+    if let Some(images) = album_data
+        .get("images")
         .and_then(serde_json::Value::as_object)
     {
-        for entries in covers.values().filter_map(serde_json::Value::as_array) {
+        for entries in images.values().filter_map(serde_json::Value::as_array) {
             for entry in entries {
                 let Some(file) = entry.pointer("/source/file") else {
                     continue;
@@ -141,9 +145,7 @@ fn check_tracks_integrity(
     lock_json: &serde_json::Value,
 ) -> TrustState {
     let is_virtual = lock_json
-        .get("album")
-        .and_then(|a| a.get("info"))
-        .and_then(|i| i.get("virtual"))
+        .pointer("/album/objects/info/virtual")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
@@ -152,11 +154,11 @@ fn check_tracks_integrity(
     }
 
     if let Some(tracks) = lock_json
-        .get("tracks")
+        .pointer("/album/tracks")
         .and_then(serde_json::Value::as_array)
     {
         for track in tracks {
-            if let Some(file) = track.get("file") {
+            if let Some(file) = track.pointer("/objects/file") {
                 let rel_path = file
                     .get("path")
                     .and_then(serde_json::Value::as_str)
@@ -165,7 +167,11 @@ fn check_tracks_integrity(
                     return TrustState::BrokenPhysics;
                 }
 
-                let abs_path = album_root.join(rel_path);
+                let abs_path = if Path::new(rel_path).is_absolute() {
+                    PathBuf::from(rel_path)
+                } else {
+                    album_root.join(rel_path)
+                };
                 let Ok(meta) = fs::metadata(&abs_path) else {
                     return TrustState::BrokenPhysics;
                 };

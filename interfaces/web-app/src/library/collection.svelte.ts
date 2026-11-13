@@ -24,7 +24,7 @@ import type {
 function triggerCoverPrewarm() {
   const sizes = [200, 619];
   for (const size of sizes) {
-    fetch("/api/internal/cache_covers", {
+    fetch("/api/internal/cache_images", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -169,7 +169,7 @@ class CollectionStore {
     }
     const algo = globalConfig.album_grid.album_card.cover.filter || "lanczos";
     const size = globalConfig.album_grid.album_card.cover.size || 200;
-    return `/api/covers/${album.cover_hash}.bmp?size=${size}&filter=${algo}`;
+    return `/api/images/${album.cover_hash}.bmp?size=${size}&filter=${algo}`;
   }
 
   async ensureFullAlbum(id: string): Promise<FullAlbum | null> {

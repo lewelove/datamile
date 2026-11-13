@@ -48,6 +48,9 @@ _G.datamile.cache.master = {
     end
 }
 
+_G.datamile.cache.image = _G.datamile.cache.cover
+_G.datamile.cache.master.image = _G.datamile.cache.master.cover
+
 _G.datamile.filter = function(name, t)
     if REGISTRY.filters[name] == nil then
         table.insert(REGISTRY.filters_order, name)

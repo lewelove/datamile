@@ -174,8 +174,6 @@ fn recompile_single_album(
         .canonicalize()
         .unwrap_or_else(|_| album_path.to_path_buf());
     let canon_display = canon.display();
-    let lock_file_path = album_path.join("album.lock.json");
-    let lock_canon = canon.join("album.lock.json");
 
     let Some(engine) = engine_opt else {
         log::error!(
@@ -184,7 +182,27 @@ fn recompile_single_album(
         return None;
     };
 
-    let res = match crate::compile::build::build(album_path, config, engine) {
+    let roots = match crate::compile::media::discover_roots(
+        engine,
+        &canon,
+        Some(std::slice::from_ref(&canon)),
+    ) {
+        Ok(roots) => roots,
+        Err(e) => {
+            log::error!("Root discovery failed for {canon_display}: {e}");
+            return None;
+        }
+    };
+
+    let (root_type, root_source) = roots.first()?;
+
+    let cache_root = libdatamile::utils::expand_path(&config.app.storage.cache);
+    let res = match crate::compile::media::compile_root(
+        engine,
+        root_type,
+        root_source,
+        &cache_root,
+    ) {
         Ok(res) => res,
         Err(e) => {
             log::error!("Compilation failed for {canon_display}: {e}");
@@ -208,21 +226,32 @@ fn recompile_single_album(
         }
     };
 
-    let should_write = std::fs::read_to_string(&lock_file_path)
+    let should_write = std::fs::read_to_string(&res.lock_path)
         .map_or(true, |existing| existing != lock_json);
 
     if should_write {
         if let Ok(mut active) = active_writes.lock() {
-            active.insert(lock_canon);
-            active.insert(lock_file_path.clone());
+            active.insert(res.lock_path.clone());
+            active.insert(res.lock_path.clone());
         }
-        let _ = std::fs::write(&lock_file_path, &lock_json);
-        log::info!("Updated lock: {}", res.album_id);
+        if let Some(parent) = res.lock_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&res.lock_path, &lock_json);
+        log::info!("Updated lock: {}", res.id);
     }
 
+    let entity_dir = if res.path.is_dir() {
+        res.path.clone()
+    } else {
+        res.path
+            .parent()
+            .map_or_else(|| res.path.clone(), PathBuf::from)
+    };
+
     Some((
-        res.album_dir,
-        res.album_id,
+        entity_dir,
+        res.id,
         lock_json,
         Some(eval_res),
         res.dependencies,
@@ -243,8 +272,7 @@ fn remove_vanished_albums(
         .filter(|path| {
             vanished_paths.iter().any(|vanished| {
                 path.starts_with(vanished)
-                    || (vanished.starts_with(path)
-                        && !path.join("metadata.toml").exists())
+                    || (vanished.starts_with(path) && !path.join("album.toml").exists())
             })
         })
         .collect();

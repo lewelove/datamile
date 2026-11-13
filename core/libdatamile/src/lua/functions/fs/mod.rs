@@ -137,6 +137,61 @@ fn fs_scandir_native(
     })
 }
 
+fn fs_read_audio(lua: &Lua, path_str: Option<String>) -> mlua::Result<Table> {
+    let out = lua.create_table()?;
+    let Some(path) = parse_and_record_path(lua, path_str) else {
+        return Ok(out);
+    };
+
+    let cache_root = lua.app_data_ref::<EngineContext>().map_or_else(
+        || crate::utils::expand_path("~/.cache/datamile"),
+        |c| c.cache_root.clone(),
+    );
+    let track = crate::harvest::harvest_file_cached(&path, &cache_root)
+        .map_err(mlua::Error::external)?;
+
+    out.set("path", path.to_string_lossy().to_string())?;
+    out.set("duration_milliseconds", track.physics.duration_ms)?;
+    out.set("sample_rate", track.physics.sample_rate)?;
+    out.set("bit_depth", track.physics.bit_depth)?;
+    out.set("channels", track.physics.channels)?;
+    out.set("audio_bitrate", track.physics.audio_bitrate)?;
+    out.set("overall_bitrate", track.physics.overall_bitrate)?;
+    out.set("format", track.physics.format)?;
+    out.set("mtime", track.physics.mtime)?;
+    out.set("byte_size", track.physics.file_size)?;
+
+    let tags = lua.create_table()?;
+    for (key, value) in track.tags {
+        tags.set(key, lua.to_value(&value)?)?;
+    }
+    out.set("tags", tags)?;
+
+    Ok(out)
+}
+
+fn fs_stat(lua: &Lua, path_str: Option<String>) -> mlua::Result<Table> {
+    let out = lua.create_table()?;
+    let Some(path) = parse_and_record_path(lua, path_str) else {
+        return Ok(out);
+    };
+
+    let meta = std::fs::metadata(&path).map_err(mlua::Error::external)?;
+    let mtime = meta
+        .modified()
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    out.set("path", path.to_string_lossy().to_string())?;
+    out.set("mtime", mtime)?;
+    out.set("byte_size", meta.len())?;
+    out.set("is_file", meta.is_file())?;
+    out.set("is_dir", meta.is_dir())?;
+    Ok(out)
+}
+
 fn create_fs_reader(
     lua: &Lua,
     opts: SerializeOptions,
@@ -197,6 +252,16 @@ pub fn register(
         lua.create_function(|lua, path_str: Option<String>| {
             fs_read_dotenv(lua, path_str)
         })?,
+    )?;
+    fs_table.set(
+        "read_audio",
+        lua.create_function(|lua, path_str: Option<String>| {
+            fs_read_audio(lua, path_str)
+        })?,
+    )?;
+    fs_table.set(
+        "stat",
+        lua.create_function(|lua, path_str: Option<String>| fs_stat(lua, path_str))?,
     )?;
     fs_table.set("read_json", create_fs_reader(lua, opts, "json")?)?;
     fs_table.set("read_toml", create_fs_reader(lua, opts, "toml")?)?;

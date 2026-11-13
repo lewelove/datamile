@@ -116,7 +116,7 @@ fn resolve_from_lock(album_dir: &Path) -> Option<PathBuf> {
     let content = fs::read_to_string(lock_path).ok()?;
     let val: serde_json::Value = serde_json::from_str(&content).ok()?;
     let path_str = val
-        .pointer("/album/covers/main/0/source/file/path")
+        .pointer("/album/images/main/0/source/file/path")
         .and_then(serde_json::Value::as_str)?;
     let target = if Path::new(path_str).is_absolute() {
         PathBuf::from(path_str)

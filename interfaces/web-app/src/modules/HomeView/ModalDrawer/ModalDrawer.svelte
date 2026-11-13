@@ -34,7 +34,7 @@ $effect(() => {
 
   const dpr = window.devicePixelRatio || 1;
   const targetWidth = Math.round((leftColumnWidth - 64) * dpr);
-  const srcUrl = `/api/covers/${coverHash}.bmp?size=${targetWidth}&filter=catmullrom`;
+  const srcUrl = `/api/images/${coverHash}.bmp?size=${targetWidth}&filter=catmullrom`;
 
   const img = new Image();
   img.src = srcUrl;

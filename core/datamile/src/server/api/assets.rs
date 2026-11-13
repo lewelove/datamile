@@ -9,7 +9,7 @@ use libdatamile::images::{
     resize_image_max_edge,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
@@ -18,14 +18,14 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
 
 #[derive(Deserialize)]
-pub struct CoverQuery {
+pub struct ImageQuery {
     pub size: Option<u32>,
     pub filter: Option<String>,
     pub quality: Option<u8>,
 }
 
 #[derive(Deserialize)]
-pub struct CacheCoversPayload {
+pub struct CacheImagesPayload {
     #[serde(default, deserialize_with = "deserialize_names_or_addresses")]
     pub names: Option<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_names_or_addresses")]
@@ -60,7 +60,7 @@ fn error_response(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
-async fn ensure_master_cover(
+async fn ensure_master_image(
     state: &Arc<AppState>,
     master_path: PathBuf,
     address: &str,
@@ -155,9 +155,9 @@ async fn read_master_dimension(
     Ok(std::cmp::max(master_w, master_h))
 }
 
-fn resolve_cover_params(
+fn resolve_image_params(
     m_dim: u32,
-    query: &CoverQuery,
+    query: &ImageQuery,
     wire_format: ImageWireFormat,
 ) -> Result<(u32, FilterType, u8), (StatusCode, &'static str)> {
     let resolved_size = match query.size {
@@ -248,9 +248,9 @@ async fn render_in_memory(
     .and_then(|opt| opt.ok_or(StatusCode::INTERNAL_SERVER_ERROR))
 }
 
-pub async fn get_cover(
+pub async fn get_image(
     Path(target): Path<String>,
-    Query(query): Query<CoverQuery>,
+    Query(query): Query<ImageQuery>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
@@ -264,10 +264,10 @@ pub async fn get_cover(
         guard.cache_root.clone()
     };
 
-    let master_dir = cache_root.join("covers").join(address);
+    let master_dir = cache_root.join("images").join(address);
     let master_path = master_dir.join("master.qoi");
 
-    if let Err(status) = ensure_master_cover(&state, master_path.clone(), address).await {
+    if let Err(status) = ensure_master_image(&state, master_path.clone(), address).await {
         return error_response(status, "Cover not found");
     }
 
@@ -277,7 +277,7 @@ pub async fn get_cover(
     };
 
     let (resolved_size, filter_type, quality) =
-        match resolve_cover_params(m_dimension, &query, wire_format) {
+        match resolve_image_params(m_dimension, &query, wire_format) {
             Ok(params) => params,
             Err((status, msg)) => return error_response(status, msg),
         };
@@ -410,7 +410,7 @@ async fn process_cache_candidate(
     .await;
 }
 
-async fn run_cache_covers_batch(
+async fn run_cache_images_batch(
     state: Arc<AppState>,
     names: Option<Vec<String>>,
     addresses: Option<Vec<String>>,
@@ -439,10 +439,10 @@ async fn run_cache_covers_batch(
     let semaphore = Arc::new(Semaphore::new(concurrency));
 
     for address in target_addresses {
-        let master_dir = cache_root.join("covers").join(&address);
+        let master_dir = cache_root.join("images").join(&address);
         let master_path = master_dir.join("master.qoi");
 
-        if ensure_master_cover(&state, master_path.clone(), &address)
+        if ensure_master_image(&state, master_path.clone(), &address)
             .await
             .is_err()
         {
@@ -480,9 +480,9 @@ async fn run_cache_covers_batch(
     }
 }
 
-pub async fn trigger_cache_covers(
+pub async fn trigger_cache_images(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<CacheCoversPayload>,
+    Json(payload): Json<CacheImagesPayload>,
 ) -> Response {
     let has_names = payload.names.as_ref().is_some_and(|n| !n.is_empty());
     let has_addrs = payload.addresses.as_ref().is_some_and(|a| !a.is_empty());
@@ -525,7 +525,7 @@ pub async fn trigger_cache_covers(
 
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
-        run_cache_covers_batch(
+        run_cache_images_batch(
             state_clone,
             payload.names,
             payload.addresses,
@@ -540,6 +540,64 @@ pub async fn trigger_cache_covers(
     StatusCode::ACCEPTED.into_response()
 }
 
+fn album_compat_view(raw: &str) -> Option<String> {
+    let parsed: Value = serde_json::from_str(raw).ok()?;
+    let album = parsed.get("album")?;
+    let tags = album.get("tags").cloned().unwrap_or_else(|| json!({}));
+    let objects = album.get("objects").cloned().unwrap_or_else(|| json!({}));
+    let info = objects.get("info").cloned().unwrap_or_else(|| json!({}));
+    let images = album.get("images").cloned().unwrap_or_else(|| json!({}));
+
+    let tracks: Vec<Value> = album
+        .get("tracks")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|track| {
+                    let track_tags =
+                        track.get("tags").cloned().unwrap_or_else(|| json!({}));
+                    let track_objects =
+                        track.get("objects").cloned().unwrap_or_else(|| json!({}));
+                    json!({
+                        "id": track.get("id"),
+                        "discnumber": track_tags.get("discnumber"),
+                        "tracknumber": track_tags.get("tracknumber"),
+                        "title": track_tags.get("title"),
+                        "artist": track_tags.get("artist"),
+                        "info": track_objects.get("info"),
+                        "file": track.get("location"),
+                        "location": track.get("location"),
+                        "keys": track_tags,
+                        "tags": track.get("tags"),
+                        "objects": track_objects,
+                        "lyrics": track_objects.get("lyrics"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    serde_json::to_string(&json!({
+        "id": parsed.get("album").and_then(|a| a.get("id")),
+        "album": {
+            "id": album.get("id"),
+            "album": tags.get("album"),
+            "albumartist": tags.get("albumartist"),
+            "date": tags.get("date"),
+            "keys": tags,
+            "tags": tags,
+            "objects": objects,
+            "info": info,
+            "covers": images,
+            "images": images,
+            "colors": album.get("colors"),
+        },
+        "tracks": tracks,
+    }))
+    .ok()
+}
+
 pub async fn get_album_metadata(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -549,11 +607,8 @@ pub async fn get_album_metadata(
         logic.get_album_json(&id)
     };
     if let Some(data) = json_opt {
-        return (
-            [(header::CONTENT_TYPE, "application/json")],
-            data.to_string(),
-        )
-            .into_response();
+        let body = album_compat_view(&data).unwrap_or_else(|| data.to_string());
+        return ([(header::CONTENT_TYPE, "application/json")], body).into_response();
     }
     StatusCode::NOT_FOUND.into_response()
 }

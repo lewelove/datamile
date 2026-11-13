@@ -15,7 +15,7 @@
         }
       },
       "cover": {
-        "size": 220,
+        "size": 250,
         "filter": "catmullrom"
       }
     },

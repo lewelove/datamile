@@ -1,155 +1,303 @@
 _G.datamile = _G.datamile or {}
 _G.d = _G.datamile
+
 _G.datamile.compile = _G.datamile.compile or {}
-_G.datamile.compile.album = {
-    key = function(name, v)
-        if type(v) == "function" then
-            REGISTRY.keys.album[name] = v
-        elseif v == true then
-            REGISTRY.keys.album[name] = function(ctx, m)
-                return m.metadata and m.metadata.album and m.metadata.album[name]
-            end
-        end
-    end,
-    id = function(v)
-        if type(v) == "function" then
-            REGISTRY.id_fn = v
-        end
-    end,
-    cover = function(name, v)
-        if type(v) == "function" then
-            REGISTRY.covers_rules[name] = v
+_G.datamile.media = _G.datamile.media or {}
+
+local function require_type(name)
+    if type(name) ~= "string" or name == "" then
+        error("media type name must be a non-empty string")
+    end
+
+    local t = REGISTRY.media[name]
+    if not t then
+        error(string.format("unknown media type '%s'", name))
+    end
+
+    return t
+end
+
+local function validate_tag(value)
+    local function scalar(v)
+        local tv = type(v)
+        return tv == "string" or tv == "number" or tv == "boolean"
+    end
+
+    if scalar(value) then
+        return
+    end
+
+    if type(value) ~= "table" then
+        error("tag value must be a scalar or a list of scalars")
+    end
+
+    for _, item in ipairs(value) do
+        if not scalar(item) then
+            error("tag list must contain scalars only")
         end
     end
-}
+end
 
-_G.datamile.compile.tracks = {
-    key = function(name, v)
-        if type(v) == "function" then
-            REGISTRY.keys.tracks[name] = v
-        elseif v == true then
-            REGISTRY.keys.tracks[name] = function(ctx, m, i)
-                return m.metadata and m.metadata.tracks and m.metadata.tracks[i] and m.metadata.tracks[i][name]
+local function source_label(source)
+    if type(source) == "table" and type(source.path) == "string" then
+        return source.path
+    end
+
+    return "<virtual>"
+end
+
+local function validate_source(source)
+    if type(source) ~= "table" then
+        error("media source must be a table")
+    end
+    if source.path ~= nil and type(source.path) ~= "string" then
+        error("media source path must be a string")
+    end
+
+    return source
+end
+
+local function normalize_sources(result, label)
+    if type(result) ~= "table" then
+        error(string.format("%s must return a table of sources", label))
+    end
+
+    local sources = {}
+    for _, source in ipairs(result) do
+        sources[#sources + 1] = validate_source(source)
+    end
+
+    return sources
+end
+
+local function run_selector(fn, source, label)
+    local ok, result = pcall(fn, source)
+    if not ok then
+        error(string.format("%s failed for %s: %s", label, source_label(source), result))
+    end
+
+    return normalize_sources(result, label)
+end
+
+local function call_field(fn, source, kind, name)
+    local ok, result = pcall(fn, source)
+    if not ok then
+        error(string.format("%s '%s' failed for %s: %s", kind, name, source_label(source), result))
+    end
+    return result
+end
+
+function _G.datamile.media.type(name)
+    if type(name) ~= "string" or name == "" then
+        error("media type name must be a non-empty string")
+    end
+
+    local t = REGISTRY.media[name]
+    if t then
+        return _G.datamile.compile[name]
+    end
+
+    t = {
+        tags = {},
+        objects = {},
+        images = {},
+        media = {},
+    }
+    REGISTRY.media[name] = t
+
+    local api = {
+        select = function(fn)
+            if type(fn) ~= "function" then
+                error(string.format("media type '%s': select must be a function", name))
             end
-        end
-    end,
-    lyrics = function(t)
-        if type(t) == "function" then
-            REGISTRY.lyrics = { text = t, type = "txt" }
-        elseif type(t) == "table" then
-            REGISTRY.lyrics = {
-                text = t.text,
-                type = t.type or "txt"
+            t.select = fn
+        end,
+        id = function(fn)
+            if type(fn) ~= "function" then
+                error(string.format("media type '%s': id must be a function", name))
+            end
+            t.id = fn
+        end,
+        lock = function(fn)
+            if type(fn) ~= "function" then
+                error(string.format("media type '%s': lock must be a function", name))
+            end
+            t.lock = fn
+        end,
+        tag = function(key, fn)
+            if type(key) ~= "string" or key == "" then
+                error(string.format("media type '%s': tag name must be a non-empty string", name))
+            end
+            if fn ~= nil and type(fn) ~= "function" then
+                error(string.format("media type '%s': tag '%s' must be a function or nil", name, key))
+            end
+            t.tags[key] = fn
+        end,
+        object = function(key, fn)
+            if type(key) ~= "string" or key == "" then
+                error(string.format("media type '%s': object name must be a non-empty string", name))
+            end
+            if fn ~= nil and type(fn) ~= "function" then
+                error(string.format("media type '%s': object '%s' must be a function or nil", name, key))
+            end
+            t.objects[key] = fn
+        end,
+        image = function(key, fn)
+            if type(key) ~= "string" or key == "" then
+                error(string.format("media type '%s': image name must be a non-empty string", name))
+            end
+            if fn ~= nil and type(fn) ~= "function" then
+                error(string.format("media type '%s': image '%s' must be a function or nil", name, key))
+            end
+            t.images[key] = fn
+        end,
+        location = function(fn)
+            if fn ~= nil and type(fn) ~= "function" then
+                error(string.format("media type '%s': location must be a function or nil", name))
+            end
+            t.location = fn
+        end,
+        media = function(field, child_type, fn)
+            if type(field) ~= "string" or field == "" then
+                error(string.format("media type '%s': media field must be a non-empty string", name))
+            end
+            if type(child_type) ~= "string" or child_type == "" then
+                error(string.format("media type '%s': child type must be a non-empty string", name))
+            end
+            if fn ~= nil and type(fn) ~= "function" then
+                error(string.format("media type '%s': media field '%s' selector must be a function or nil", name, field))
+            end
+            t.media[field] = {
+                type = child_type,
+                select = fn,
             }
-        end
-    end
-}
-
-_G.datamile.compile.a = _G.datamile.compile.album
-_G.datamile.compile.track = _G.datamile.compile.tracks
-_G.datamile.compile.t = _G.datamile.compile.tracks
-
-_G.datamile.compile.album.cover("main", function(ctx, m)
-    local root = ctx.paths.album_root
-    local candidates = {
-        "cover.png",
-        "cover.jpg",
-        "cover.jpeg",
-        "folder.png",
-        "folder.jpg",
-        "folder.jpeg",
+        end,
     }
-    local matched = nil
 
-    for _, name in ipairs(candidates) do
-        if d.fs.exists(d.fs.joinpath(root, name)) then
-            matched = name
-            break
-        end
+    api.tags = api.tag
+    api.objects = api.object
+    api.images = api.image
+
+    _G.datamile.compile[name] = api
+    return api
+end
+
+function _G.datamile.media.select(name, source)
+    local t = require_type(name)
+    if type(t.select) ~= "function" then
+        error(string.format("media type '%s' has no select function", name))
     end
 
-    return {
-        fit = { "crop", 1080, 1080 },
-        filter = "catmullrom",
-        sources = matched
+    local label = string.format("media type '%s' select", name)
+    return run_selector(t.select, source, label)
+end
+
+function __DATAMILE_MEDIA_ROOTS()
+    local roots = {}
+    for name, t in pairs(REGISTRY.media) do
+        if type(t.lock) == "function" then
+            table.insert(roots, name)
+        end
+    end
+    table.sort(roots)
+    return roots
+end
+
+function __DATAMILE_MEDIA_SELECT(name, source)
+    return _G.datamile.media.select(name, source)
+end
+
+function __DATAMILE_MEDIA_LOCK(name, source)
+    local t = require_type(name)
+    if type(t.lock) ~= "function" then
+        return nil
+    end
+
+    source = validate_source(source)
+    local ok, result = pcall(t.lock, source)
+    if not ok then
+        error(string.format("media type '%s' lock failed for %s: %s", name, source_label(source), result))
+    end
+    if result == nil then
+        return nil
+    end
+    if type(result) ~= "string" or result == "" then
+        error(string.format("media type '%s' lock must return a path or nil", name))
+    end
+
+    return result
+end
+
+function __DATAMILE_MEDIA_COMPILE(name, source)
+    local t = require_type(name)
+    source = validate_source(source)
+
+    local out = {
+        id = source.path or "",
+        tags = {},
+        objects = {},
+        images = {},
+        media = {},
     }
-end)
 
-function __DATAMILE_DISPATCHER(ctx, manifests)
-    local results = { id = nil, album = {}, tracks = {}, covers = {} }
-
-    local meta_album = manifests.metadata and manifests.metadata.album or {}
-    if type(REGISTRY.id_fn) == "function" then
-        local status, res = pcall(REGISTRY.id_fn, ctx, manifests)
-        if not status then
-            error(string.format("Error evaluating album id: %s", res))
-        end
-        if res == nil or res == "" then
-            error("Album id function returned empty or nil value")
-        end
-        results.id = tostring(res)
-    else
-        local artist = d.fn.coalesce(meta_album.albumartist, meta_album.artist, "Unknown")
-        local raw_date = tostring(d.fn.coalesce(meta_album.date, ""))
-        local year = raw_date:match("%d%d%d%d") or "Unknown"
-        local album = d.fn.coalesce(meta_album.album, "Unknown")
-        results.id = string.format("%s - %s - %s", artist, year, album)
-    end
-
-    for key_name, func in pairs(REGISTRY.keys.album) do
-        local status, res = pcall(func, ctx, manifests)
-        if not status then
-            error(string.format("Error evaluating album key '%s': %s", key_name, res))
-        end
-        if res ~= nil and res ~= "" then
-            results.album[key_name] = res
-        end
-    end
-
-    for name, func in pairs(REGISTRY.covers_rules) do
-        local status, res = pcall(func, ctx, manifests)
-        if not status then
-            error(string.format("Error evaluating album cover '%s': %s", name, res))
-        end
-        if res ~= nil then
-            results.covers[name] = res
-        end
-    end
-    
-    for i = 1, ctx.total_tracks do
-        results.tracks[i] = {}
-        for key_name, func in pairs(REGISTRY.keys.tracks) do
-            local status, res = pcall(func, ctx, manifests, i)
-            if not status then
-                error(string.format("Error evaluating track key '%s' at index %d: %s", key_name, i, res))
-            end
-            if res ~= nil and res ~= "" then
-                results.tracks[i][key_name] = res
-            end
-        end
-
-        if REGISTRY.lyrics and type(REGISTRY.lyrics.text) == "function" then
-            local status, lyr_text = pcall(REGISTRY.lyrics.text, ctx, manifests, i)
-            if not status then
-                error(string.format("Error evaluating track lyrics at index %d: %s", i, lyr_text))
-            end
-            if lyr_text ~= nil and lyr_text ~= "" then
-                local lyr_type = "txt"
-                if type(REGISTRY.lyrics.type) == "function" then
-                    local t_status, t_res = pcall(REGISTRY.lyrics.type, ctx, manifests, i)
-                    if t_status and t_res and t_res ~= "" then
-                        lyr_type = t_res
-                    end
-                elseif type(REGISTRY.lyrics.type) == "string" and REGISTRY.lyrics.type ~= "" then
-                    lyr_type = REGISTRY.lyrics.type
-                end
-                results.tracks[i]["lyrics"] = {
-                    ["type"] = lyr_type,
-                    ["text"] = lyr_text
-                }
+    for key, fn in pairs(t.tags) do
+        if type(fn) == "function" then
+            local result = call_field(fn, source, "tag", key)
+            if result ~= nil then
+                validate_tag(result)
+                out.tags[key] = result
             end
         end
     end
-    
-    return results
+
+    if type(t.id) == "function" then
+        local ok, result = pcall(t.id, source, out.tags)
+        if not ok then
+            error(string.format("media type '%s' id failed for %s: %s", name, source_label(source), result))
+        end
+        if type(result) == "string" and result ~= "" then
+            out.id = result
+        end
+    end
+
+    for key, fn in pairs(t.objects) do
+        if type(fn) == "function" then
+            local result = call_field(fn, source, "object", key)
+            if result ~= nil then
+                out.objects[key] = result
+            end
+        end
+    end
+
+    if type(t.location) == "function" then
+        local result = call_field(t.location, source, "location", "location")
+        if result ~= nil then
+            out.location = result
+        end
+    end
+
+    for key, fn in pairs(t.images) do
+        if type(fn) == "function" then
+            local result = call_field(fn, source, "image", key)
+            if result ~= nil then
+                out.images[key] = result
+            end
+        end
+    end
+
+    for field, child in pairs(t.media) do
+        local child_type = require_type(child.type)
+        local selector = child.select or child_type.select
+        if type(selector) ~= "function" then
+            error(string.format("media type '%s' field '%s': child type '%s' has no select function", name, field, child.type))
+        end
+
+        local label = string.format("media type '%s' field '%s' select", name, field)
+        out.media[field] = {
+            type = child.type,
+            sources = run_selector(selector, source, label),
+        }
+    end
+
+    return out
 end

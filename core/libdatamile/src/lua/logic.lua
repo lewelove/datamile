@@ -57,14 +57,6 @@ function __DATAMILE_GET_LOGIC_MANIFEST()
 end
 
 function __DATAMILE_EVALUATE_ALBUM_LOGIC(raw_album)
-    local album = raw_album
-    if raw_album and type(raw_album.album) == "table" then
-        album = raw_album.album
-        if raw_album.tracks and album.tracks == nil then
-            album.tracks = raw_album.tracks
-        end
-    end
-
     local res = {
         filters = {},
         groupers = {},
@@ -73,6 +65,12 @@ function __DATAMILE_EVALUATE_ALBUM_LOGIC(raw_album)
         shelves = {},
         shelf_sorts = {}
     }
+
+    if type(raw_album) ~= "table" or type(raw_album.album) ~= "table" then
+        return res
+    end
+
+    local album = raw_album.album
 
     for k, v in pairs(REGISTRY.filters or {}) do
         if type(v.match) == "function" then

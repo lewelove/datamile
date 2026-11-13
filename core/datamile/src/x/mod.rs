@@ -269,7 +269,10 @@ pub async fn get_playing_album(lib_root: &str) -> Result<PathBuf> {
         .context("Invalid track path")?;
 
     while curr.starts_with(&root) && curr != root {
-        if curr.join("metadata.toml").exists() || curr.join("album.lock.json").exists() {
+        if curr.join("album.toml").exists()
+            || curr.join("metadata.toml").exists()
+            || curr.join("album.lock.json").exists()
+        {
             return Ok(curr);
         }
         let Some(parent) = curr.parent() else {

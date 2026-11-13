@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
-pub use libdatamile::harvest::{harvest_file, harvest_file_cached};
+pub use libdatamile::harvest::harvest_file;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatMode {

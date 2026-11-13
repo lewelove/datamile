@@ -1,4 +1,4 @@
-use crate::compile::{ExportTarget, LogVerbosity, build};
+use crate::compile::{ExportTarget, LogVerbosity, media};
 use anyhow::Result;
 use rayon::prelude::*;
 use serde_json::Value;
@@ -8,16 +8,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub struct CompiledItem {
-    pub album_dir: PathBuf,
-    pub album_id: String,
+    pub root_type: String,
+    pub path: PathBuf,
+    pub id: String,
+    pub lock_path: PathBuf,
     pub lock_val: Value,
     pub eval_res: Option<Value>,
     pub deps: HashSet<PathBuf>,
 }
 
 pub struct StreamContext {
-    pub albums: Vec<PathBuf>,
+    pub roots: Vec<(String, Value)>,
     pub config: Arc<libdatamile::lua::ResolvedConfig>,
+    pub cache_root: PathBuf,
     pub target: ExportTarget,
     pub jobs: Option<usize>,
     pub ingest_tx:
@@ -29,32 +32,49 @@ pub struct StreamContext {
 pub async fn run(ctx: StreamContext) -> Result<usize> {
     let (dtx, mut drx) = tokio::sync::mpsc::channel::<CompiledItem>(512);
     let written_count = Arc::new(AtomicUsize::new(0));
+    let errors = Arc::new(Mutex::new(None));
 
-    let build_handle = spawn_builders(&ctx, dtx);
+    let build_handle = spawn_builders(&ctx, dtx, Arc::clone(&errors));
 
     let target = ctx.target;
     let written_ref = Arc::clone(&written_count);
     let ingest_tx = ctx.ingest_tx;
     let active_writes = ctx.active_writes.clone();
     let verbosity = ctx.verbosity;
+    let direct_errors = Arc::clone(&errors);
 
     let direct_handle = tokio::spawn(async move {
         while let Some(item) = drx.recv().await {
             let written_inner = Arc::clone(&written_ref);
             let active_ref = active_writes.clone();
+            let lock_path = item.lock_path.clone();
             let res = tokio::task::spawn_blocking(move || {
                 finalize(item, target, active_ref.as_ref(), verbosity)
             })
             .await;
-            if let Ok(Ok((written, payload))) = res {
-                if written {
-                    written_inner.fetch_add(1, Ordering::Relaxed);
+
+            match res {
+                Ok(Ok((written, payload))) => {
+                    if written {
+                        written_inner.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if let Some(p) = payload
+                        && let Some(ref tx) = ingest_tx
+                    {
+                        let _ = tx.send(p).await;
+                    }
                 }
-                if let Some(p) = payload
-                    && let Some(ref tx) = ingest_tx
-                {
-                    let _ = tx.send(p).await;
-                }
+                Ok(Err(e)) => record_error(
+                    &direct_errors,
+                    e.context(format!("Failed to finalize {}", lock_path.display())),
+                ),
+                Err(e) => record_error(
+                    &direct_errors,
+                    anyhow::Error::new(e).context(format!(
+                        "Finalize task failed for {}",
+                        lock_path.display()
+                    )),
+                ),
             }
         }
     });
@@ -62,15 +82,31 @@ pub async fn run(ctx: StreamContext) -> Result<usize> {
     let _ = build_handle.await;
     let _ = direct_handle.await;
 
+    if let Some(err) = errors.lock().ok().and_then(|mut slot| slot.take()) {
+        return Err(err);
+    }
+
     Ok(written_count.load(Ordering::Relaxed))
+}
+
+fn record_error(errors: &Arc<Mutex<Option<anyhow::Error>>>, err: anyhow::Error) {
+    log::error!("{err:#}");
+    let Ok(mut slot) = errors.lock() else {
+        return;
+    };
+    if slot.is_none() {
+        *slot = Some(err);
+    }
 }
 
 fn spawn_builders(
     ctx: &StreamContext,
     dtx: tokio::sync::mpsc::Sender<CompiledItem>,
+    errors: Arc<Mutex<Option<anyhow::Error>>>,
 ) -> tokio::task::JoinHandle<()> {
-    let albums = ctx.albums.clone();
+    let roots = ctx.roots.clone();
     let cfg = Arc::clone(&ctx.config);
+    let cache_root = ctx.cache_root.clone();
     let jobs = ctx.jobs;
 
     tokio::task::spawn_blocking(move || {
@@ -81,44 +117,66 @@ fn spawn_builders(
             .build()
             .unwrap();
         pool.install(|| {
-            albums.par_iter().for_each_init(
+            roots.par_iter().for_each_init(
                 || match libdatamile::lua::LuaEngine::new() {
                     Ok(engine) => match engine.evaluate_config(&cfg.path) {
                         Ok(_) => Some(engine),
                         Err(e) => {
-                            log::error!("Failed to evaluate config for worker thread: {e}");
+                            record_error(
+                                &errors,
+                                e.context("Failed to evaluate config for worker thread"),
+                            );
                             None
                         }
                     },
                     Err(e) => {
-                        log::error!("Failed to initialize Lua engine for worker thread: {e}");
+                        record_error(
+                            &errors,
+                            e.context("Failed to initialize Lua engine for worker thread"),
+                        );
                         None
                     }
                 },
-                |engine_opt, ar| {
-                    let canon = ar.canonicalize().unwrap_or_else(|_| ar.clone());
-                    let canon_display = canon.display();
+                |engine_opt, (root_type, root_source)| {
+                    let display = root_source
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or("<virtual>");
                     let Some(engine) = engine_opt.as_ref() else {
-                        log::error!("Skipping compilation of {canon_display} due to worker Lua engine initialization failure");
+                        record_error(
+                            &errors,
+                            anyhow::anyhow!(
+                                "Skipping compilation of {display} due to worker Lua engine initialization failure"
+                            ),
+                        );
                         return;
                     };
-                    match build::build(ar, &cfg, engine) {
+
+                    match media::compile_root(engine, root_type, root_source, &cache_root) {
                         Ok(out) => match engine.evaluate_album_logic(&out.lock_json) {
                             Ok(eval_res) => {
                                 let _ = dtx.blocking_send(CompiledItem {
-                                    album_dir: out.album_dir,
-                                    album_id: out.album_id,
+                                    root_type: out.root_type,
+                                    path: out.path,
+                                    id: out.id,
+                                    lock_path: out.lock_path,
                                     lock_val: out.lock_json,
                                     eval_res: Some(eval_res),
                                     deps: out.dependencies,
                                 });
                             }
                             Err(e) => {
-                                log::error!("Logic evaluation failed for {canon_display}: {e}");
+                                record_error(
+                                    &errors,
+                                    e.context(format!("Logic evaluation failed for {display}")),
+                                );
                             }
                         },
                         Err(e) => {
-                            log::error!("Compilation failed for {canon_display}: {e}");
+                            record_error(
+                                &errors,
+                                e.context(format!("Compilation failed for {display}")),
+                            );
                         }
                     }
                 },
@@ -133,21 +191,6 @@ fn finalize(
     active_writes: Option<&Arc<Mutex<HashSet<PathBuf>>>>,
     verbosity: LogVerbosity,
 ) -> Result<(bool, Option<crate::server::api::system::AlbumIngestPayload>)> {
-    let artist = item
-        .lock_val
-        .get("album")
-        .and_then(|a| a.get("albumartist"))
-        .and_then(Value::as_str)
-        .unwrap_or("Unknown")
-        .to_string();
-    let album = item
-        .lock_val
-        .get("album")
-        .and_then(|a| a.get("album"))
-        .and_then(Value::as_str)
-        .unwrap_or("Unknown")
-        .to_string();
-
     let content = serde_json::to_string_pretty(&item.lock_val)?;
 
     if target == ExportTarget::Stdout {
@@ -155,16 +198,22 @@ fn finalize(
         return Ok((false, None));
     }
 
-    let lock_path = item.album_dir.join("album.lock.json");
-    let lock_canon = item.album_dir.join("album.lock.json");
-    let should_write =
-        std::fs::read_to_string(&lock_path).map_or(true, |existing| existing != content);
+    let should_write = std::fs::read_to_string(&item.lock_path)
+        .map_or(true, |existing| existing != content);
+
+    let entity_dir = if item.path.is_dir() {
+        item.path.clone()
+    } else {
+        item.path
+            .parent()
+            .map_or_else(|| item.path.clone(), PathBuf::from)
+    };
 
     let payload = crate::server::api::system::AlbumIngestPayload {
-        album_dir: item.album_dir,
-        id: item.album_id,
-        artist,
-        album,
+        album_dir: entity_dir,
+        id: item.id,
+        artist: String::new(),
+        album: String::new(),
         lock_json: content.clone(),
         eval_res: item.eval_res,
         dependencies: item.deps.into_iter().collect(),
@@ -175,12 +224,19 @@ fn finalize(
         if let Some(aw) = active_writes
             && let Ok(mut active) = aw.lock()
         {
-            active.insert(lock_canon);
-            active.insert(lock_path.clone());
+            active.insert(item.lock_path.clone());
+            active.insert(item.lock_path.clone());
         } else if verbosity == LogVerbosity::Verbose {
-            log::info!("Updated lock: {}", payload.id);
+            log::info!(
+                "Updated {} lock: {}",
+                item.root_type,
+                item.lock_path.display()
+            );
         }
-        std::fs::write(&lock_path, content)?;
+        if let Some(parent) = item.lock_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&item.lock_path, content)?;
         return Ok((true, Some(payload)));
     }
 

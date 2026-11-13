@@ -104,12 +104,12 @@ async fn get_tracks_internal(
 
     if let (Some(raw), Some(dir)) = (json_str, album_dir)
         && let Ok(parsed) = serde_json::from_str::<Value>(&raw)
-        && let Some(tracks) = parsed.get("tracks").and_then(|t| t.as_array())
+        && let Some(tracks) = parsed.pointer("/album/tracks").and_then(|t| t.as_array())
     {
         for track in tracks {
             if let Some(td) = target_disc {
                 let current_disc = track
-                    .get("discnumber")
+                    .pointer("/tags/discnumber")
                     .and_then(serde_json::Value::as_u64)
                     .map_or(1, |v| u32::try_from(v).unwrap_or(1));
                 if current_disc != td {
@@ -117,12 +117,12 @@ async fn get_tracks_internal(
                 }
             }
 
-            if let Some(tp) = track
-                .get("file")
-                .and_then(|f| f.get("path"))
-                .and_then(|v| v.as_str())
-            {
-                let abs = dir.join(tp);
+            if let Some(tp) = track.pointer("/location/path").and_then(|v| v.as_str()) {
+                let abs = if StdPath::new(tp).is_absolute() {
+                    std::path::PathBuf::from(tp)
+                } else {
+                    dir.join(tp)
+                };
                 let uri = abs.strip_prefix(&music_directory).map_or_else(
                     |_| abs.to_string_lossy().to_string(),
                     |p| p.to_string_lossy().to_string(),

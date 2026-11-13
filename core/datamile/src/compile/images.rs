@@ -121,7 +121,7 @@ fn parse_sources(
         _ => {
             return Err(DatamileError::TypeMismatch {
                 path: album_root.to_path_buf(),
-                key: format!("covers.{namespace}.sources"),
+                key: format!("images.{namespace}.sources"),
                 expected_type: "string, array of strings, or nil".to_string(),
                 found_val: src_val.to_string(),
             });
@@ -225,14 +225,14 @@ fn resolve_source_target(
     }
 }
 
-pub fn process_covers(
+pub fn process_images(
     album_root: &Path,
     cache_root: &Path,
-    covers_val: Option<&Value>,
+    images_val: Option<&Value>,
     dependencies: &mut HashSet<PathBuf>,
 ) -> Result<BTreeMap<String, Value>, DatamileError> {
     let mut result_map = BTreeMap::new();
-    let Some(covers_obj) = covers_val.and_then(Value::as_object) else {
+    let Some(images_obj) = images_val.and_then(Value::as_object) else {
         return Ok(result_map);
     };
 
@@ -240,7 +240,7 @@ pub fn process_covers(
         .canonicalize()
         .unwrap_or_else(|_| album_root.to_path_buf());
 
-    for (namespace, spec_val) in covers_obj {
+    for (namespace, spec_val) in images_obj {
         let spec = parse_cover_spec(namespace, spec_val, album_root)?;
         let mut entries = Vec::new();
 
@@ -298,7 +298,7 @@ pub fn process_covers(
                 spec.fit_mode,
             );
 
-            let master_dir = cache_root.join("covers").join(&address);
+            let master_dir = cache_root.join("images").join(&address);
             let master_qoi_path = master_dir.join("master.qoi");
 
             if !master_qoi_path.exists() {

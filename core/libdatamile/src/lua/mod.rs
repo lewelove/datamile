@@ -18,7 +18,6 @@ use std::sync::OnceLock;
 const LUA_CORE: &str = include_str!("core.lua");
 const LUA_CONFIG: &str = include_str!("config.lua");
 const LUA_COMPILER: &str = include_str!("compiler.lua");
-const LUA_DEFAULTS: &str = include_str!("defaults.lua");
 const LUA_ACTIONS: &str = include_str!("actions.lua");
 const LUA_LOGIC: &str = include_str!("logic.lua");
 
@@ -363,10 +362,6 @@ impl LuaEngine {
             .exec()
             .map_err(|e| anyhow::anyhow!("{e}"))
             .context("Failed to load compiler.lua")?;
-        lua.load(LUA_DEFAULTS)
-            .exec()
-            .map_err(|e| anyhow::anyhow!("{e}"))
-            .context("Failed to load defaults.lua")?;
         lua.load(LUA_ACTIONS)
             .exec()
             .map_err(|e| anyhow::anyhow!("{e}"))

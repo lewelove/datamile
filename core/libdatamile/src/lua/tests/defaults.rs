@@ -3,6 +3,49 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Register the media types these tests exercise. Nothing is built into the
+/// engine, so every fixture declares its own selectors.
+fn register_fixture(engine: &LuaEngine) {
+    let code = r#"
+        local function audio_extensions()
+            local configured = d.get(REGISTRY.config, "compiler.audio_extensions")
+                or d.get(REGISTRY.config, "manifest.audio_extensions")
+            if type(configured) == "table" and #configured > 0 then
+                return configured
+            end
+            return d.fs.audio_extensions()
+        end
+
+        local function harvest(path)
+            local seeds = {}
+            for _, file in ipairs(d.fs.files(path, { ext = audio_extensions() })) do
+                table.insert(seeds, { path = file, audio = d.fs.read_audio(file) })
+            end
+            return d.list.sort_by(seeds, function(item)
+                return {
+                    d.str.leading_int(d.get(item.audio, "tags.discnumber")) or 1,
+                    d.str.leading_int(d.get(item.audio, "tags.tracknumber")) or math.huge,
+                    item.path,
+                }
+            end)
+        end
+
+        d.media.type("track")
+        d.compile.track.select(function(scope)
+            return harvest(scope.path)
+        end)
+
+        d.media.type("album")
+        d.compile.album.lock(function(target)
+            return d.fs.joinpath(target.path, "album.lock.json")
+        end)
+        d.compile.album.select(function(scope)
+            return d.fs.roots(scope, { marker = "album.toml", prune = false })
+        end)
+    "#;
+    engine.lua.load(code).exec().expect("register fixture");
+}
+
 /// Register a fake audio file and seed the harvest cache so `d.fs.read_audio`
 /// returns the supplied tags without parsing real audio.
 fn write_track(dir: &Path, cache: &Path, name: &str, tags: &Value) {
@@ -50,14 +93,8 @@ fn engine_with_cache(cache: &Path) -> LuaEngine {
     engine
         .lua
         .set_app_data(EngineContext::new(cache.to_path_buf()));
+    register_fixture(&engine);
     engine
-}
-
-fn compile(engine: &LuaEngine, type_name: &str, seed: &Value) -> Value {
-    let prepared = engine.media_prepare(type_name, seed).expect("prepare");
-    engine
-        .media_finalize(type_name, prepared.ctx_id, &json!({}))
-        .expect("finalize")
 }
 
 fn source_names(sources: &[Value]) -> Vec<String> {
@@ -152,49 +189,6 @@ fn test_track_sources_respects_audio_extensions() {
     assert_eq!(source_names(&sources), vec!["b.mp3"]);
 }
 
-/// Verify that `theme.toml` is compiled into `objects.colors` with the
-/// background palette normalized to a list of valid hex colors.
-#[test]
-fn test_album_colors_from_theme() {
-    let (_tmp, album, cache) = fixture();
-    fs::write(
-        album.join("theme.toml"),
-        "[album.colors]\nbackground = \"#AABBCC\"\nforeground = \"#FFF\"\n",
-    )
-    .expect("theme");
-
-    let engine = engine_with_cache(&cache);
-    let value = compile(
-        &engine,
-        "album",
-        &json!({ "path": album.to_string_lossy() }),
-    );
-
-    assert_eq!(value["objects"]["colors"]["background"], json!(["#AABBCC"]));
-    assert_eq!(value["objects"]["colors"]["foreground"], json!("#FFF"));
-}
-
-/// Verify that malformed theme colors are dropped instead of compiled.
-#[test]
-fn test_album_colors_rejects_invalid_hex() {
-    let (_tmp, album, cache) = fixture();
-    fs::write(
-        album.join("theme.toml"),
-        "[album.colors]\nbackground = [\"#AABBCC\", \"nope\", \"#GGG\"]\nforeground = \"red\"\n",
-    )
-    .expect("theme");
-
-    let engine = engine_with_cache(&cache);
-    let value = compile(
-        &engine,
-        "album",
-        &json!({ "path": album.to_string_lossy() }),
-    );
-
-    assert_eq!(value["objects"]["colors"]["background"], json!(["#AABBCC"]));
-    assert!(value["objects"]["colors"].get("foreground").is_none());
-}
-
 /// Track numbers may carry a total ("03/12"); the leading integer orders them.
 #[test]
 fn test_track_sources_parse_fractional_tracknumbers() {
@@ -226,6 +220,7 @@ fn test_album_select_finds_nested_albums() {
     }
 
     let engine = LuaEngine::new().expect("engine");
+    register_fixture(&engine);
     let mut sources = engine
         .media_select(
             "album",
@@ -258,9 +253,10 @@ fn test_album_select_non_recursive() {
     fs::write(root.join("album.toml"), "").expect("marker");
 
     let engine = LuaEngine::new().expect("engine");
+    register_fixture(&engine);
     let same = engine
         .media_select(
-            &"album",
+            "album",
             &json!({ "path": album.to_string_lossy(), "recursive": false }),
         )
         .expect("select");

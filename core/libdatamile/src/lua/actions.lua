@@ -19,28 +19,14 @@ _G.datamile.action("open_folder", {
     end
 })
 
-_G.datamile.action("open_manifest", {
-    label = "Open Manifest",
-    description = "Open album.toml in default viewer",
-    run = function(ctx)
-        local launcher = get_launcher()
-        for _, album in ipairs(ctx.albums) do
-            local p = d.fs.joinpath(album.path, "album.toml")
-            if d.fs.exists(p) then
-                d.system({ launcher, p }, { detach = true })
-            end
-        end
-    end
-})
-
 _G.datamile.action("open_lock", {
     label = "Open Lock",
-    description = "Open album.lock.json in default viewer",
+    description = "Open the entity lockfile in the default viewer",
     run = function(ctx)
         local launcher = get_launcher()
         for _, album in ipairs(ctx.albums) do
-            local p = d.fs.joinpath(album.path, "album.lock.json")
-            if d.fs.exists(p) then
+            local p = album.lock_path
+            if type(p) == "string" and p ~= "" and d.fs.exists(p) then
                 d.system({ launcher, p }, { detach = true })
             end
         end

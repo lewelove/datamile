@@ -10,6 +10,18 @@ fn compile_leaf(engine: &LuaEngine, type_name: &str, seed: &Value) -> Value {
         .expect("finalize")
 }
 
+/// Verify that a fresh engine has no baked-in media types.
+#[test]
+fn test_engine_has_no_builtin_media_roots() {
+    let engine = LuaEngine::new().expect("engine");
+    let roots: Table = engine
+        .lua
+        .load("return __DATAMILE_MEDIA_ROOTS()")
+        .eval()
+        .expect("roots");
+    assert_eq!(roots.raw_len(), 0);
+}
+
 /// Verify that registered media roots are only types with a lock function.
 #[test]
 fn test_media_roots_require_lock() {
@@ -188,6 +200,49 @@ fn test_child_selector_sees_ctx() {
 #[test]
 fn test_track_id_uses_discnumber() {
     let engine = LuaEngine::new().expect("engine");
+    engine
+        .lua
+        .load(
+            r#"
+            d.media.type("track")
+            d.compile.track.input("audio", function(ctx) return ctx.audio end)
+            d.compile.track.id(function(ctx)
+                local tags = ctx.tags
+                local disc = tonumber(tags.discnumber or 1)
+                local number = tostring(tags.tracknumber or "")
+                if disc > 1 then
+                    number = tostring(tags.discnumber) .. "." .. number
+                end
+                return table.concat({
+                    tags.albumartist or tags.artist or "",
+                    tags.album or "",
+                    number,
+                    tags.title or "",
+                }, " - ")
+            end)
+            d.compile.track.location(function(ctx)
+                return { kind = "file", path = ctx.path }
+            end)
+            d.compile.track.tag("albumartist", function(ctx)
+                return d.get(ctx, "audio.tags.albumartist")
+            end)
+            d.compile.track.tag("album", function(ctx)
+                return d.get(ctx, "audio.tags.album")
+            end)
+            d.compile.track.tag("title", function(ctx)
+                return d.get(ctx, "audio.tags.title")
+            end)
+            d.compile.track.tag("tracknumber", function(ctx)
+                return d.get(ctx, "audio.tags.tracknumber")
+            end)
+            d.compile.track.tag("discnumber", function(ctx)
+                return d.get(ctx, "audio.tags.discnumber")
+            end)
+        "#,
+        )
+        .exec()
+        .expect("register track");
+
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("a.flac");
     std::fs::write(&file, b"fake").expect("write");

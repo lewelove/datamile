@@ -12,11 +12,17 @@ let activeTrackIdx = $derived(player.currentTrackIndex);
 
 let fullAlbum = $derived(activeId ? collection.fullAlbumCache[activeId] : null);
 let currentTrackFull = $derived(
-  activeTrackIdx !== null && fullAlbum?.tracks ? fullAlbum.tracks[activeTrackIdx] ?? null : null
+  activeTrackIdx !== null && fullAlbum?.album.tracks
+    ? fullAlbum.album.tracks[activeTrackIdx] ?? null
+    : null
 );
 
-let title = $derived(currentTrackFull?.title || player.title || "Unknown Title");
-let artist = $derived(currentTrackFull?.artist || player.artist || "Unknown Artist");
+let title = $derived(
+  String(currentTrackFull?.tags?.title ?? "") || player.title || "Unknown Title"
+);
+let artist = $derived(
+  String(currentTrackFull?.tags?.artist ?? "") || player.artist || "Unknown Artist"
+);
 let duration = $derived(player.duration || 0);
 
 function formatTime(totalSeconds: number) {
@@ -28,11 +34,12 @@ function formatTime(totalSeconds: number) {
 }
 
 let trackDuration = $derived(
-  currentTrackFull?.info?.duration_formatted || (duration > 0 ? formatTime(duration) : "")
+  String(currentTrackFull?.objects?.info?.duration_formatted ?? "") ||
+    (duration > 0 ? formatTime(duration) : "")
 );
 
 let trackFormat = $derived.by(() => {
-  const filePath = currentTrackFull?.file?.path || currentFile || "";
+  const filePath = currentTrackFull?.location?.path || currentFile || "";
   const cleanPath = filePath.split("?")[0].split("#")[0];
   const dotIndex = cleanPath.lastIndexOf(".");
   if (dotIndex !== -1 && dotIndex < cleanPath.length - 1) {
@@ -41,7 +48,7 @@ let trackFormat = $derived.by(() => {
       return ext.toUpperCase();
     }
   }
-  const enc = currentTrackFull?.info?.encoding;
+  const enc = currentTrackFull?.objects?.info?.encoding;
   if (enc) {
     if (enc.toLowerCase() === "mpeg") return "MP3";
     return enc.toUpperCase();

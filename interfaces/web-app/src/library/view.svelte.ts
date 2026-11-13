@@ -158,7 +158,7 @@ export class ViewState {
       json.type === "ALBUMS_UPDATED"
     ) {
       if (this.focusedAlbum) {
-        const focusedId = this.focusedAlbum.id;
+        const focusedId = this.focusedAlbum.album.id;
         const isRemoved =
           (json.type === "ALBUM_REMOVED" && json.id === focusedId) ||
           (json.type === "ALBUMS_UPDATED" &&
@@ -175,7 +175,7 @@ export class ViewState {
           if (isUpdated) {
             delete collection.fullAlbumCache[focusedId];
             collection.ensureFullAlbum(focusedId).then((data) => {
-              if (data && this.focusedAlbum?.id === focusedId) {
+              if (data && this.focusedAlbum?.album.id === focusedId) {
                 this.focusedAlbum = data;
               }
             });
@@ -401,7 +401,7 @@ export class ViewState {
   }
 
   async setFocus(album: { id: string }, instant: boolean = false) {
-    if (this.focusedAlbum?.id === album.id) {
+    if (this.focusedAlbum?.album.id === album.id) {
       this.isFocusInstant = instant;
       return;
     }
@@ -411,42 +411,20 @@ export class ViewState {
     const cached = collection.fullAlbumCache[album.id];
     if (cached) {
       this.focusedAlbum = cached;
-    } else {
-      const dictEntry = collection.dict[album.id];
-      if (dictEntry) {
-        this.focusedAlbum = {
-          id: album.id,
-          album: {
-            id: album.id,
-            album: dictEntry.album,
-            albumartist: dictEntry.albumartist,
-            date: dictEntry.date,
-            keys: dictEntry.keys,
-            colors: dictEntry.colors,
-            covers: dictEntry.covers || {
-              main: [
-                {
-                  address: dictEntry.cover_hash || ""
-                }
-              ]
-            },
-            info: {
-              virtual: dictEntry.virtual,
-              total_discs: dictEntry.total_discs,
-              total_tracks: dictEntry.total_tracks,
-              duration_formatted: dictEntry.duration_formatted
-            }
-          },
-          tracks: []
-        };
-      } else {
-        this.focusedAlbum = { id: album.id, album: { id: album.id }, tracks: [] };
-      }
+      return;
+    }
 
-      const full = await collection.ensureFullAlbum(album.id);
-      if (this.focusedAlbum?.id === album.id) {
-        this.focusedAlbum = full;
+    const dictEntry = collection.dict[album.id];
+    this.focusedAlbum = {
+      album: {
+        ...(dictEntry || { id: album.id }),
+        tracks: []
       }
+    };
+
+    const full = await collection.ensureFullAlbum(album.id);
+    if (full && this.focusedAlbum?.album.id === album.id) {
+      this.focusedAlbum = full;
     }
   }
 

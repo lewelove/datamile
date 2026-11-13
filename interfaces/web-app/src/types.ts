@@ -32,15 +32,9 @@ export interface AlbumInfoData {
   duration_formatted?: string;
 }
 
-export interface AlbumLockData {
-  id?: string;
-  album?: string;
-  albumartist?: string;
-  date?: string;
-  keys?: Record<string, unknown>;
-  colors?: AlbumColors | null;
-  covers?: Record<string, AlbumCoverEntry[]>;
+export interface AlbumObjects {
   info?: AlbumInfoData;
+  colors?: AlbumColors | null;
   manifests?: Record<string, unknown>;
 }
 
@@ -59,59 +53,46 @@ export interface TrackLyrics {
   text?: string;
 }
 
-export interface TrackFileInfo {
+export interface TrackObjects {
+  info?: TrackPhysicsInfo;
+  lyrics?: TrackLyrics;
+  embedded?: Record<string, unknown>;
+}
+
+export interface EntityLocation {
+  kind?: string;
   path?: string;
   mtime?: number;
   byte_size?: number;
 }
 
+export type EntityTags = Record<string, unknown>;
+
 export interface TrackItem {
-  id?: string | number;
-  discnumber: number;
-  tracknumber: number;
-  title: string;
-  artist?: string;
-  info?: TrackPhysicsInfo;
-  file?: TrackFileInfo;
-  keys?: Record<string, unknown>;
-  lyrics?: TrackLyrics;
-}
-
-export interface FullAlbum {
-  id: string;
-  album?: AlbumLockData;
-  tracks?: TrackItem[];
-}
-
-export interface AlbumCardItem {
-  id: string;
-  title?: string;
-  artist?: string;
-  cover_hash?: string | null;
-  covers?: Record<string, AlbumCoverEntry[]>;
-  total_discs?: number;
-  total_tracks?: number;
-  duration_formatted?: string;
-  virtual?: boolean;
-  keys?: Record<string, unknown>;
-  colors?: AlbumColors | null;
+  id?: string;
+  tags?: EntityTags;
+  objects?: TrackObjects;
+  images?: Record<string, AlbumCoverEntry[]>;
+  location?: EntityLocation;
 }
 
 export interface AlbumDictEntry {
   id: string;
-  album?: string;
-  albumartist?: string;
-  date?: string;
-  cover_path?: string | null;
-  cover_hash?: string | null;
-  covers?: Record<string, AlbumCoverEntry[]>;
-  duration_formatted?: string;
-  total_discs?: number;
-  total_tracks?: number;
-  virtual?: boolean;
-  keys?: Record<string, unknown>;
-  colors?: AlbumColors | null;
+  tags?: EntityTags;
+  objects?: AlbumObjects;
+  images?: Record<string, AlbumCoverEntry[]>;
+  location?: EntityLocation;
 }
+
+export interface AlbumEntity extends AlbumDictEntry {
+  tracks?: TrackItem[];
+}
+
+export interface FullAlbum {
+  album: AlbumEntity;
+}
+
+export type AlbumCardItem = AlbumDictEntry;
 
 export interface GrouperTreeNode {
   value: string;

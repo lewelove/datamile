@@ -9,7 +9,7 @@ use libdatamile::images::{
     resize_image_max_edge,
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::HashSet;
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
@@ -540,64 +540,6 @@ pub async fn trigger_cache_images(
     StatusCode::ACCEPTED.into_response()
 }
 
-fn album_compat_view(raw: &str) -> Option<String> {
-    let parsed: Value = serde_json::from_str(raw).ok()?;
-    let album = parsed.get("album")?;
-    let tags = album.get("tags").cloned().unwrap_or_else(|| json!({}));
-    let objects = album.get("objects").cloned().unwrap_or_else(|| json!({}));
-    let info = objects.get("info").cloned().unwrap_or_else(|| json!({}));
-    let images = album.get("images").cloned().unwrap_or_else(|| json!({}));
-
-    let tracks: Vec<Value> = album
-        .get("tracks")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .map(|track| {
-                    let track_tags =
-                        track.get("tags").cloned().unwrap_or_else(|| json!({}));
-                    let track_objects =
-                        track.get("objects").cloned().unwrap_or_else(|| json!({}));
-                    json!({
-                        "id": track.get("id"),
-                        "discnumber": track_tags.get("discnumber"),
-                        "tracknumber": track_tags.get("tracknumber"),
-                        "title": track_tags.get("title"),
-                        "artist": track_tags.get("artist"),
-                        "info": track_objects.get("info"),
-                        "file": track.get("location"),
-                        "location": track.get("location"),
-                        "keys": track_tags,
-                        "tags": track.get("tags"),
-                        "objects": track_objects,
-                        "lyrics": track_objects.get("lyrics"),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    serde_json::to_string(&json!({
-        "id": parsed.get("album").and_then(|a| a.get("id")),
-        "album": {
-            "id": album.get("id"),
-            "album": tags.get("album"),
-            "albumartist": tags.get("albumartist"),
-            "date": tags.get("date"),
-            "keys": tags,
-            "tags": tags,
-            "objects": objects,
-            "info": info,
-            "covers": images,
-            "images": images,
-            "colors": album.get("colors"),
-        },
-        "tracks": tracks,
-    }))
-    .ok()
-}
-
 pub async fn get_album_metadata(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -607,59 +549,11 @@ pub async fn get_album_metadata(
         logic.get_album_json(&id)
     };
     if let Some(data) = json_opt {
-        let body = album_compat_view(&data).unwrap_or_else(|| data.to_string());
-        return ([(header::CONTENT_TYPE, "application/json")], body).into_response();
-    }
-    StatusCode::NOT_FOUND.into_response()
-}
-
-pub async fn get_album_cover(
-    Path(id): Path<String>,
-    State(state): State<Arc<AppState>>,
-) -> Response {
-    let path_opt = {
-        let logic = state.logic.read().await;
-        logic.get_album_record(&id).map(|record| {
-            let cp = &record.cover_path;
-            if std::path::Path::new(cp).is_absolute() {
-                PathBuf::from(cp)
-            } else {
-                record.path.join(cp)
-            }
-        })
-    };
-
-    if let Some(path) = path_opt {
-        return serve_image(path).await;
-    }
-    StatusCode::NOT_FOUND.into_response()
-}
-
-async fn serve_image(path: PathBuf) -> Response {
-    if let Ok(mut file) = File::open(&path).await {
-        let mut buf = Vec::new();
-        if file.read_to_end(&mut buf).await.is_ok() {
-            let mime = if path.extension().is_some_and(|e| e == "png") {
-                "image/png"
-            } else {
-                "image/jpeg"
-            };
-
-            let cache_header = HeaderValue::from_static("public, max-age=86400");
-
-            return (
-                [
-                    (header::CONTENT_TYPE, HeaderValue::from_static(mime)),
-                    (header::CACHE_CONTROL, cache_header),
-                    (
-                        header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                        HeaderValue::from_static("*"),
-                    ),
-                ],
-                buf,
-            )
-                .into_response();
-        }
+        return (
+            [(header::CONTENT_TYPE, "application/json")],
+            data.to_string(),
+        )
+            .into_response();
     }
     StatusCode::NOT_FOUND.into_response()
 }

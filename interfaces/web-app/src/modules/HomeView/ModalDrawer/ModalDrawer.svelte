@@ -12,13 +12,13 @@ let { album, onclose }: { album: FullAlbum; onclose: () => void } = $props();
 let windowWidth = $state(typeof window !== "undefined" ? window.innerWidth : 1280);
 let leftColumnWidth = $derived(Math.round(0.36 * windowWidth));
 
-let albumData = $derived(album.album || {});
-let infoData = $derived(albumData.info || {});
+let albumData = $derived(album.album);
+let infoData = $derived(albumData.objects?.info || {});
 
-let coverHash = $derived(albumData.covers?.main?.[0]?.address || "");
-let title = $derived(albumData.album || "Untitled");
-let artist = $derived(albumData.albumartist || "Unknown");
-let dateString = $derived(albumData.date || "");
+let coverHash = $derived(albumData.images?.main?.[0]?.address || "");
+let title = $derived(String(albumData.tags?.album ?? "") || "Untitled");
+let artist = $derived(String(albumData.tags?.albumartist ?? "") || "Unknown");
+let dateString = $derived(String(albumData.tags?.date ?? ""));
 
 let discCount = $derived(Number(infoData.total_discs) || 1);
 let trackCount = $derived(Number(infoData.total_tracks) || 0);
@@ -52,39 +52,39 @@ function fadeIf(node: Element, params: FadeParams) {
 
 async function handlePlay() {
   try {
-    await playAlbum(album.id);
+    await playAlbum(albumData.id);
   } catch {}
 }
 
 async function handleUpdate() {
   try {
-    await updateAlbum(album.id);
+    await updateAlbum(albumData.id);
   } catch {}
 }
 
 async function handlePlayTrack(index: number) {
   try {
-    const tracks = album.tracks || [];
+    const tracks = albumData.tracks || [];
     const track = tracks[index];
     if (!track) {
       return;
     }
-    const discNumber = track.discnumber;
+    const discNumber = Number(track.tags?.discnumber ?? 1);
 
     let intraDiscOffset = 0;
     for (let i = 0; i < index; i++) {
-      if (tracks[i].discnumber === discNumber) {
+      if (Number(tracks[i].tags?.discnumber ?? 1) === discNumber) {
         intraDiscOffset++;
       }
     }
 
-    await playDisc(album.id, discNumber, intraDiscOffset);
+    await playDisc(albumData.id, discNumber, intraDiscOffset);
   } catch {}
 }
 
 async function handlePlayDisc(discNumber: number) {
   try {
-    await playDisc(album.id, discNumber);
+    await playDisc(albumData.id, discNumber);
   } catch {}
 }
 
@@ -149,7 +149,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_folder", album.id)}
+              onclick={() => executeAction("open_folder", albumData.id)}
               title="Open Local Folder"
             >
               <span class="icon">folder</span>
@@ -157,7 +157,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_manifest", album.id)}
+              onclick={() => executeAction("open_manifest", albumData.id)}
               title="Open Manifest"
             >
               <span class="icon">edit_document</span>
@@ -165,7 +165,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_lock", album.id)}
+              onclick={() => executeAction("open_lock", albumData.id)}
               title="Open Data Object"
             >
               <span class="icon">code</span>
@@ -173,7 +173,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_terminal", album.id)}
+              onclick={() => executeAction("open_terminal", albumData.id)}
               title="Open Terminal"
             >
               <span class="icon">terminal_2</span>
@@ -188,7 +188,7 @@ function handleBackdropClick(e: MouseEvent) {
         </div>
         <div class="tracks-scroll-area">
           <ModalDrawerTracks
-            tracks={album.tracks || []}
+            tracks={albumData.tracks || []}
             totalDiscs={infoData.total_discs}
             albumArtist={artist}
             onplay={handlePlayTrack}

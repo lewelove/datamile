@@ -98,8 +98,8 @@ function getTextCanvas(
   if (textBlockHeight <= 0) {
     return null;
   }
-  const albumTitle = album.title || "";
-  const albumArtist = album.artist || "";
+  const albumTitle = String(album.tags?.album ?? "");
+  const albumArtist = String(album.tags?.albumartist ?? "");
   const cacheKey = `${album.id}:${albumTitle}:${albumArtist}`;
   if (textCache.has(cacheKey)) {
     return textCache.get(cacheKey)!;

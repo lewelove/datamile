@@ -34,12 +34,12 @@ function startResizing() {
     <section class="plane home-grid" class:resizing={isResizing}>
       {#if view.homeSubView === "cabinets"}
         <CabinetsView
-          activeAlbumId={view.focusedAlbum?.id}
+          activeAlbumId={view.focusedAlbum?.album.id}
           onfocus={(album) => view.setFocus(album)}
         />
       {:else}
         <LibrariesView
-          activeAlbumId={view.focusedAlbum?.id}
+          activeAlbumId={view.focusedAlbum?.album.id}
           onfocus={(album) => view.setFocus(album)}
         />
       {/if}

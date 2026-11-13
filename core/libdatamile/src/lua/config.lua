@@ -37,19 +37,16 @@ end
 
 _G.datamile.cache = _G.datamile.cache or {}
 
-_G.datamile.cache.cover = function(t)
+_G.datamile.cache.image = function(t)
     table.insert(REGISTRY.covers.targets, t)
 end
 
 _G.datamile.cache.master = {
-    cover = function(t)
+    image = function(t)
         if t.size then REGISTRY.covers.master.size = t.size end
         if t.filter then REGISTRY.covers.master.filter = t.filter end
     end
 }
-
-_G.datamile.cache.image = _G.datamile.cache.cover
-_G.datamile.cache.master.image = _G.datamile.cache.master.cover
 
 _G.datamile.filter = function(name, t)
     if REGISTRY.filters[name] == nil then

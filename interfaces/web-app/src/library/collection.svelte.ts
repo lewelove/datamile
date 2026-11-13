@@ -140,36 +140,19 @@ class CollectionStore {
   }
 
   mapIdsToAlbums(ids: string[]): AlbumCardItem[] {
-    const albums: AlbumCardItem[] = [];
-    for (const id of ids) {
-      const a = this.dict[id];
-      if (!a) {
-        continue;
-      }
-      albums.push({
-        id: a.id,
-        title: a.album,
-        artist: a.albumartist,
-        cover_hash: a.cover_hash,
-        covers: a.covers,
-        total_discs: a.total_discs,
-        total_tracks: a.total_tracks,
-        duration_formatted: a.duration_formatted,
-        virtual: a.virtual,
-        keys: a.keys,
-        colors: a.colors
-      });
-    }
-    return albums;
+    return ids
+      .map((id) => this.dict[id])
+      .filter((album): album is AlbumDictEntry => Boolean(album));
   }
 
-  getThumbnailUrl(album: { cover_hash?: string | null } | null | undefined): string {
-    if (!album || !album.cover_hash) {
+  getThumbnailUrl(album: AlbumCardItem | null | undefined): string {
+    const address = album?.images?.main?.[0]?.address;
+    if (!address) {
       return "";
     }
     const algo = globalConfig.album_grid.album_card.cover.filter || "lanczos";
     const size = globalConfig.album_grid.album_card.cover.size || 200;
-    return `/api/images/${album.cover_hash}.bmp?size=${size}&filter=${algo}`;
+    return `/api/images/${address}.bmp?size=${size}&filter=${algo}`;
   }
 
   async ensureFullAlbum(id: string): Promise<FullAlbum | null> {
@@ -183,7 +166,6 @@ class CollectionStore {
       const res = await fetch(`/api/album/${encodeURIComponent(id)}`);
       if (res.ok) {
         const data = (await res.json()) as FullAlbum;
-        data.id = id;
         this.fullAlbumCache[id] = data;
         return data;
       }

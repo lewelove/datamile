@@ -64,7 +64,7 @@ function handleKeydown(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
     const targetId = isModalVisible
-      ? view.focusedAlbum?.id
+      ? view.focusedAlbum?.album.id
       : nav.activeTab === "queue"
         ? player.currentAlbumId
         : null;
@@ -79,7 +79,7 @@ function handleKeydown(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
     const targetId = isModalVisible
-      ? view.focusedAlbum?.id
+      ? view.focusedAlbum?.album.id
       : nav.activeTab === "queue"
         ? player.currentAlbumId
         : null;

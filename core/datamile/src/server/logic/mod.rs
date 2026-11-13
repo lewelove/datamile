@@ -31,7 +31,6 @@ pub struct AlbumRecord {
     pub path: PathBuf,
     pub title: String,
     pub artist: String,
-    pub cover_path: String,
     pub raw_json: Arc<str>,
     pub dict_raw: Box<RawValue>,
     pub total_discs: u64,
@@ -284,21 +283,11 @@ impl LogicEngine {
         &mut self,
         album: &Value,
         album_dir_canon: &Path,
-    ) -> (Option<Value>, Option<Value>, Vec<(String, String)>) {
+    ) -> Vec<(String, String)> {
         let mut cover_namespaces = Vec::new();
-        let main_cover = album
-            .get("images")
-            .and_then(|c| c.get("main"))
-            .and_then(Value::as_array)
-            .and_then(|arr| arr.first());
-
-        let cover_path_val = main_cover
-            .and_then(|m| m.pointer("/source/file/path"))
-            .cloned();
-        let cover_hash_val = main_cover.and_then(|m| m.get("address")).cloned();
 
         let Some(images) = album.get("images").and_then(Value::as_object) else {
-            return (cover_path_val, cover_hash_val, cover_namespaces);
+            return cover_namespaces;
         };
 
         for (ns, entries) in images {
@@ -349,7 +338,7 @@ impl LogicEngine {
             }
         }
 
-        (cover_path_val, cover_hash_val, cover_namespaces)
+        cover_namespaces
     }
 
     pub fn ingest_pre_evaluated(
@@ -406,14 +395,7 @@ impl LogicEngine {
             },
         );
 
-        let (cover_path_val, cover_hash_val, cover_namespaces) =
-            self.ingest_images(album, &album_dir_canon);
-
-        let cover_path = cover_path_val
-            .as_ref()
-            .and_then(Value::as_str)
-            .unwrap_or("cover.jpg")
-            .to_string();
+        let cover_namespaces = self.ingest_images(album, &album_dir_canon);
 
         let title = tags
             .get("album")
@@ -429,21 +411,10 @@ impl LogicEngine {
 
         let entry = json!({
             "id": entity_id,
-            "album": tags.get("album"),
-            "albumartist": tags.get("albumartist"),
-            "date": tags.get("date"),
-            "cover_path": cover_path_val,
-            "cover_hash": cover_hash_val,
-            "covers": images,
-            "images": images,
-            "duration_formatted": info.get("duration_formatted"),
-            "total_discs": info.get("total_discs"),
-            "total_tracks": info.get("total_tracks"),
-            "virtual": info.get("virtual"),
-            "keys": tags,
             "tags": tags,
             "objects": objects,
-            "colors": album.get("colors")
+            "images": images,
+            "location": album.get("location")
         });
 
         let dict_str = serde_json::to_string(&entry)?;
@@ -454,7 +425,6 @@ impl LogicEngine {
             path: album_dir_canon.clone(),
             title,
             artist,
-            cover_path,
             raw_json: Arc::from(metadata_json),
             dict_raw,
             total_discs,

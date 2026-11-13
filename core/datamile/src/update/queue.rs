@@ -143,10 +143,7 @@ pub fn rebuild_cache(cache: &mut LibraryCache, deps_graph: &DependencyGraph) {
                 continue;
             };
             for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    insert_stat(cache, &path);
-                }
+                insert_stat(cache, &entry.path());
             }
         }
 

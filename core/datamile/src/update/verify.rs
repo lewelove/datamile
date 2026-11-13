@@ -91,8 +91,8 @@ fn file_changed(path: &Path, cache: &CacheIndex<'_>) -> bool {
     cache.stats.get(path) != Some(&FileStat::from(&meta))
 }
 
-/// A recorded directory is dirty when a file was added, removed, or modified
-/// since the last pass.
+/// A recorded directory is dirty when an entry was added, removed, or
+/// modified since the last pass, including immediate subdirectories.
 fn dir_dirty(dir: &Path, cache: &CacheIndex<'_>) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return true;
@@ -104,9 +104,6 @@ fn dir_dirty(dir: &Path, cache: &CacheIndex<'_>) -> bool {
         let Ok(meta) = entry.metadata() else {
             return true;
         };
-        if !meta.is_file() {
-            continue;
-        }
         if cache.stats.get(&path) != Some(&FileStat::from(&meta)) {
             return true;
         }

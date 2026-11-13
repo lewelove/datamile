@@ -11,18 +11,19 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Two file-backed roots sharing a directory plus a directory-backed album:
-/// each keeps its own lock and dirty state.
+/// Directory-backed roots, each in its own directory and with its own lock.
 struct Fixture {
-    root: PathBuf,
+    album_dir: PathBuf,
+    dune_dir: PathBuf,
+    arrival_dir: PathBuf,
     graph: DependencyGraph,
     targets: Vec<RootTarget>,
     baseline: LibraryCache,
 }
 
-fn target(target: &Path, lock: &Path) -> RootTarget {
+fn target(root_type: &str, target: &Path, lock: &Path) -> RootTarget {
     RootTarget {
-        root_type: "film".to_string(),
+        root_type: root_type.to_string(),
         target: target.to_path_buf(),
         lock_path: lock.to_path_buf(),
         source: json!({ "path": target.to_string_lossy() }),
@@ -42,29 +43,37 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     let album_dir = root.join("album");
-    fs::create_dir_all(&album_dir).expect("album dir");
+    let dune_dir = root.join("Dune");
+    let arrival_dir = root.join("Arrival");
+    let lyrics_dir = album_dir.join("Lyrics");
+    for dir in [&album_dir, &dune_dir, &arrival_dir, &lyrics_dir] {
+        fs::create_dir_all(dir).expect("dir");
+    }
 
-    let dune = root.join("Dune.mkv");
-    let arrival = root.join("Arrival.mkv");
     let album_toml = album_dir.join("album.toml");
     let track = album_dir.join("01.flac");
-    fs::write(&dune, b"dune").expect("dune");
-    fs::write(&arrival, b"arrival").expect("arrival");
-    fs::write(&album_toml, b"[album]").expect("marker");
-    fs::write(&track, b"track").expect("track");
+    let lyrics = lyrics_dir.join("01.lrc");
+    let dune = dune_dir.join("Dune.mkv");
+    let arrival = arrival_dir.join("Arrival.mkv");
+    for file in [&album_toml, &track, &lyrics, &dune, &arrival] {
+        fs::write(file, b"data").expect("file");
+    }
 
-    let dune_lock = root.join("Dune.lock.json");
-    let arrival_lock = root.join("Arrival.lock.json");
+    let dune_lock = dune_dir.join("Dune.lock.json");
+    let arrival_lock = arrival_dir.join("Arrival.lock.json");
     let album_lock = album_dir.join("album.lock.json");
     for lock in [&dune_lock, &arrival_lock, &album_lock] {
         fs::write(lock, b"{}").expect("lock");
     }
 
     let mut graph = DependencyGraph::default();
-    graph.update_lock(dune_lock.clone(), meta("film", &dune, &[&dune], &[&root]));
+    graph.update_lock(
+        dune_lock.clone(),
+        meta("film", &dune_dir, &[&dune], &[&dune_dir]),
+    );
     graph.update_lock(
         arrival_lock.clone(),
-        meta("film", &arrival, &[&arrival], &[&root]),
+        meta("film", &arrival_dir, &[&arrival], &[&arrival_dir]),
     );
     graph.update_lock(
         album_lock.clone(),
@@ -72,14 +81,9 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     );
 
     let targets = vec![
-        target(&dune, &dune_lock),
-        target(&arrival, &arrival_lock),
-        RootTarget {
-            root_type: "album".to_string(),
-            target: album_dir,
-            lock_path: album_lock,
-            source: json!({}),
-        },
+        target("film", &dune_dir, &dune_lock),
+        target("film", &arrival_dir, &arrival_lock),
+        target("album", &album_dir, &album_lock),
     ];
 
     let mut baseline = LibraryCache::new();
@@ -88,7 +92,9 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     (
         tmp,
         Fixture {
-            root,
+            album_dir,
+            dune_dir,
+            arrival_dir,
             graph,
             targets,
             baseline,
@@ -119,50 +125,77 @@ fn clean_after_rebuild() {
     assert!(dirty(&fixture).is_empty());
 }
 
-/// Path lookups map a changed file to its own root only, even when sibling
-/// roots share a directory.
+/// Path lookups map a changed file to its own root only.
 #[test]
 fn sibling_roots_map_files_independently() {
     let (_tmp, fixture) = fixture();
-    let arrival = fixture.root.join("Arrival.mkv");
+    let dune = fixture.dune_dir.join("Dune.mkv");
+    let arrival = fixture.arrival_dir.join("Arrival.mkv");
 
     assert_eq!(
+        fixture.graph.locks_for_file(&dune),
+        Some(&HashSet::from([fixture.dune_dir.join("Dune.lock.json")]))
+    );
+    assert_eq!(
         fixture.graph.locks_for_file(&arrival),
-        Some(&HashSet::from([fixture.root.join("Arrival.lock.json")]))
+        Some(&HashSet::from([fixture
+            .arrival_dir
+            .join("Arrival.lock.json")]))
     );
 }
 
-/// Verification is directory-granular: a change inside a watched directory is
-/// conservatively dirty for every root watching it.
+/// A file change dirties only the root that owns its directory.
 #[test]
-fn shared_directory_change_dirties_all_watchers() {
+fn changed_file_dirties_own_root() {
     let (_tmp, fixture) = fixture();
-    fs::write(fixture.root.join("Arrival.mkv"), b"arrival-extended").expect("write");
+    fs::write(fixture.arrival_dir.join("Arrival.mkv"), b"extended").expect("write");
 
     let dirty = dirty(&fixture);
     assert_eq!(
         dirty,
-        HashSet::from([
-            fixture.root.join("Dune.lock.json"),
-            fixture.root.join("Arrival.lock.json"),
-        ])
+        HashSet::from([fixture.arrival_dir.join("Arrival.lock.json")])
     );
 }
 
-/// A file added to a recorded directory dirties its roots even though the file
+/// A file added to a recorded directory dirties its root even though the file
 /// was never inspected before.
 #[test]
 fn added_file_dirties_directory_roots() {
     let (_tmp, fixture) = fixture();
-    fs::write(fixture.root.join("cover.jpg"), b"jpeg").expect("write");
+    fs::write(fixture.dune_dir.join("cover.jpg"), b"jpeg").expect("write");
 
     let dirty = dirty(&fixture);
     assert_eq!(
         dirty,
-        HashSet::from([
-            fixture.root.join("Dune.lock.json"),
-            fixture.root.join("Arrival.lock.json"),
-        ])
+        HashSet::from([fixture.dune_dir.join("Dune.lock.json")])
+    );
+}
+
+/// A subdirectory added inside an existing root dirties that root.
+#[test]
+fn added_subdirectory_dirties_root() {
+    let (_tmp, fixture) = fixture();
+    let info = fixture.album_dir.join("Info");
+    fs::create_dir_all(&info).expect("dir");
+    fs::write(info.join("notes.toml"), b"[info]").expect("file");
+
+    let dirty = dirty(&fixture);
+    assert_eq!(
+        dirty,
+        HashSet::from([fixture.album_dir.join("album.lock.json")])
+    );
+}
+
+/// A subdirectory removed from an existing root dirties that root.
+#[test]
+fn removed_subdirectory_dirties_root() {
+    let (_tmp, fixture) = fixture();
+    fs::remove_dir_all(fixture.album_dir.join("Lyrics")).expect("remove");
+
+    let dirty = dirty(&fixture);
+    assert_eq!(
+        dirty,
+        HashSet::from([fixture.album_dir.join("album.lock.json")])
     );
 }
 
@@ -170,12 +203,12 @@ fn added_file_dirties_directory_roots() {
 #[test]
 fn removed_file_dirties_root() {
     let (_tmp, fixture) = fixture();
-    fs::remove_file(fixture.root.join("album/01.flac")).expect("remove");
+    fs::remove_file(fixture.album_dir.join("01.flac")).expect("remove");
 
     let dirty = dirty(&fixture);
     assert_eq!(
         dirty,
-        HashSet::from([fixture.root.join("album/album.lock.json")])
+        HashSet::from([fixture.album_dir.join("album.lock.json")])
     );
 }
 
@@ -183,10 +216,10 @@ fn removed_file_dirties_root() {
 #[test]
 fn missing_lock_is_dirty() {
     let (_tmp, fixture) = fixture();
-    fs::remove_file(fixture.root.join("Dune.lock.json")).expect("remove");
+    fs::remove_file(fixture.dune_dir.join("Dune.lock.json")).expect("remove");
 
     let dirty = dirty(&fixture);
-    assert!(dirty.contains(&fixture.root.join("Dune.lock.json")));
+    assert!(dirty.contains(&fixture.dune_dir.join("Dune.lock.json")));
 }
 
 /// Overlapping scope paths (a directory and an album inside it) must not
@@ -212,15 +245,7 @@ fn overlapping_scope_paths_dedupe_roots() {
             if not scope.recursive then
                 return {}
             end
-            local out = {}
-            for rel, kind in d.fs.dir(scope.path, { depth = math.huge }) do
-                if kind == "file" and d.fs.basename(rel) == "album.toml" then
-                    table.insert(out, {
-                        path = d.fs.dirname(d.fs.joinpath(scope.path, rel)),
-                    })
-                end
-            end
-            return out
+            return d.fs.roots(scope, "album.toml")
         end)
     "#;
     engine.lua.load(code).exec().expect("register");

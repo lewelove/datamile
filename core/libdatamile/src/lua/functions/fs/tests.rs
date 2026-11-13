@@ -761,3 +761,36 @@ fn test_d_fs_audio_extensions() {
 
     assert_eq!(names, expected);
 }
+
+fn open_fd_count() -> usize {
+    std::fs::read_dir("/proc/self/fd").expect("proc fd").count()
+}
+
+/// Verify that a recursive scan releases directory handles instead of holding
+/// one open file descriptor per visited directory until garbage collection.
+#[test]
+fn test_d_fs_find_releases_dir_handles() {
+    let root = TempDir::new();
+    let base = std::path::PathBuf::from(root.path_str());
+
+    for i in 0..200 {
+        std::fs::create_dir_all(base.join(format!("album_{i}"))).expect("subdir");
+    }
+
+    let engine = LuaEngine::new().expect("Failed to create LuaEngine");
+    let code = format!(
+        "return #d.fs.find('album.toml', {{ path = '{}', type = 'file' }})",
+        root.path_str()
+    );
+
+    let fd_before = open_fd_count();
+    let found: usize = engine.lua.load(&code).eval().expect("Execution failed");
+    let fd_after = open_fd_count();
+
+    assert_eq!(found, 0);
+    assert!(
+        fd_after <= fd_before + 8,
+        "scan leaked {} file descriptors",
+        fd_after.saturating_sub(fd_before)
+    );
+}

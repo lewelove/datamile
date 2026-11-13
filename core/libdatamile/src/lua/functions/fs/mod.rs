@@ -99,18 +99,14 @@ fn fs_scandir_native(
 ) -> mlua::Result<mlua::Function> {
     let expanded = crate::utils::expand_path(&path_str);
 
-    let Ok(mut read_dir) = std::fs::read_dir(&expanded) else {
-        return lua.create_function(|_, ()| Ok((None::<String>, None::<&str>)));
-    };
-
-    lua.create_function_mut(move |_, ()| {
-        for entry_res in read_dir.by_ref() {
-            let Ok(entry) = entry_res else {
-                continue;
-            };
-
+    // Directory handles are read eagerly and dropped here: keeping a live
+    // `ReadDir` inside the returned Lua iterator leaks one file descriptor per
+    // visited directory until garbage collection runs.
+    let mut entries: Vec<(String, &'static str)> = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(&expanded) {
+        for entry in read_dir.flatten() {
             let file_name = entry.file_name();
-            let file_name_str = file_name.to_string_lossy();
+            let file_name_str = file_name.to_string_lossy().into_owned();
             let ft = entry.file_type().ok();
 
             let is_symlink = ft.as_ref().is_some_and(std::fs::FileType::is_symlink);
@@ -131,9 +127,18 @@ fn fs_scandir_native(
                 "unknown"
             };
 
-            return Ok((Some(file_name_str.into_owned()), Some(type_str)));
+            entries.push((file_name_str, type_str));
         }
-        Ok((None, None))
+    }
+
+    let mut index = 0;
+    lua.create_function_mut(move |_, ()| {
+        let Some((name, type_str)) = entries.get(index) else {
+            return Ok((None::<String>, None::<&str>));
+        };
+        index += 1;
+
+        Ok((Some(name.clone()), Some(*type_str)))
     })
 }
 

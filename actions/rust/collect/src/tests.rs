@@ -28,8 +28,12 @@ fn test_create_album_directory_no_json_files() {
     let album_dir = temp.path().join("Artist - Album");
     assert!(album_dir.exists(), "Album directory should exist");
     assert!(
-        album_dir.join("metadata.toml").exists(),
-        "metadata.toml should exist"
+        album_dir.join("album.toml").exists(),
+        "album.toml should exist"
+    );
+    assert!(
+        !album_dir.join("metadata.toml").exists(),
+        "metadata.toml must not be written"
     );
     assert!(
         album_dir.join("history.toml").exists(),

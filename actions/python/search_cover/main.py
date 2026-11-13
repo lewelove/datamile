@@ -22,7 +22,7 @@ def main():
         if lock_file.exists():
             with open(lock_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                meta = data.get("album", {})
+                meta = data.get("album", {}).get("tags", {})
                 artist = artist or meta.get("albumartist") or meta.get("artist") or ""
                 album = album or meta.get("album") or ""
 

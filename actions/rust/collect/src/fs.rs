@@ -20,8 +20,8 @@ pub fn create_album_directory(
 
     fs::create_dir_all(&album_path)?;
 
-    let meta_path = album_path.join("metadata.toml");
-    write_metadata_toml(data, &meta_path)?;
+    let meta_path = album_path.join("album.toml");
+    write_album_toml(data, &meta_path)?;
 
     let history_path = album_path.join("history.toml");
     write_history_toml(data, &history_path)?;
@@ -32,7 +32,7 @@ pub fn create_album_directory(
     Ok(())
 }
 
-fn write_metadata_toml(data: &AlbumData, path: &Path) -> Result<()> {
+fn write_album_toml(data: &AlbumData, path: &Path) -> Result<()> {
     if path.exists() {
         return Ok(());
     }

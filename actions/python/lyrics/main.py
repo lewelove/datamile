@@ -57,11 +57,12 @@ def get_album_lyrics(target_dir, access_token, mpd_file, server_url):
     with open(lock_file, "r", encoding="utf-8") as f:
         album_lock = json.load(f)
 
-    album_meta = album_lock.get("album", {})
-    album_id = album_meta.get("id", "")
-    album_artist = album_meta.get("albumartist")
-    total_discs = int(album_meta.get("info", {}).get("total_discs", 1))
-    tracks = album_lock.get("tracks", [])
+    album_obj = album_lock.get("album", {})
+    album_tags = album_obj.get("tags", {})
+    album_id = album_obj.get("id", "")
+    album_artist = album_tags.get("albumartist")
+    total_discs = int(album_obj.get("objects", {}).get("info", {}).get("total_discs", 1))
+    tracks = album_obj.get("tracks", [])
 
     if not album_artist or not tracks:
         print("\033[31mError: Invalid metadata structure in lock data.\033[0m")
@@ -74,13 +75,13 @@ def get_album_lyrics(target_dir, access_token, mpd_file, server_url):
     lyrics_dir = target_dir / "Lyrics"
     lyrics_dir.mkdir(exist_ok=True)
 
-    print(f"\033[1;36mFetching lyrics for: {album_artist} - {album_meta.get('album')}\033[0m")
+    print(f"\033[1;36mFetching lyrics for: {album_artist} - {album_tags.get('album')}\033[0m")
 
     playing_idx = None
     if mpd_file:
         mpd_normalized = mpd_file.lstrip("/")
         for i, track in enumerate(tracks):
-            t_path = track.get("file", {}).get("path", "")
+            t_path = track.get("location", {}).get("path", "")
             if t_path:
                 track_abs = str((target_dir / t_path).resolve())
                 if track_abs.endswith(f"/{mpd_normalized}") or track_abs == mpd_file:
@@ -88,9 +89,10 @@ def get_album_lyrics(target_dir, access_token, mpd_file, server_url):
                     break
 
     def fetch_for_track(track):
-        title = track.get("title")
-        track_num = str(track.get("tracknumber", "0")).zfill(2)
-        disc_num = str(track.get("discnumber", "1"))
+        track_tags = track.get("tags", {})
+        title = track_tags.get("title")
+        track_num = str(track_tags.get("tracknumber", "0")).zfill(2)
+        disc_num = str(track_tags.get("discnumber", "1"))
 
         if not title:
             return

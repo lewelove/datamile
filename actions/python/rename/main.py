@@ -29,26 +29,27 @@ def process_album(target_dir, auto_apply, server_url):
         album_lock = json.load(f)
 
     album_obj = album_lock.get("album", {})
-    tracks_data = album_lock.get("tracks", [])
+    tracks_data = album_obj.get("tracks", [])
     if not tracks_data:
         return False
 
     album_id = album_obj.get("id", "")
 
     try:
-        total_discs = int(album_obj.get("info", {}).get("total_discs", 1))
+        total_discs = int(album_obj.get("objects", {}).get("info", {}).get("total_discs", 1))
     except (ValueError, TypeError):
         total_discs = 1
 
     track_nums = []
     disc_nums = []
     for t in tracks_data:
+        tags = t.get("tags", {})
         try:
-            track_nums.append(int(t.get("tracknumber", 0)))
+            track_nums.append(int(tags.get("tracknumber", 0)))
         except (ValueError, TypeError):
             track_nums.append(0)
         try:
-            disc_nums.append(int(t.get("discnumber", 1)))
+            disc_nums.append(int(tags.get("discnumber", 1)))
         except (ValueError, TypeError):
             disc_nums.append(1)
 
@@ -61,8 +62,9 @@ def process_album(target_dir, auto_apply, server_url):
     rename_tasks = []
 
     for t in tracks_data:
-        t_file = t.get("file", {})
-        rel_path = t_file.get("path")
+        tags = t.get("tags", {})
+        t_location = t.get("location", {})
+        rel_path = t_location.get("path")
         if not rel_path:
             continue
 
@@ -71,16 +73,16 @@ def process_album(target_dir, auto_apply, server_url):
             continue
 
         try:
-            track_num = int(t.get("tracknumber", 0))
+            track_num = int(tags.get("tracknumber", 0))
         except (ValueError, TypeError):
             track_num = 0
 
         try:
-            disc_num = int(t.get("discnumber", 1))
+            disc_num = int(tags.get("discnumber", 1))
         except (ValueError, TypeError):
             disc_num = 1
 
-        title = str(t.get("title", ""))
+        title = str(tags.get("title", ""))
         safe_title = sanitize_filename(title)
         ext = old_file_path.suffix
 

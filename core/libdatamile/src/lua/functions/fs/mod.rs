@@ -263,6 +263,16 @@ pub fn register(
         "stat",
         lua.create_function(|lua, path_str: Option<String>| fs_stat(lua, path_str))?,
     )?;
+    fs_table.set(
+        "audio_extensions",
+        lua.create_function(|lua, ()| {
+            let exts = lua.create_table()?;
+            for ext in crate::harvest::SUPPORTED_AUDIO_EXTENSIONS {
+                exts.push(*ext)?;
+            }
+            Ok(exts)
+        })?,
+    )?;
     fs_table.set("read_json", create_fs_reader(lua, opts, "json")?)?;
     fs_table.set("read_toml", create_fs_reader(lua, opts, "toml")?)?;
     fs_table.set(

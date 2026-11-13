@@ -31,6 +31,10 @@ local function validate_tag(value)
         error("tag value must be a scalar or a list of scalars")
     end
 
+    if not d.tbl.islist(value) then
+        error("tag value must be a scalar or a list of scalars")
+    end
+
     for _, item in ipairs(value) do
         if not scalar(item) then
             error("tag list must contain scalars only")

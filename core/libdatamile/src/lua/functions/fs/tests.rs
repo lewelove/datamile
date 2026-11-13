@@ -738,3 +738,26 @@ year = 2024"#;
     let wrong_ext_res = engine.lua.load(&wrong_ext_code).eval::<Table>();
     assert!(wrong_ext_res.is_err());
 }
+
+/// Verify that `d.fs.audio_extensions` exposes the Rust supported extension list.
+#[test]
+fn test_d_fs_audio_extensions() {
+    let engine = LuaEngine::new().expect("engine");
+    let exts: Table = engine
+        .lua
+        .load("return d.fs.audio_extensions()")
+        .eval()
+        .expect("audio extensions");
+
+    let names: Vec<String> = exts
+        .sequence_values::<String>()
+        .filter_map(Result::ok)
+        .collect();
+
+    let expected: Vec<String> = crate::harvest::SUPPORTED_AUDIO_EXTENSIONS
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+
+    assert_eq!(names, expected);
+}

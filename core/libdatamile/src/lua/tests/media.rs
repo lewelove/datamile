@@ -118,6 +118,20 @@ fn test_track_id_uses_discnumber() {
     assert_eq!(multi["id"], "Artist - Album - 2.3 - Title");
 }
 
+/// Verify that tag validation rejects map tables, which serialize as JSON
+/// objects instead of tag lists.
+#[test]
+fn test_media_tag_rejects_map() {
+    let engine = LuaEngine::new().expect("engine");
+    let code = r#"
+        d.media.type("bad")
+        d.compile.bad.tag("nested", function(source) return { key = "value" } end)
+    "#;
+    engine.lua.load(code).exec().expect("register");
+    let result = engine.media_compile("bad", &json!({ "path": "/tmp/bad" }));
+    assert!(result.is_err());
+}
+
 /// Verify that tag validation rejects non-scalar tag values.
 #[test]
 fn test_media_tag_rejects_object() {

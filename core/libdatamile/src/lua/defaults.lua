@@ -61,13 +61,69 @@ local function find_albums(root_source)
     return result
 end
 
+local function audio_extensions()
+    local configured = d.get(REGISTRY.config, "compiler.audio_extensions")
+        or d.get(REGISTRY.config, "manifest.audio_extensions")
+
+    if type(configured) == "table" and #configured > 0 then
+        return configured
+    end
+
+    return d.fs.audio_extensions()
+end
+
 local function find_tracks(path)
+    local accepted = {}
+    for _, ext in ipairs(audio_extensions()) do
+        accepted["." .. ext:lower()] = true
+    end
+
     return d.fs.find(function(name)
-        return name:match("%.flac$") ~= nil
-            or name:match("%.mp3$") ~= nil
-            or name:match("%.FLAC$") ~= nil
-            or name:match("%.MP3$") ~= nil
+        local ext = name:match("%.([^.]+)$")
+        if not ext then
+            return false
+        end
+
+        return accepted["." .. ext:lower()] == true
     end, { path = path, type = "file" })
+end
+
+-- Filesystem walks are unordered, so tracks are keyed by their audio tags to
+-- yield a stable album order: (discnumber, tracknumber, path).
+local function track_order(path)
+    local tags = d.get(d.fs.read_audio(path), "tags") or {}
+
+    return {
+        disc = tonumber(tags.discnumber) or 1,
+        number = tonumber(tags.tracknumber) or math.huge,
+        path = path,
+    }
+end
+
+local function sort_tracks(paths)
+    local keyed = {}
+    for _, path in ipairs(paths) do
+        table.insert(keyed, track_order(path))
+    end
+
+    table.sort(keyed, function(a, b)
+        if a.disc ~= b.disc then
+            return a.disc < b.disc
+        end
+
+        if a.number ~= b.number then
+            return a.number < b.number
+        end
+
+        return a.path < b.path
+    end)
+
+    local sorted = {}
+    for _, entry in ipairs(keyed) do
+        table.insert(sorted, entry.path)
+    end
+
+    return sorted
 end
 
 local function find_cover(path)
@@ -97,7 +153,7 @@ local function track_sources(album)
     local sources = {}
 
     if not is_virtual(path) then
-        local files = find_tracks(path)
+        local files = sort_tracks(find_tracks(path))
         if #files > 0 then
             for _, file in ipairs(files) do
                 table.insert(sources, { path = file })
@@ -135,7 +191,12 @@ d.media.type("album")
 
 d.compile.album.select(find_albums)
 d.compile.album.id(function(source)
-    return d.fs.relpath(REGISTRY.config.storage.music_directory, source.path)
+    local music_directory = d.get(REGISTRY.config, "storage.music_directory")
+    if not music_directory or music_directory == "" then
+        return nil
+    end
+
+    return d.fs.relpath(music_directory, source.path)
 end)
 d.compile.album.lock(function(source)
     return d.fs.joinpath(source.path, "album.lock.json")
@@ -196,6 +257,67 @@ d.compile.album.object("info", function(source)
         duration_milliseconds = duration,
         duration_formatted = format_duration(duration),
     }
+end)
+
+-- Accepts #RGB, #RGBA, #RRGGBB and #RRGGBBAA only.
+local function is_hex_color(value)
+    if type(value) ~= "string" then
+        return false
+    end
+
+    local digits = value:match("^#(%x+)$")
+    if not digits then
+        return false
+    end
+
+    local len = #digits
+    return len == 3 or len == 4 or len == 6 or len == 8
+end
+
+local function color_list(value)
+    if type(value) == "string" then
+        value = { value }
+    end
+
+    if type(value) ~= "table" then
+        return nil
+    end
+
+    local colors = {}
+    for _, item in ipairs(value) do
+        if is_hex_color(item) then
+            table.insert(colors, item)
+        end
+    end
+
+    if #colors == 0 then
+        return nil
+    end
+
+    return colors
+end
+
+-- `theme.toml` carries the cover-derived palette consumed by the background
+-- shader. Only valid hex colors are compiled.
+d.compile.album.object("colors", function(source)
+    local theme = d.fs.read_toml(d.fs.joinpath(source.path, "theme.toml"))
+    local raw = d.get(theme, "album.colors")
+    if type(raw) ~= "table" then
+        return nil
+    end
+
+    local colors = {}
+    colors.background = color_list(raw.background)
+
+    if is_hex_color(raw.foreground) then
+        colors.foreground = raw.foreground
+    end
+
+    if not colors.background and not colors.foreground then
+        return nil
+    end
+
+    return colors
 end)
 
 d.compile.album.images("main", function(source)

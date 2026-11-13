@@ -566,3 +566,43 @@ fn test_d_tbl_deepcopy_and_deep_equal() {
         .expect("Execution failed");
     assert_eq!(copy_a, 10);
 }
+
+/// Verify index_by and group_by accept field names or functions and skip nil keys.
+#[test]
+fn test_d_tbl_index_by_and_group_by() {
+    let engine = LuaEngine::new().expect("engine");
+
+    let code = r#"
+        local items = {
+            { id = 'a', kind = 'x' },
+            { id = 'b', kind = 'x' },
+            { id = 'c', kind = 'y' },
+            { kind = 'z' },
+        }
+        local by_id = d.tbl.index_by(items, 'id')
+        local by_kind = d.tbl.group_by(items, 'kind')
+        local by_fn = d.tbl.index_by(items, function(item) return item.id end)
+        return {
+            a = by_id.a.kind,
+            by_id_count = d.tbl.count(by_id),
+            x_count = #by_kind.x,
+            y_count = #by_kind.y,
+            z_count = #by_kind.z,
+            fn_count = d.tbl.count(by_fn),
+        }
+    "#;
+    let res: Table = engine.lua.load(code).eval().expect("index/group");
+
+    assert_eq!(res.get::<String>("a").unwrap(), "x");
+    assert_eq!(res.get::<i64>("by_id_count").unwrap(), 3);
+    assert_eq!(res.get::<i64>("x_count").unwrap(), 2);
+    assert_eq!(res.get::<i64>("y_count").unwrap(), 1);
+    assert_eq!(res.get::<i64>("z_count").unwrap(), 1);
+    assert_eq!(res.get::<i64>("fn_count").unwrap(), 3);
+
+    let invalid = engine
+        .lua
+        .load("return d.tbl.index_by({ { id = 1 } }, 123)")
+        .eval::<Table>();
+    assert!(invalid.is_err());
+}

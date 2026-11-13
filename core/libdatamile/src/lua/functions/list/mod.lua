@@ -94,4 +94,147 @@ function M.bisect(t, val, opts)
     return low
 end
 
+local function scalar_cmp(a, b)
+    if a == b then
+        return 0
+    end
+    if a == nil then
+        return -1
+    end
+    if b == nil then
+        return 1
+    end
+
+    local ta, tb = type(a), type(b)
+    if ta == "string" and tb == "string" then
+        return d.str.natcmp(a, b)
+    end
+    if ta == tb and (ta == "number" or ta == "boolean") then
+        if a < b then
+            return -1
+        end
+        return 1
+    end
+
+    local rank = { number = 1, string = 2, boolean = 3 }
+    local ra, rb = rank[ta] or 4, rank[tb] or 4
+    if ra ~= rb then
+        return ra < rb and -1 or 1
+    end
+
+    return tostring(a) < tostring(b) and -1 or 1
+end
+
+local function key_cmp(a, b)
+    if type(a) == "table" and type(b) == "table" then
+        local n = math.max(#a, #b)
+        for i = 1, n do
+            local cmp = scalar_cmp(a[i], b[i])
+            if cmp ~= 0 then
+                return cmp
+            end
+        end
+        return 0
+    end
+
+    return scalar_cmp(a, b)
+end
+
+function M.sort_by(list, key_fn)
+    if type(list) ~= "table" then
+        error(string.format("list: expected table, got %s", type(list)))
+    end
+    if type(key_fn) ~= "function" then
+        error(string.format("key_fn: expected function, got %s", type(key_fn)))
+    end
+
+    table.sort(list, function(a, b)
+        return key_cmp(key_fn(a), key_fn(b)) < 0
+    end)
+
+    return list
+end
+
+function M.sum(list, fn)
+    if type(list) ~= "table" then
+        error(string.format("list: expected table, got %s", type(list)))
+    end
+
+    local total = 0
+    for i, item in ipairs(list) do
+        local value = item
+        if fn then
+            value = fn(item, i)
+        end
+        if value ~= nil then
+            total = total + value
+        end
+    end
+
+    return total
+end
+
+local function extreme(list, fn, better)
+    if type(list) ~= "table" then
+        error(string.format("list: expected table, got %s", type(list)))
+    end
+
+    local best
+    local found = false
+    for i, item in ipairs(list) do
+        local value = item
+        if fn then
+            value = fn(item, i)
+        end
+        if value ~= nil and (not found or better(value, best)) then
+            best = value
+            found = true
+        end
+    end
+
+    return found and best or nil
+end
+
+function M.min(list, fn)
+    return extreme(list, fn, function(a, b) return a < b end)
+end
+
+function M.max(list, fn)
+    return extreme(list, fn, function(a, b) return a > b end)
+end
+
+function M.all(list, pred)
+    if type(list) ~= "table" then
+        error(string.format("list: expected table, got %s", type(list)))
+    end
+    if type(pred) ~= "function" then
+        error(string.format("pred: expected function, got %s", type(pred)))
+    end
+
+    for i, item in ipairs(list) do
+        if not pred(item, i) then
+            return false
+        end
+    end
+
+    return true
+end
+
+function M.any(list, pred)
+    if type(list) ~= "table" then
+        error(string.format("list: expected table, got %s", type(list)))
+    end
+    if type(pred) ~= "function" then
+        error(string.format("pred: expected function, got %s", type(pred)))
+    end
+
+    for i, item in ipairs(list) do
+        if pred(item, i) then
+            return true
+        end
+    end
+
+    return false
+end
+
 return M

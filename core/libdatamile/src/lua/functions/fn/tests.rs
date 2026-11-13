@@ -127,3 +127,38 @@ fn test_d_fn_coalesce() {
         .expect("Execution failed");
     assert!(all_empty.is_none());
 }
+
+/// Verify has matches scalars and scalar lists with exact/nocase options.
+#[test]
+fn test_d_fn_has() {
+    let engine = LuaEngine::new().expect("engine");
+
+    let code = r#"
+        return {
+            substring = d.fn.has('Aphex Twin', 'Twin'),
+            case_sensitive = d.fn.has('Aphex Twin', 'twin'),
+            nocase = d.fn.has('Aphex Twin', 'twin', { nocase = true }),
+            exact_miss = d.fn.has('Aphex Twin', 'Aphex', { exact = true }),
+            exact_hit = d.fn.has('Aphex Twin', 'Aphex Twin', { exact = true }),
+            list_hit = d.fn.has({ 'rock', 'ambient' }, 'amb'),
+            list_exact_miss = d.fn.has({ 'rock', 'ambient' }, 'amb', { exact = true }),
+            number_hit = d.fn.has({ 1, 2, 3 }, 2),
+            number_miss = d.fn.has(1, 2),
+            nil_val = d.fn.has(nil, 'x'),
+            nil_needle = d.fn.has('x', nil),
+        }
+    "#;
+    let res: Table = engine.lua.load(code).eval().expect("fn.has");
+
+    assert!(res.get::<bool>("substring").unwrap());
+    assert!(!res.get::<bool>("case_sensitive").unwrap());
+    assert!(res.get::<bool>("nocase").unwrap());
+    assert!(!res.get::<bool>("exact_miss").unwrap());
+    assert!(res.get::<bool>("exact_hit").unwrap());
+    assert!(res.get::<bool>("list_hit").unwrap());
+    assert!(!res.get::<bool>("list_exact_miss").unwrap());
+    assert!(res.get::<bool>("number_hit").unwrap());
+    assert!(!res.get::<bool>("number_miss").unwrap());
+    assert!(!res.get::<bool>("nil_val").unwrap());
+    assert!(!res.get::<bool>("nil_needle").unwrap());
+}

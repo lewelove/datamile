@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use mlua::{Lua, Table};
 
 const LUA_LIST: &str = include_str!("mod.lua");

@@ -39,6 +39,42 @@ return {
         return v
     end,
 
+    has = function(val, needle, opts)
+        if val == nil or needle == nil then
+            return false
+        end
+
+        opts = opts or {}
+        local exact = opts.exact == true
+        local nocase = opts.nocase == true
+
+        local function matches(candidate)
+            if type(candidate) == "string" and type(needle) == "string" then
+                local hay, want = candidate, needle
+                if nocase then
+                    hay, want = hay:lower(), want:lower()
+                end
+                if exact then
+                    return hay == want
+                end
+                return hay:find(want, 1, true) ~= nil
+            end
+
+            return candidate == needle
+        end
+
+        if type(val) == "table" then
+            for _, candidate in ipairs(val) do
+                if matches(candidate) then
+                    return true
+                end
+            end
+            return false
+        end
+
+        return matches(val)
+    end,
+
     coalesce = function(...)
         local n = select("#", ...)
         for i = 1, n do

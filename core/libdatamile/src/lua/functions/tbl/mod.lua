@@ -363,6 +363,52 @@ function M.deep_equal(a, b)
     return _deep_equal(a, b, {})
 end
 
+local function key_getter(key_or_fn)
+    if type(key_or_fn) == "function" then
+        return key_or_fn
+    end
+    if type(key_or_fn) == "string" then
+        return function(item) return item[key_or_fn] end
+    end
+
+    error(string.format("key: expected string or function, got %s", type(key_or_fn)))
+end
+
+function M.index_by(list, key_or_fn)
+    if type(list) ~= "table" then
+        error(string.format("list: expected table, got %s", type(list)))
+    end
+
+    local get_key = key_getter(key_or_fn)
+    local result = {}
+    for i, item in ipairs(list) do
+        local key = get_key(item, i)
+        if key ~= nil then
+            result[key] = item
+        end
+    end
+
+    return result
+end
+
+function M.group_by(list, key_or_fn)
+    if type(list) ~= "table" then
+        error(string.format("list: expected table, got %s", type(list)))
+    end
+
+    local get_key = key_getter(key_or_fn)
+    local result = {}
+    for i, item in ipairs(list) do
+        local key = get_key(item, i)
+        if key ~= nil then
+            result[key] = result[key] or {}
+            table.insert(result[key], item)
+        end
+    end
+
+    return result
+end
+
 function M.spairs(t)
     if type(t) ~= "table" then
         error(string.format("expected table, got %s", type(t)))

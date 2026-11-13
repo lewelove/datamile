@@ -434,6 +434,35 @@ pub fn lua_system(
     }
 }
 
+fn launcher() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    }
+}
+
+fn open_target(_: &Lua, target: String) -> mlua::Result<()> {
+    if target.trim().is_empty() {
+        return Err(mlua::Error::runtime("target must be a non-empty string"));
+    }
+
+    let mut command = Command::new(launcher());
+    command
+        .arg(target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0);
+
+    let mut child = command.spawn().map_err(mlua::Error::external)?;
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+
+    Ok(())
+}
+
 pub fn register(lua: &Lua, datamile_tbl: &Table) -> mlua::Result<()> {
     let isatty_fn = lua.create_function(|_, fd: Option<i32>| {
         let fd_num = fd.unwrap_or(0);
@@ -442,6 +471,7 @@ pub fn register(lua: &Lua, datamile_tbl: &Table) -> mlua::Result<()> {
 
     let sys_table = lua.create_table()?;
     sys_table.set("isatty", isatty_fn)?;
+    sys_table.set("open", lua.create_function(open_target)?)?;
 
     let mt = lua.create_table()?;
     mt.set(

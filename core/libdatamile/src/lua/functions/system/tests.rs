@@ -468,3 +468,19 @@ fn test_d_system_rapid_sequential_stress() {
     let sum_val: u32 = engine.lua.load(code).eval().expect("Execution failed");
     assert_eq!(sum_val, 210);
 }
+
+/// Verify d.system.open rejects empty and non-string targets before launching.
+#[test]
+fn test_d_system_open_validation() {
+    let engine = LuaEngine::new().expect("engine");
+
+    assert!(engine.lua.load("return d.system.open('')").exec().is_err());
+    assert!(
+        engine
+            .lua
+            .load("return d.system.open('   ')")
+            .exec()
+            .is_err()
+    );
+    assert!(engine.lua.load("return d.system.open(123)").exec().is_err());
+}

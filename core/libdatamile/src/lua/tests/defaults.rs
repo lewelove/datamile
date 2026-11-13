@@ -184,7 +184,7 @@ fn test_track_sources_respects_audio_extensions() {
 
 /// Track numbers may carry a total ("03/12"); the leading integer orders them.
 #[test]
-fn test_track_sources_parse_fractional_tracknumbers() {
+fn test_track_fractional_numbers() {
     let (_tmp, album, cache) = fixture();
 
     write_track(&album, &cache, "a.flac", &json!({ "tracknumber": "10/12" }));

@@ -864,7 +864,7 @@ fn test_d_fs_stat_missing_records_parent() {
 
 /// Verify first returns the highest priority existing candidate and records the directory.
 #[test]
-fn test_d_fs_first_priority_and_dirty_tracking() {
+fn test_first_priority_and_deps() {
     let engine = LuaEngine::new().expect("engine");
     let dir = TempDir::new();
     let root = dir.path_str();
@@ -891,7 +891,7 @@ fn test_d_fs_first_priority_and_dirty_tracking() {
 
 /// Verify files filters by extension, recurses, and sorts naturally by default.
 #[test]
-fn test_d_fs_files_filter_and_natural_sort() {
+fn test_files_filter_sort() {
     let engine = LuaEngine::new().expect("engine");
     let dir = TempDir::new();
     let root = dir.path_str();

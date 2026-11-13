@@ -5,7 +5,7 @@ use std::path::PathBuf;
 /// Verify that `evaluate_config` resolves a relative `media_directory`
 /// against the config directory so Lua sees the same absolute path as Rust.
 #[test]
-fn test_evaluate_config_resolves_media_directory() {
+fn test_config_resolves_media() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_dir = tmp.path().join("config");
     let music = config_dir.join("music");

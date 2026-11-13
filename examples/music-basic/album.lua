@@ -16,7 +16,7 @@ album.input("manifest", function(ctx)
 end)
 
 album.id(function(ctx)
-    local music = d.get(REGISTRY.config, "storage.music_directory")
+    local music = d.get(REGISTRY.config, "storage.media_directory")
     if not music or music == "" then
         return nil
     end

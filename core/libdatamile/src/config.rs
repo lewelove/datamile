@@ -45,8 +45,7 @@ pub struct InterfaceDef {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct StorageConfig {
-    #[serde(alias = "media_directory")]
-    pub music_directory: String,
+    pub media_directory: String,
     pub cache: String,
     pub state: String,
 }
@@ -54,7 +53,7 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            music_directory: String::new(),
+            media_directory: String::new(),
             cache: "~/.cache/datamile".to_string(),
             state: "~/.local/share/datamile".to_string(),
         }

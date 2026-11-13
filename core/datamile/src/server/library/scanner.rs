@@ -88,7 +88,7 @@ impl Library {
                 id: &id,
                 lock_json: &content,
                 eval_res,
-                music_directory: &self.root,
+                media_directory: &self.root,
             };
 
             if let Err(e) = logic_engine.ingest_entity(ingest) {

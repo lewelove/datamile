@@ -213,8 +213,8 @@ local repo_dir = "Path/To/Cloned/Repo/"
 datamile.config({ 
   storage = { 
     -- Define a music directory path containing all your albums,
-    -- it must match an MPD's config `music_directory` path
-    music_directory = "Path/To/Your/Music/Directory/"
+    -- it must match MPD's `music_directory` path
+    media_directory = "Path/To/Your/Music/Directory/"
   }
 })
 

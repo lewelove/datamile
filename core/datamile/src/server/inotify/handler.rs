@@ -58,7 +58,7 @@ pub(super) fn filter_reingested_ids<V, S: std::hash::BuildHasher>(
     removed_ids.retain(|id| !updated_entries.contains_key(id));
 }
 
-pub async fn process_events(flags: ChangeFlags, state: &Arc<AppState>) {
+pub(super) async fn process_events(flags: ChangeFlags, state: &Arc<AppState>) {
     if flags.config {
         handle_config_change(state).await;
     }
@@ -363,7 +363,7 @@ fn ingest_recompiled_items(
             id: &item.id,
             lock_json: &item.lock_json,
             eval_res: eval,
-            music_directory: media_directory,
+            media_directory,
         });
 
         if let Err(e) = ingest {
@@ -398,7 +398,7 @@ pub async fn ingest_and_broadcast_albums(
 ) {
     let (media_directory, cache_root) = {
         let guard = state.config.read().await;
-        (guard.music_directory.clone(), guard.cache_root.clone())
+        (guard.media_directory.clone(), guard.cache_root.clone())
     };
 
     let logic_arc = Arc::clone(&state.logic);

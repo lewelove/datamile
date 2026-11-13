@@ -39,13 +39,13 @@ pub fn calculate_path_hash(path: &Path) -> String {
         .to_string()
 }
 
-pub fn library_cache_dir(cache_root: &Path, music_directory: &Path) -> PathBuf {
-    let lib_hash = calculate_path_hash(music_directory);
+pub fn library_cache_dir(cache_root: &Path, media_directory: &Path) -> PathBuf {
+    let lib_hash = calculate_path_hash(media_directory);
     cache_root.join("libraries").join(lib_hash)
 }
 
-pub fn deps_graph_path(cache_root: &Path, music_directory: &Path) -> PathBuf {
-    library_cache_dir(cache_root, music_directory).join("dependencies.json")
+pub fn deps_graph_path(cache_root: &Path, media_directory: &Path) -> PathBuf {
+    library_cache_dir(cache_root, media_directory).join("dependencies.json")
 }
 
 pub fn get_lua_config_hash(dependencies: &[PathBuf]) -> String {

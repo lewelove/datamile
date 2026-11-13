@@ -69,7 +69,7 @@ pub struct EntityIngest<'a> {
     pub id: &'a str,
     pub lock_json: &'a str,
     pub eval_res: Value,
-    pub music_directory: &'a Path,
+    pub media_directory: &'a Path,
 }
 
 pub struct LogicEngine {
@@ -220,7 +220,7 @@ impl LogicEngine {
         tracks: &[Value],
         album_dir_canon: &Path,
         id: &str,
-        music_directory: &Path,
+        media_directory: &Path,
     ) -> Vec<String> {
         let mut track_uris = Vec::new();
 
@@ -243,7 +243,7 @@ impl LogicEngine {
             } else {
                 album_dir_canon.join(rel)
             };
-            let mpd_uri_raw = abs_track_path.strip_prefix(music_directory).map_or_else(
+            let mpd_uri_raw = abs_track_path.strip_prefix(media_directory).map_or_else(
                 |_| abs_track_path.to_string_lossy().to_string(),
                 |p| p.to_string_lossy().to_string(),
             );
@@ -371,7 +371,7 @@ impl LogicEngine {
             id,
             lock_json: metadata_json,
             eval_res,
-            music_directory,
+            media_directory,
         } = ingest;
         let album_dir_canon = target
             .canonicalize()
@@ -414,7 +414,7 @@ impl LogicEngine {
                 tracks,
                 &album_dir_canon,
                 &entity_id,
-                music_directory,
+                media_directory,
             )
         });
 

@@ -23,14 +23,14 @@ fn ingest(engine: &mut LogicEngine, root_type: &str, dir: &std::path::Path) {
             id: "Dune",
             lock_json: &lock_json,
             eval_res: json!({}),
-            music_directory: dir,
+            media_directory: dir,
         })
         .expect("ingest");
 }
 
 /// Ids are globally unique across root types (Law 2).
 #[test]
-fn logic_engine_rejects_cross_type_duplicate_ids() {
+fn logic_rejects_duplicate_id() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = tmp.path().join("init.lua");
     fs::write(&config, "datamile.config({})").expect("config");
@@ -59,7 +59,7 @@ fn logic_engine_rejects_cross_type_duplicate_ids() {
             id: "Dune",
             lock_json: &lock_json,
             eval_res: json!({}),
-            music_directory: tmp.path(),
+            media_directory: tmp.path(),
         })
         .expect_err("duplicate id");
 

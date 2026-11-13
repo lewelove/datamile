@@ -16,12 +16,7 @@ use libdatamile::utils::expand_path;
 struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     config: Option<String>,
-    #[arg(
-        long = "media-directory",
-        alias = "media_directory",
-        global = true,
-        value_name = "DIR"
-    )]
+    #[arg(long = "media-directory", global = true, value_name = "DIR")]
     media_directory: Option<String>,
     #[command(subcommand)]
     command: Commands,

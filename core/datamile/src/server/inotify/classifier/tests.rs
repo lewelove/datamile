@@ -4,7 +4,7 @@ use crate::server::state::{DependencyGraph, RootMeta};
 /// Untracked files mark their parent for shallow discovery; files inside a
 /// watched directory stay on the existing lock path.
 #[test]
-fn untracked_file_marks_parent_for_shallow_discovery() {
+fn untracked_marks_shallow() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let music = tmp.path().join("music");
     let untracked = music.join("untracked");
@@ -29,7 +29,7 @@ fn untracked_file_marks_parent_for_shallow_discovery() {
     let empty_deps = HashSet::new();
     let ctx = ClassifierContext {
         config_dir: Path::new("/config"),
-        music_directory: &music,
+        media_directory: &music,
         deps: &empty_deps,
         deps_graph: &graph,
     };

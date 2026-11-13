@@ -31,32 +31,32 @@ pub struct ManifestOptions {
 pub fn run(target_path: Option<&Path>, options: &ManifestOptions) -> Result<()> {
     let config =
         libdatamile::lua::ResolvedConfig::load().context("Failed to load config")?;
-    let music_dir = expand_path(&config.app.storage.music_directory);
+    let media_dir = expand_path(&config.app.storage.media_directory);
 
     config.app.manifest.audio_extensions.as_ref().map_or_else(
         || {
             execute_manifest_run(
                 target_path,
                 options,
-                &music_dir,
+                &media_dir,
                 SUPPORTED_AUDIO_EXTENSIONS,
             )
         },
-        |exts| execute_manifest_run(target_path, options, &music_dir, exts),
+        |exts| execute_manifest_run(target_path, options, &media_dir, exts),
     )
 }
 
 fn execute_manifest_run<S: AsRef<str> + Sync>(
     target_path: Option<&Path>,
     options: &ManifestOptions,
-    music_dir: &Path,
+    media_dir: &Path,
     supported_exts: &[S],
 ) -> Result<()> {
     let grouping_keys = vec!["albumartist".to_string(), "album".to_string()];
 
     let scan_root = match options.mode {
         ManifestMode::Library => {
-            target_path.map_or_else(|| music_dir.to_path_buf(), Path::to_path_buf)
+            target_path.map_or_else(|| media_dir.to_path_buf(), Path::to_path_buf)
         }
         ManifestMode::Album => target_path.map_or_else(
             || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),

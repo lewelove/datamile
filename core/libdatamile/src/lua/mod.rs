@@ -408,13 +408,13 @@ impl LuaEngine {
         {
             storage
                 .set(
-                    "music_directory",
+                    "media_directory",
                     media_directory.to_string_lossy().as_ref(),
                 )
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
 
-        self.resolve_music_directory(config_dir)?;
+        self.resolve_media_directory(config_dir)?;
 
         let app_config: AppConfig = call_getter(&self.lua, "__DATAMILE_GET_CONFIG")?;
 
@@ -465,10 +465,10 @@ impl LuaEngine {
         })
     }
 
-    /// Resolve `storage.music_directory` inside the Lua registry so Lua-side
+    /// Resolve `storage.media_directory` inside the Lua registry so Lua-side
     /// path math (relative ids, source matching) sees absolute paths, matching
     /// what `discover_roots` hands to the compiler.
-    fn resolve_music_directory(&self, config_dir: &Path) -> Result<()> {
+    fn resolve_media_directory(&self, config_dir: &Path) -> Result<()> {
         let registry: Table = self
             .lua
             .globals()
@@ -481,10 +481,10 @@ impl LuaEngine {
             return Ok(());
         };
 
-        let Ok(music_directory) = storage.get::<Option<String>>("music_directory") else {
+        let Ok(media_directory) = storage.get::<Option<String>>("media_directory") else {
             return Ok(());
         };
-        let Some(raw) = music_directory.filter(|value| !value.is_empty()) else {
+        let Some(raw) = media_directory.filter(|value| !value.is_empty()) else {
             return Ok(());
         };
 
@@ -492,7 +492,7 @@ impl LuaEngine {
         let resolved = resolved.canonicalize().unwrap_or(resolved);
 
         storage
-            .set("music_directory", resolved.to_string_lossy().as_ref())
+            .set("media_directory", resolved.to_string_lossy().as_ref())
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
         Ok(())
@@ -961,16 +961,16 @@ impl ResolvedConfig {
             });
         }
 
-        if !evaluated.app.storage.music_directory.is_empty() {
-            evaluated.app.storage.music_directory = crate::utils::resolve_path(
-                &evaluated.app.storage.music_directory,
+        if !evaluated.app.storage.media_directory.is_empty() {
+            evaluated.app.storage.media_directory = crate::utils::resolve_path(
+                &evaluated.app.storage.media_directory,
                 config_dir,
             )
             .to_string_lossy()
             .to_string();
         }
         if let Some(media_directory) = MEDIA_DIRECTORY_OVERRIDE.get() {
-            evaluated.app.storage.music_directory =
+            evaluated.app.storage.media_directory =
                 media_directory.to_string_lossy().to_string();
         }
         if !evaluated.app.storage.cache.is_empty() {

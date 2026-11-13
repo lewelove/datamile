@@ -32,21 +32,21 @@ pub async fn run(
 
     let config =
         libdatamile::lua::ResolvedConfig::load().context("Failed to load config")?;
-    let music_directory = expand_path(&config.app.storage.music_directory)
+    let media_directory = expand_path(&config.app.storage.media_directory)
         .canonicalize()
-        .context("Invalid music_directory")?;
+        .context("Invalid media_directory")?;
 
     let effective_jobs = jobs.or(config.app.compiler.jobs);
 
     let cache_root = expand_path(&config.app.storage.cache);
-    let base_cache_dir = library_cache_dir(&cache_root, &music_directory);
+    let base_cache_dir = library_cache_dir(&cache_root, &media_directory);
     fs::create_dir_all(&base_cache_dir)?;
 
-    let lib_hash = calculate_path_hash(&music_directory);
+    let lib_hash = calculate_path_hash(&media_directory);
     validate_library_root(&base_cache_dir, &lib_hash).await?;
 
     let mut cache = load_cache(&base_cache_dir.join("library.json"));
-    let deps_json_path = deps_graph_path(&cache_root, &music_directory);
+    let deps_json_path = deps_graph_path(&cache_root, &media_directory);
     let mut deps_graph = DependencyGraph::load_from_file(&deps_json_path);
 
     let (config_changed, lua_hash_file, lua_hash) =
@@ -62,7 +62,7 @@ pub async fn run(
         }
     };
 
-    let (scan_root, scope) = resolve_target_scope(target_path.as_ref(), &music_directory);
+    let (scan_root, scope) = resolve_target_scope(target_path.as_ref(), &media_directory);
 
     let queue = {
         let engine =
@@ -74,7 +74,7 @@ pub async fn run(
         resolve_work_queue(&WorkQueueContext {
             engine: &engine,
             scope: &scope,
-            media_directory: &music_directory,
+            media_directory: &media_directory,
             cache: &cache,
             deps_graph: &deps_graph,
             force: effective_force,
@@ -202,10 +202,10 @@ fn apply_missing(missing: &[PathBuf], deps_graph: &mut DependencyGraph) {
 
 fn resolve_target_scope(
     target_path: Option<&PathBuf>,
-    music_directory: &Path,
+    media_directory: &Path,
 ) -> (PathBuf, UpdateScope) {
     let scan_root = target_path.map_or_else(
-        || music_directory.to_path_buf(),
+        || media_directory.to_path_buf(),
         |p| p.canonicalize().unwrap_or_else(|_| p.clone()),
     );
 

@@ -225,7 +225,7 @@ async fn run_server_update_pass(
 ) -> Result<()> {
     let config = state.config.read().await.app.clone();
     let config_path = state.config.read().await.config_path.clone();
-    let media_directory = state.config.read().await.music_directory.clone();
+    let media_directory = state.config.read().await.media_directory.clone();
     let cache_root = state.config.read().await.cache_root.clone();
     let dependencies = state.config.read().await.resolved_dependencies.clone();
 

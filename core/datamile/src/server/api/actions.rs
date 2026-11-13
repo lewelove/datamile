@@ -27,8 +27,8 @@ async fn resolve_playing_target(state: &AppState) -> Option<String> {
         return Some(item.album_id.clone());
     }
 
-    let music_dir = state.config.read().await.music_directory.clone();
-    let dir = crate::x::get_playing_album(&music_dir.to_string_lossy())
+    let media_dir = state.config.read().await.media_directory.clone();
+    let dir = crate::x::get_playing_album(&media_dir.to_string_lossy())
         .await
         .ok()?;
     let canon = dir.canonicalize().unwrap_or(dir);
@@ -51,10 +51,10 @@ async fn resolve_param_target(
     if params.get("library").is_some_and(|v| v == "true")
         || params.contains_key("recursive")
     {
-        let music_dir = state.config.read().await.music_directory.clone();
+        let media_dir = state.config.read().await.media_directory.clone();
         let root = params
             .get("recursive")
-            .map_or_else(|| music_dir, |dir| libdatamile::utils::expand_path(dir));
+            .map_or_else(|| media_dir, |dir| libdatamile::utils::expand_path(dir));
         let root_canon = root.canonicalize().unwrap_or(root);
         return logic
             .albums

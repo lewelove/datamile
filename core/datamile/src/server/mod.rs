@@ -66,11 +66,11 @@ pub async fn run(port: u16) -> Result<()> {
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
 
-    let music_dir_str = &config.app.storage.music_directory;
+    let media_dir_str = &config.app.storage.media_directory;
 
-    let music_directory = expand_path(music_dir_str)
+    let media_directory = expand_path(media_dir_str)
         .canonicalize()
-        .context("Invalid music_directory path")?;
+        .context("Invalid media_directory path")?;
 
     let cache_root = expand_path(&config.app.storage.cache);
     let state_root = expand_path(&config.app.storage.state);
@@ -85,7 +85,7 @@ pub async fn run(port: u16) -> Result<()> {
     let mut logic_engine = logic::LogicEngine::new()?;
 
     let server_config = ServerConfig {
-        music_directory: music_directory.clone(),
+        media_directory: media_directory.clone(),
         cache_root: cache_root.clone(),
         state_root: state_root.clone(),
         resolved_dependencies,
@@ -99,7 +99,7 @@ pub async fn run(port: u16) -> Result<()> {
 
     let ui_state_val = load_state(&state_root);
 
-    let lib_scanner = library::scanner::Library::new(music_directory.clone());
+    let lib_scanner = library::scanner::Library::new(media_directory.clone());
     lib_scanner.scan(&mut logic_engine);
 
     let logic_arc = Arc::new(RwLock::new(logic_engine));
@@ -112,7 +112,7 @@ pub async fn run(port: u16) -> Result<()> {
     );
 
     let deps_json_path =
-        crate::update::cache::deps_graph_path(&cache_root, &music_directory);
+        crate::update::cache::deps_graph_path(&cache_root, &media_directory);
     let initial_deps_graph = state::DependencyGraph::load_from_file(&deps_json_path);
 
     let app_state = Arc::new(AppState {

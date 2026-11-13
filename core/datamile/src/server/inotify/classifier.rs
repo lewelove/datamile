@@ -3,18 +3,18 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub struct ChangeFlags {
+pub(super) struct ChangeFlags {
     pub config: bool,
     pub changed_locks: HashSet<PathBuf>,
     pub changed_paths: HashSet<PathBuf>,
     /// Parent directories whose immediate roots must be rediscovered.
-    pub shallow_paths: HashSet<PathBuf>,
+    pub(crate) shallow_paths: HashSet<PathBuf>,
     pub vanished_paths: HashSet<PathBuf>,
 }
 
 struct ClassifierContext<'a> {
     config_dir: &'a Path,
-    music_directory: &'a Path,
+    media_directory: &'a Path,
     deps: &'a HashSet<PathBuf>,
     deps_graph: &'a crate::server::state::DependencyGraph,
 }
@@ -39,7 +39,7 @@ fn classify_path_change(
     }
 
     for ancestor in p_canon.ancestors() {
-        if !ancestor.starts_with(ctx.music_directory) {
+        if !ancestor.starts_with(ctx.media_directory) {
             break;
         }
         if let Some(locks) = ctx.deps_graph.locks_for_dir(ancestor) {
@@ -55,7 +55,7 @@ fn classify_path_change(
     }
 
     // A new directory may hold a root whose marker appeared with it.
-    if p_canon.is_dir() && p_canon.starts_with(ctx.music_directory) {
+    if p_canon.is_dir() && p_canon.starts_with(ctx.media_directory) {
         flags.changed_paths.insert(p_canon.to_path_buf());
         return;
     }
@@ -63,14 +63,17 @@ fn classify_path_change(
     // A marker dropped into an untracked folder only reveals a root by
     // inspecting that folder's immediate children.
     if !matched
-        && p_canon.starts_with(ctx.music_directory)
+        && p_canon.starts_with(ctx.media_directory)
         && let Some(parent) = p_canon.parent()
     {
         flags.shallow_paths.insert(parent.to_path_buf());
     }
 }
 
-pub async fn classify_events(paths: &[PathBuf], state: &Arc<AppState>) -> ChangeFlags {
+pub(super) async fn classify_events(
+    paths: &[PathBuf],
+    state: &Arc<AppState>,
+) -> ChangeFlags {
     let mut flags = ChangeFlags {
         config: false,
         changed_locks: HashSet::new(),
@@ -82,13 +85,13 @@ pub async fn classify_events(paths: &[PathBuf], state: &Arc<AppState>) -> Change
     let deps_graph = state.deps_graph.read().await;
     let guard = state.config.read().await;
     let config_dir = guard.config_dir.clone();
-    let music_directory = guard.music_directory.clone();
+    let media_directory = guard.media_directory.clone();
     let deps: HashSet<PathBuf> = guard.resolved_dependencies.iter().cloned().collect();
     drop(guard);
 
     let ctx = ClassifierContext {
         config_dir: &config_dir,
-        music_directory: &music_directory,
+        media_directory: &media_directory,
         deps: &deps,
         deps_graph: &deps_graph,
     };

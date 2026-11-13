@@ -42,6 +42,24 @@ fn test_d_list_sort_by() {
     assert!(invalid.is_err());
 }
 
+/// Verify sort_by evaluates the key function once per item, not per comparison.
+#[test]
+fn test_sort_by_calls_key_once() {
+    let engine = LuaEngine::new().expect("engine");
+
+    let code = r#"
+        local calls = 0
+        local items = { { v = 3 }, { v = 1 }, { v = 2 } }
+        d.list.sort_by(items, function(item)
+            calls = calls + 1
+            return item.v
+        end)
+        return calls
+    "#;
+    let calls: usize = engine.lua.load(code).eval().expect("sort_by calls");
+    assert_eq!(calls, 3);
+}
+
 /// Verify sum, min and max map values and ignore nil mapped entries.
 #[test]
 fn test_d_list_sum_min_max() {

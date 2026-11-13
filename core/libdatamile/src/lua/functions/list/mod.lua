@@ -148,9 +148,18 @@ function M.sort_by(list, key_fn)
         error(string.format("key_fn: expected function, got %s", type(key_fn)))
     end
 
-    table.sort(list, function(a, b)
-        return key_cmp(key_fn(a), key_fn(b)) < 0
+    local keyed = {}
+    for i, item in ipairs(list) do
+        keyed[i] = { item = item, key = key_fn(item) }
+    end
+
+    table.sort(keyed, function(a, b)
+        return key_cmp(a.key, b.key) < 0
     end)
+
+    for i, entry in ipairs(keyed) do
+        list[i] = entry.item
+    end
 
     return list
 end

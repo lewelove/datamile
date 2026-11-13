@@ -180,16 +180,14 @@ impl LogicEngine {
 
     fn validate_and_cleanup(
         &mut self,
-        root_type: &str,
         lock_path: &Path,
         target: &Path,
         id: &str,
     ) -> Result<()> {
-        if let Some(existing_uid) = self.id_to_uid.get(id)
-            && let Some(existing) = self.albums.get(existing_uid)
-            && existing.lock_path != lock_path
+        if let Some(existing_uid) = self.id_to_uid.get(id).copied()
+            && let Some(existing) = self.albums.get(&existing_uid)
         {
-            if existing.lock_path.exists() {
+            if existing.lock_path != lock_path && existing.lock_path.exists() {
                 return Err(DatamileError::DuplicateMediaId {
                     id: id.to_string(),
                     path_a: existing.lock_path.clone(),
@@ -198,16 +196,11 @@ impl LogicEngine {
                 .into());
             }
 
-            let uid = *existing_uid;
-            self.remove_uid(uid);
+            self.remove_uid(existing_uid);
         }
 
-        if let Some(old_uid) = self.lock_to_uid.get(lock_path)
-            && let Some(old) = self.albums.get(old_uid)
-            && (old.id != id || old.root_type != root_type)
-        {
-            let uid = *old_uid;
-            self.remove_uid(uid);
+        if let Some(old_uid) = self.lock_to_uid.get(lock_path).copied() {
+            self.remove_uid(old_uid);
         }
 
         let _ = target;
@@ -379,7 +372,7 @@ impl LogicEngine {
         let lock_path = lock_path
             .canonicalize()
             .unwrap_or_else(|_| lock_path.to_path_buf());
-        self.validate_and_cleanup(root_type, &lock_path, &album_dir_canon, id)?;
+        self.validate_and_cleanup(&lock_path, &album_dir_canon, id)?;
 
         let parsed: Value = serde_json::from_str(metadata_json)?;
 

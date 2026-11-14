@@ -307,6 +307,39 @@ fn compile_root_virtual_rejects_path() {
     assert!(err.to_string().contains("virtual-only"));
 }
 
+/// A combined parent that resolves to a file cannot own physical children.
+#[test]
+fn compile_root_file_instance_rejects_physical_child() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path().join("root");
+    fs::create_dir_all(root.join("sub")).expect("sub");
+    fs::write(root.join("book.m4b"), b"audio").expect("m4b");
+
+    let engine = LuaEngine::new().expect("engine");
+    let code = r#"
+        d.media("leaf", {
+            kind = "dir",
+            select = function(parent) return { parent.path .. "/sub" } end,
+        })
+        d.media("book_file", {
+            kind = { "dir", "file" },
+            select = function(parent) return d.fs.files(parent.path, { ext = { "m4b" } }) end,
+            children = { leaves = "leaf" },
+        })
+        d.media("root", {
+            kind = "root",
+            dir = "/",
+            select = function() return {} end,
+            children = { parts = "book_file" },
+        })
+    "#;
+    engine.lua.load(code).exec().expect("register");
+
+    let err = compile_root(&engine, &root_target(&root, "root", &root), tmp.path())
+        .expect_err("physical child of file");
+    assert!(err.to_string().contains("only have virtual children"));
+}
+
 /// Root selections must be directory path strings inside the declared dir.
 #[test]
 fn discover_rejects_invalid_root_targets() {

@@ -320,9 +320,17 @@ fn compile_entity(
         ctx_id: prepared.ctx_id,
     };
 
+    let parent_path = source_path(source);
+    let parent_is_virtual = parent_path.is_none_or(Path::is_file);
+
     let mut children = Map::new();
     for child in prepared.children {
         let child_kind = engine.media_kind(&child.type_name)?;
+        if parent_is_virtual && !child_kind.kinds.iter().all(|kind| kind == "virtual") {
+            bail!(
+                "media type '{type_name}' is file-backed or virtual and can only have virtual children"
+            );
+        }
         let mut compiled = Vec::with_capacity(child.targets.len());
         for target in child.targets {
             let child_source =
@@ -346,7 +354,7 @@ fn compile_entity(
         })?;
     drop(guard);
 
-    let path = source_path(source);
+    let path = parent_path;
     let id = resolve_id(type_name, &kind, path, scope.root_dir, raw.get("id"))?;
     let location = path
         .map(|path| auto_location(path, scope.lock_root))

@@ -381,6 +381,49 @@ function M.files(dir, opts)
     error(string.format("sort: expected 'natural', 'lex', or false, got %s", tostring(sort)))
 end
 
+function M.dirs(dir, opts)
+    opts = opts or {}
+    if type(dir) ~= "string" then
+        error(string.format("dir: expected string, got %s", type(dir)))
+    end
+
+    local depth = opts.depth or 1
+    local pattern = opts.pattern
+    local result = {}
+    for rel, kind in M.dir(dir, {
+        depth = depth,
+        follow = opts.follow or false,
+        skip = opts.skip,
+    }) do
+        if kind == "directory" then
+            local basename = M.basename(rel)
+            if pattern == nil or basename:find(pattern) then
+                table.insert(result, M.joinpath(dir, rel))
+            end
+        end
+    end
+
+    local sort = opts.sort
+    if sort == nil then
+        sort = "natural"
+    end
+    if sort == false then
+        return result
+    end
+    if sort == "natural" then
+        table.sort(result, function(a, b)
+            return d.str.natcmp(a, b) < 0
+        end)
+        return result
+    end
+    if sort == "lex" then
+        table.sort(result)
+        return result
+    end
+
+    error(string.format("sort: expected 'natural', 'lex', or false, got %s", tostring(sort)))
+end
+
 local function dir_entries(dir_path)
     local entries = {}
     for name, kind in M.dir(dir_path, { depth = 1 }) do
@@ -410,16 +453,16 @@ local function marker_matcher(markers)
     end
 end
 
-function M.roots(scope, matcher_or_opts)
-    if type(scope) ~= "table" or type(scope.path) ~= "string" then
-        error("scope must be a table with a string path")
+function M.roots(dir, matcher_or_opts)
+    if type(dir) ~= "string" then
+        error(string.format("dir: expected string, got %s", type(dir)))
     end
+    dir = M.normalize(dir)
 
-    local opts = {}
+    local opts = { prune = true }
     local matcher
     if type(matcher_or_opts) == "string" then
         matcher = marker_matcher({ matcher_or_opts })
-        opts.prune = true
     elseif type(matcher_or_opts) == "table" then
         local markers = matcher_or_opts.marker
         matcher = matcher_or_opts.match
@@ -428,8 +471,8 @@ function M.roots(scope, matcher_or_opts)
         end
         if type(markers) == "table" and matcher == nil then
             matcher = marker_matcher(markers)
-            opts.prune = matcher_or_opts.prune ~= false
-        else
+        end
+        if matcher_or_opts.prune ~= nil then
             opts.prune = matcher_or_opts.prune == true
         end
     elseif type(matcher_or_opts) == "function" then
@@ -442,7 +485,6 @@ function M.roots(scope, matcher_or_opts)
         error("matcher must provide a marker or match function")
     end
 
-    local recursive = scope.recursive ~= false
     local selected = {}
 
     local function evaluate(dir_path)
@@ -452,38 +494,28 @@ function M.roots(scope, matcher_or_opts)
             return false, false
         end
 
-        local seed = { path = dir_path }
-        if type(first) == "table" then
-            seed = d.tbl.extend("force", seed, first)
-        end
-        table.insert(selected, seed)
-
-        local prune = opts.prune == true or second == "prune"
+        table.insert(selected, dir_path)
+        local prune = second == "prune" or opts.prune
         return true, prune
     end
 
-    local _, root_pruned = evaluate(scope.path)
-    if not recursive or root_pruned then
-        table.sort(selected, function(a, b)
-            return d.str.natcmp(a.path, b.path) < 0
-        end)
-        return selected
-    end
-
-    for _, kind in M.dir(scope.path, {
-        depth = math.huge,
-        skip = function(_, full)
-            local _, prune = evaluate(full)
-            return not prune
-        end,
-    }) do
-        if kind == nil then
-            break
+    local _, root_pruned = evaluate(dir)
+    if not root_pruned then
+        for _, kind in M.dir(dir, {
+            depth = math.huge,
+            skip = function(_, full)
+                local _, prune = evaluate(full)
+                return not prune
+            end,
+        }) do
+            if kind == nil then
+                break
+            end
         end
     end
 
     table.sort(selected, function(a, b)
-        return d.str.natcmp(a.path, b.path) < 0
+        return d.str.natcmp(a, b) < 0
     end)
     return selected
 end

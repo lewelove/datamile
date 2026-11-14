@@ -279,6 +279,20 @@ pub struct EvaluatedLuaData {
     pub manifest: LogicManifest,
 }
 
+/// Declared kind of a media type, as registered through `d.media`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MediaKind {
+    pub is_root: bool,
+    pub kinds: Vec<String>,
+}
+
+impl MediaKind {
+    #[must_use]
+    pub fn has(&self, kind: &str) -> bool {
+        self.kinds.iter().any(|item| item == kind)
+    }
+}
+
 /// Child targets emitted by `__DATAMILE_MEDIA_PREPARE`.
 pub struct PreparedChildren {
     pub field: String,
@@ -400,6 +414,8 @@ impl LuaEngine {
             .exec()
             .map_err(|e| anyhow::anyhow!("{e}"))
             .context("Failed to execute init.lua")?;
+
+        self.media_validate()?;
 
         let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
 
@@ -604,6 +620,58 @@ impl LuaEngine {
         Ok(roots)
     }
 
+    pub fn media_validate(&self) -> Result<()> {
+        let func: mlua::Function = self
+            .lua
+            .globals()
+            .get("__DATAMILE_MEDIA_VALIDATE")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        func.call::<bool>(()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
+    }
+
+    pub fn media_kind(&self, type_name: &str) -> Result<MediaKind> {
+        let func: mlua::Function = self
+            .lua
+            .globals()
+            .get("__DATAMILE_MEDIA_INFO")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let table: Table = func.call(type_name).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut kinds = Vec::new();
+        let kind_table: Table = table.get("kinds").map_err(|e| anyhow::anyhow!("{e}"))?;
+        for value in kind_table.sequence_values::<String>() {
+            kinds.push(value.map_err(|e| anyhow::anyhow!("{e}"))?);
+        }
+        Ok(MediaKind {
+            is_root: table.get("is_root").map_err(|e| anyhow::anyhow!("{e}"))?,
+            kinds,
+        })
+    }
+
+    pub fn media_root_dirs(&self) -> Result<Vec<(String, PathBuf)>> {
+        let func: mlua::Function = self
+            .lua
+            .globals()
+            .get("__DATAMILE_MEDIA_ROOT_DIRS")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let table: Table = func.call(()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut roots = Vec::new();
+        for value in table.sequence_values::<Table>() {
+            let entry = value.map_err(|e| anyhow::anyhow!("{e}"))?;
+            let name: String = entry.get("name").map_err(|e| anyhow::anyhow!("{e}"))?;
+            let raw_dir: String = entry.get("dir").map_err(|e| anyhow::anyhow!("{e}"))?;
+            let dir = MEDIA_DIRECTORY_OVERRIDE.get().map_or_else(
+                || {
+                    let path = PathBuf::from(&raw_dir);
+                    path.canonicalize().unwrap_or(path)
+                },
+                Clone::clone,
+            );
+            roots.push((name, dir));
+        }
+        Ok(roots)
+    }
+
     pub fn media_select(
         &self,
         type_name: &str,
@@ -667,6 +735,7 @@ impl LuaEngine {
         &self,
         type_name: &str,
         seed: &serde_json::Value,
+        parent_ctx_id: Option<u64>,
     ) -> Result<PreparedEntity> {
         let func: mlua::Function = self
             .lua
@@ -678,7 +747,7 @@ impl LuaEngine {
             .to_value(seed)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let value: mlua::Value = func
-            .call((type_name, lua_seed))
+            .call((type_name, lua_seed, parent_ctx_id))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let prepared: serde_json::Value = self
             .lua

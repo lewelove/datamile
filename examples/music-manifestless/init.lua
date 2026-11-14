@@ -1,6 +1,5 @@
 d.config({
     storage = {
-        media_directory = "~/Music",
         cache = "~/.cache/datamile",
         state = "~/.local/share/datamile",
     },

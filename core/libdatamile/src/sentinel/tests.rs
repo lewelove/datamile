@@ -279,3 +279,75 @@ fn test_nested_children_physics() {
         TrustState::BrokenPhysics
     );
 }
+
+/// Attached `files` entries are part of the intentional provenance surface.
+#[test]
+fn test_files_integrity() {
+    let tmp = album_root();
+    let root = tmp.path();
+    let manifest = root.join("album.toml");
+    fs::write(&manifest, "[album]\n").expect("manifest");
+
+    write_lock(
+        root,
+        &json!({
+            "album": {
+                "id": "A",
+                "files": {
+                    "manifest": {
+                        "path": "album.toml",
+                        "mtime": mtime_secs(&manifest),
+                        "byte_size": byte_size(&manifest),
+                    }
+                },
+                "objects": { "info": { "virtual": true } }
+            }
+        }),
+    );
+
+    let lock = root.join("album.lock.json");
+    assert_eq!(
+        verify_trust(&lock, "album", Some("A")).expect("trust"),
+        TrustState::Valid
+    );
+
+    fs::write(&manifest, "[album]\nalbum = \"A\"\n").expect("manifest change");
+    assert_eq!(
+        verify_trust(&lock, "album", Some("A")).expect("trust"),
+        TrustState::BrokenIntent
+    );
+}
+
+/// A location kind must agree with the physical path.
+#[test]
+fn test_location_kind_must_match_physics() {
+    let tmp = album_root();
+    let root = tmp.path();
+    let track = root.join("track.flac");
+    fs::write(&track, b"audio").expect("track");
+
+    write_lock(
+        root,
+        &json!({
+            "album": {
+                "id": "A",
+                "tracks": [
+                    {
+                        "id": "A - 1",
+                        "location": {
+                            "kind": "dir",
+                            "path": "track.flac",
+                            "mtime": mtime_secs(&track),
+                            "byte_size": byte_size(&track),
+                        }
+                    }
+                ]
+            }
+        }),
+    );
+
+    assert_eq!(
+        verify_trust(&root.join("album.lock.json"), "album", Some("A")).expect("trust"),
+        TrustState::BrokenPhysics
+    );
+}

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
-use libdatamile::lua::{EngineContext, LuaEngine};
+use anyhow::{Context, Result, bail};
+use libdatamile::lua::{EngineContext, LuaEngine, MediaKind};
 use serde_json::{Map, Value, json};
 
 use crate::compile::images;
@@ -17,9 +17,11 @@ pub struct RootTarget {
     pub root_type: String,
     pub target: PathBuf,
     pub lock_path: PathBuf,
+    pub root_dir: PathBuf,
     pub source: Value,
 }
 
+#[derive(Debug)]
 pub struct MediaBuild {
     pub root_type: String,
     pub target: PathBuf,
@@ -42,57 +44,29 @@ impl Drop for CtxGuard<'_> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ScopeMode {
-    Recursive,
-    Shallow,
-}
-
-impl ScopeMode {
-    const fn recursive(self) -> bool {
-        matches!(self, Self::Recursive)
-    }
-}
-
 pub fn discover_roots(
     engine: &LuaEngine,
     target: &Path,
     specific: Option<&[PathBuf]>,
 ) -> Result<Vec<(String, Value)>> {
-    discover_roots_in_scope(engine, target, specific, ScopeMode::Recursive)
-}
+    engine.media_validate()?;
 
-fn discover_roots_in_scope(
-    engine: &LuaEngine,
-    target: &Path,
-    specific: Option<&[PathBuf]>,
-    mode: ScopeMode,
-) -> Result<Vec<(String, Value)>> {
     let mut roots = Vec::new();
     let mut seen = HashSet::new();
 
-    for root_type in engine.media_roots()? {
-        let candidates: Vec<Value> = match specific {
-            Some(paths) => {
-                let mut found = Vec::new();
-                for path in paths {
-                    found.extend(
-                        engine.media_select(&root_type, &path_scope(path, mode))?,
-                    );
+    for (root_type, root_dir) in engine.media_root_dirs()? {
+        let scopes = root_scopes(&root_dir, target, specific);
+        for scope in scopes {
+            let candidates = engine.media_select(
+                &root_type,
+                &Value::String(scope.to_string_lossy().to_string()),
+            )?;
+            for candidate in candidates {
+                let canon =
+                    validate_root_target(&root_type, &root_dir, &scope, &candidate)?;
+                if seen.insert((root_type.clone(), canon.clone())) {
+                    roots.push((root_type.clone(), path_source(&canon)));
                 }
-                found
-            }
-            None => engine.media_select(&root_type, &path_scope(target, mode))?,
-        };
-
-        for source in candidates {
-            let path = source_path(&source).with_context(|| {
-                format!("root media type '{root_type}' returned a source without a path")
-            })?;
-            let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-
-            if seen.insert((root_type.clone(), canon.clone())) {
-                roots.push((root_type.clone(), path_source(&canon)));
             }
         }
     }
@@ -102,6 +76,31 @@ fn discover_roots_in_scope(
             .then_with(|| source_sort_key(&a.1).cmp(source_sort_key(&b.1)))
     });
     Ok(roots)
+}
+
+/// Scan every declared root directory.
+pub fn discover_targets_all(engine: &LuaEngine) -> Result<Vec<RootTarget>> {
+    engine.media_validate()?;
+
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    for (root_type, root_dir) in engine.media_root_dirs()? {
+        let scopes = root_scopes(&root_dir, &root_dir, None);
+        for scope in scopes {
+            let found = engine.media_select(
+                &root_type,
+                &Value::String(scope.to_string_lossy().to_string()),
+            )?;
+            for candidate in found {
+                let canon =
+                    validate_root_target(&root_type, &root_dir, &scope, &candidate)?;
+                if seen.insert((root_type.clone(), canon.clone())) {
+                    candidates.push((root_type.clone(), path_source(&canon)));
+                }
+            }
+        }
+    }
+    resolve_targets(candidates, engine)
 }
 
 /// Resolve root targets, including their canonical lock paths.
@@ -118,16 +117,91 @@ pub fn discover_targets_shallow(
     engine: &LuaEngine,
     target: &Path,
 ) -> Result<Vec<RootTarget>> {
-    resolve_targets(
-        discover_roots_in_scope(engine, target, None, ScopeMode::Shallow)?,
-        engine,
-    )
+    resolve_targets(discover_roots(engine, target, None)?, engine)
+}
+
+fn root_scopes(
+    root_dir: &Path,
+    target: &Path,
+    specific: Option<&[PathBuf]>,
+) -> Vec<PathBuf> {
+    let root = canonical_or_owned(root_dir);
+    let mut scopes = Vec::new();
+
+    let mut push_scope = |path: &Path| {
+        let path = canonical_or_owned(path);
+        if path == root || path.starts_with(&root) || root.starts_with(&path) {
+            let scope = if path.starts_with(&root) {
+                path
+            } else {
+                root.clone()
+            };
+            if !scopes.contains(&scope) {
+                scopes.push(scope);
+            }
+        }
+    };
+
+    match specific {
+        Some(paths) => {
+            for path in paths {
+                push_scope(path);
+            }
+        }
+        None => push_scope(target),
+    }
+
+    scopes
+}
+
+fn canonical_or_owned(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn validate_root_target(
+    root_type: &str,
+    root_dir: &Path,
+    scope: &Path,
+    candidate: &Value,
+) -> Result<PathBuf> {
+    let Some(raw) = candidate.as_str() else {
+        bail!(
+            "root media type '{root_type}' select must return directory path strings, got {candidate}"
+        );
+    };
+
+    if raw.is_empty() {
+        bail!("root media type '{root_type}' returned an empty directory path");
+    }
+
+    let path = resolve_selection_path(raw, scope);
+    let canon = path.canonicalize().with_context(|| {
+        format!("root media type '{root_type}' selected missing path {raw}")
+    })?;
+
+    if !canon.is_dir() {
+        bail!(
+            "root media type '{root_type}' selected {canon:?}, which is not an existing directory"
+        );
+    }
+
+    let root = canonical_or_owned(root_dir);
+    if !canon.starts_with(&root) {
+        bail!(
+            "root media type '{root_type}' selected {canon:?}, outside its declared dir {root:?}"
+        );
+    }
+
+    Ok(canon)
 }
 
 fn resolve_targets(
     roots: Vec<(String, Value)>,
     engine: &LuaEngine,
 ) -> Result<Vec<RootTarget>> {
+    let dirs: std::collections::HashMap<String, PathBuf> =
+        engine.media_root_dirs()?.into_iter().collect();
+
     let mut out = Vec::new();
     for (root_type, source) in roots {
         let target_path = source_path(&source)
@@ -135,21 +209,22 @@ fn resolve_targets(
             .to_path_buf();
 
         if !target_path.is_dir() {
-            return Err(libdatamile::error::DatamileError::RootTargetNotDirectory {
-                root_type,
-                path: target_path,
-            }
-            .into());
+            bail!(
+                "root media type '{root_type}' selected {target_path:?}, which is not an existing directory"
+            );
         }
 
-        let Some(lock_path) = engine.media_lock(&root_type, &source)? else {
-            continue;
-        };
+        let root_dir = dirs
+            .get(&root_type)
+            .cloned()
+            .with_context(|| format!("media type '{root_type}' has no declared dir"))?;
+        let lock_path = target_path.join(format!("{root_type}.lock.json"));
 
         out.push(RootTarget {
             root_type,
             target: target_path,
             lock_path,
+            root_dir,
             source,
         });
     }
@@ -161,6 +236,7 @@ pub fn compile_root(
     root: &RootTarget,
     cache_root: &Path,
 ) -> Result<MediaBuild> {
+    engine.media_validate()?;
     take_dependencies(engine);
     take_directories(engine);
 
@@ -169,7 +245,9 @@ pub fn compile_root(
         engine,
         &root.root_type,
         &root.source,
+        &root.root_dir,
         cache_root,
+        None,
         &mut files,
     )?;
     files.extend(take_dependencies(engine));
@@ -181,9 +259,7 @@ pub fn compile_root(
         .unwrap_or_default()
         .to_string();
 
-    let lock_json = json!({
-        root.root_type.clone(): value
-    });
+    let lock_json = json!({ root.root_type.clone(): value });
 
     Ok(MediaBuild {
         root_type: root.root_type.clone(),
@@ -201,9 +277,13 @@ fn compile_entity(
     engine: &LuaEngine,
     type_name: &str,
     source: &Value,
+    root_dir: &Path,
     cache_root: &Path,
+    parent_ctx_id: Option<u64>,
     dependencies: &mut HashSet<PathBuf>,
 ) -> Result<Value> {
+    let kind = engine.media_kind(type_name)?;
+
     // The entity's own directory is always watched so new files (a dropped
     // track or cover) mark it dirty even when no hook listed it.
     if let Some(path) = source_path(source) {
@@ -217,9 +297,11 @@ fn compile_entity(
         }
     }
 
-    let prepared = engine.media_prepare(type_name, source).with_context(|| {
-        format!("failed to prepare {type_name} at {}", source_label(source))
-    })?;
+    let prepared = engine
+        .media_prepare(type_name, source, parent_ctx_id)
+        .with_context(|| {
+            format!("failed to prepare {type_name} at {}", source_label(source))
+        })?;
     let guard = CtxGuard {
         engine,
         ctx_id: prepared.ctx_id,
@@ -227,13 +309,18 @@ fn compile_entity(
 
     let mut children = Map::new();
     for child in prepared.children {
+        let child_kind = engine.media_kind(&child.type_name)?;
         let mut compiled = Vec::with_capacity(child.targets.len());
         for target in child.targets {
+            let child_source =
+                validate_child_target(&child.type_name, &child_kind, &target, source)?;
             compiled.push(compile_entity(
                 engine,
                 &child.type_name,
-                &target,
+                &child_source,
+                root_dir,
                 cache_root,
+                Some(prepared.ctx_id),
                 dependencies,
             )?);
         }
@@ -247,21 +334,12 @@ fn compile_entity(
         })?;
     drop(guard);
 
-    let id = raw
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map_or_else(
-            || {
-                source_path(source)
-                    .and_then(Path::to_str)
-                    .unwrap_or_default()
-                    .to_string()
-            },
-            ToString::to_string,
-        );
+    let path = source_path(source);
+    let id = resolve_id(type_name, &kind, path, root_dir, raw.get("id"))?;
+    let location = path.map(|path| auto_location(path, root_dir)).transpose()?;
+    let files = process_files(engine, raw.get("files"), path, root_dir, dependencies)?;
 
-    let image_map = match source_path(source) {
+    let image_map = match path {
         Some(path) => {
             let entity_root = if path.is_dir() {
                 path
@@ -280,13 +358,13 @@ fn compile_entity(
 
     let mut out = Map::new();
     out.insert("id".to_string(), Value::String(id));
-    out.insert("tags".to_string(), sorted_object(raw.get("tags")));
-    out.insert("objects".to_string(), sorted_object(raw.get("objects")));
-    out.insert("images".to_string(), json!(image_map));
-
-    if let Some(location) = raw.get("location") {
-        out.insert("location".to_string(), sort_maps(location));
+    if let Some(location) = location {
+        out.insert("location".to_string(), sort_maps(&location));
     }
+    out.insert("tags".to_string(), sorted_object(raw.get("tags")));
+    out.insert("files".to_string(), files);
+    out.insert("images".to_string(), json!(image_map));
+    out.insert("objects".to_string(), sorted_object(raw.get("objects")));
 
     for (field, compiled) in children {
         out.insert(field, compiled);
@@ -295,11 +373,270 @@ fn compile_entity(
     Ok(Value::Object(out))
 }
 
-fn path_scope(path: &Path, mode: ScopeMode) -> Value {
-    json!({
-        "path": path.to_string_lossy(),
-        "recursive": mode.recursive(),
-    })
+fn resolve_id(
+    type_name: &str,
+    kind: &MediaKind,
+    path: Option<&Path>,
+    root_dir: &Path,
+    raw_id: Option<&Value>,
+) -> Result<String> {
+    if let Some(id) = raw_id.and_then(Value::as_str).filter(|id| !id.is_empty()) {
+        return Ok(id.to_string());
+    }
+
+    if let Some(path) = path {
+        return Ok(relpath_string(path, root_dir));
+    }
+
+    if kind.has("virtual") {
+        bail!("media type '{type_name}' produced a virtual entity without an id");
+    }
+
+    bail!("media type '{type_name}' produced an entity without an id or path");
+}
+
+fn validate_child_target(
+    type_name: &str,
+    kind: &MediaKind,
+    target: &Value,
+    parent: &Value,
+) -> Result<Value> {
+    if let Some(raw) = target.as_str() {
+        return validate_physical_target(type_name, kind, raw, parent);
+    }
+
+    let Some(object) = target.as_object() else {
+        bail!("media type '{type_name}' select returned an invalid target: {target}");
+    };
+
+    if !kind.has("virtual") {
+        bail!(
+            "media type '{type_name}' rejected a table target because it is not virtual"
+        );
+    }
+
+    for key in ["path", "parent", "id", "tags", "objects", "files", "images"] {
+        if object.contains_key(key) {
+            bail!(
+                "media type '{type_name}' virtual target contains reserved key '{key}'"
+            );
+        }
+    }
+
+    Ok(target.clone())
+}
+
+fn validate_physical_target(
+    type_name: &str,
+    kind: &MediaKind,
+    raw: &str,
+    parent: &Value,
+) -> Result<Value> {
+    if !kind.has("dir") && !kind.has("file") {
+        bail!(
+            "media type '{type_name}' rejected a path target because it is virtual-only"
+        );
+    }
+
+    let Some(parent_path) = source_path(parent) else {
+        bail!("media type '{type_name}' rejected a physical child of a virtual parent");
+    };
+
+    let base = if parent_path.is_dir() {
+        parent_path.to_path_buf()
+    } else {
+        parent_path
+            .parent()
+            .map(Path::to_path_buf)
+            .context("physical parent has no directory")?
+    };
+    let base = canonical_or_owned(&base);
+
+    let path = resolve_selection_path(raw, &base);
+    let canon = path.canonicalize().with_context(|| {
+        format!("media type '{type_name}' selected missing path {raw}")
+    })?;
+
+    if !canon.starts_with(&base) {
+        bail!("media type '{type_name}' selected {canon:?}, outside its parent {base:?}");
+    }
+
+    if canon.is_dir() {
+        if !kind.has("dir") {
+            bail!(
+                "media type '{type_name}' selected a directory but does not declare kind 'dir'"
+            );
+        }
+    } else if canon.is_file() {
+        if !kind.has("file") {
+            bail!(
+                "media type '{type_name}' selected a file but does not declare kind 'file'"
+            );
+        }
+    } else {
+        bail!("media type '{type_name}' selected unsupported path {canon:?}");
+    }
+
+    Ok(path_source(&canon))
+}
+
+fn auto_location(path: &Path, root_dir: &Path) -> Result<Value> {
+    let meta = std::fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?;
+    let mtime = meta
+        .modified()
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let rel = relpath_string(path, root_dir);
+
+    if meta.is_dir() {
+        return Ok(json!({ "kind": "dir", "path": rel, "mtime": mtime }));
+    }
+    if meta.is_file() {
+        return Ok(json!({
+            "kind": "file",
+            "path": rel,
+            "mtime": mtime,
+            "byte_size": meta.len()
+        }));
+    }
+
+    bail!("unsupported physical entity at {}", path.display())
+}
+
+fn process_files(
+    engine: &LuaEngine,
+    raw_files: Option<&Value>,
+    entity_path: Option<&Path>,
+    root_dir: &Path,
+    dependencies: &mut HashSet<PathBuf>,
+) -> Result<Value> {
+    let entity_dir = entity_path.map(|path| {
+        if path.is_dir() {
+            path.to_path_buf()
+        } else {
+            path.parent().unwrap_or(path).to_path_buf()
+        }
+    });
+
+    let mut out: BTreeMap<String, Value> = BTreeMap::new();
+    let Some(files) = raw_files.and_then(Value::as_object) else {
+        return Ok(Value::Object(Map::new()));
+    };
+
+    for (name, value) in files {
+        let processed = match value {
+            Value::Array(items) => {
+                let mut list = Vec::new();
+                for item in items {
+                    if let Some(entry) = process_file_entry(
+                        engine,
+                        item,
+                        entity_dir.as_deref(),
+                        root_dir,
+                        dependencies,
+                    ) {
+                        list.push(entry);
+                    }
+                }
+                if list.is_empty() {
+                    continue;
+                }
+                Value::Array(list)
+            }
+            other => {
+                let Some(entry) = process_file_entry(
+                    engine,
+                    other,
+                    entity_dir.as_deref(),
+                    root_dir,
+                    dependencies,
+                ) else {
+                    continue;
+                };
+                entry
+            }
+        };
+        out.insert(name.clone(), processed);
+    }
+
+    let mut map = Map::new();
+    for (key, value) in out {
+        map.insert(key, sort_maps(&value));
+    }
+    Ok(Value::Object(map))
+}
+
+fn process_file_entry(
+    engine: &LuaEngine,
+    value: &Value,
+    entity_dir: Option<&Path>,
+    root_dir: &Path,
+    dependencies: &mut HashSet<PathBuf>,
+) -> Option<Value> {
+    let raw = value.get("path").and_then(Value::as_str)?;
+    let path = resolve_attached_path(raw, entity_dir)?;
+    let canon = path.canonicalize().ok()?;
+    if !canon.is_file() {
+        return None;
+    }
+
+    dependencies.insert(canon.clone());
+    if let Some(parent) = canon.parent()
+        && let Some(ctx) = engine.lua.app_data_ref::<EngineContext>()
+    {
+        ctx.record_dir(parent);
+    }
+
+    let meta = std::fs::metadata(&canon).ok()?;
+    let mtime = meta
+        .modified()
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let rel = relpath_string(&canon, root_dir);
+
+    Some(json!({
+        "path": rel,
+        "mtime": mtime,
+        "byte_size": meta.len()
+    }))
+}
+
+fn resolve_attached_path(raw: &str, entity_dir: Option<&Path>) -> Option<PathBuf> {
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        return Some(path.to_path_buf());
+    }
+
+    entity_dir.map(|base| base.join(path))
+}
+
+fn resolve_selection_path(raw: &str, base: &Path) -> PathBuf {
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
+fn relpath_string(path: &Path, root_dir: &Path) -> String {
+    let canon = canonical_or_owned(path);
+    let root = canonical_or_owned(root_dir);
+    canon.strip_prefix(&root).map_or_else(
+        |_| canon.to_string_lossy().to_string(),
+        |rel| {
+            if rel.as_os_str().is_empty() {
+                ".".to_string()
+            } else {
+                rel.to_string_lossy().to_string()
+            }
+        },
+    )
 }
 
 fn path_source(path: &Path) -> Value {

@@ -64,17 +64,20 @@ fn shallow_discovery_compiles_new_marker() {
     fs::create_dir_all(&album).expect("album dir");
 
     let engine = LuaEngine::new().expect("engine");
-    let code = r#"
-        d.media.type("album")
-        d.compile.album.lock(function(source)
-            return d.fs.joinpath(source.path, "album.lock.json")
-        end)
-        d.compile.album.select(function(scope)
-            return d.fs.roots(scope, "album.toml")
-        end)
-        d.compile.album.id(function(ctx) return "new-album" end)
-    "#;
-    engine.lua.load(code).exec().expect("register");
+    let code = format!(
+        r#"
+        d.media("album", {{
+            kind = "root",
+            dir = "{music}",
+            select = function(dir)
+                return d.fs.roots(dir, "album.toml")
+            end,
+        }})
+        d.compile.album.id(function() return "new-album" end)
+    "#,
+        music = music.to_string_lossy()
+    );
+    engine.lua.load(&code).exec().expect("register");
 
     let before = crate::compile::media::discover_targets_shallow(&engine, &album)
         .expect("shallow before");

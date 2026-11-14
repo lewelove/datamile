@@ -35,11 +35,13 @@ pub struct StreamContext {
 }
 
 pub(super) fn register_id(
-    seen: &mut HashMap<String, PathBuf>,
+    seen: &mut HashMap<(String, String), PathBuf>,
+    root_type: &str,
     id: &str,
     lock_path: &Path,
 ) -> Result<()> {
-    if let Some(existing) = seen.get(id) {
+    let key = (root_type.to_string(), id.to_string());
+    if let Some(existing) = seen.get(&key) {
         if existing != lock_path {
             return Err(libdatamile::error::DatamileError::DuplicateMediaId {
                 id: id.to_string(),
@@ -51,7 +53,7 @@ pub(super) fn register_id(
         return Ok(());
     }
 
-    seen.insert(id.to_string(), lock_path.to_path_buf());
+    seen.insert(key, lock_path.to_path_buf());
     Ok(())
 }
 
@@ -73,7 +75,9 @@ pub async fn run(ctx: StreamContext) -> Result<CompileReport> {
     let direct_handle = tokio::spawn(async move {
         let mut seen_ids = HashMap::new();
         while let Some(item) = drx.recv().await {
-            if let Err(err) = register_id(&mut seen_ids, &item.id, &item.lock_path) {
+            if let Err(err) =
+                register_id(&mut seen_ids, &item.root_type, &item.id, &item.lock_path)
+            {
                 record_error(&direct_errors, err);
                 continue;
             }

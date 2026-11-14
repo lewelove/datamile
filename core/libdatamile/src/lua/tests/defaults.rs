@@ -32,18 +32,20 @@ fn register_fixture(engine: &LuaEngine) {
             end)
         end
 
-        d.media.type("track")
-        d.compile.track.select(function(scope)
-            return harvest(scope.path)
-        end)
+        d.media("track", {
+            kind = "file",
+            select = function(parent)
+                return harvest(parent.path)
+            end,
+        })
 
-        d.media.type("album")
-        d.compile.album.lock(function(target)
-            return d.fs.joinpath(target.path, "album.lock.json")
-        end)
-        d.compile.album.select(function(scope)
-            return d.fs.roots(scope, { marker = "album.toml", prune = false })
-        end)
+        d.media("album", {
+            kind = "root",
+            dir = "/",
+            select = function(dir)
+                return d.fs.roots(dir, { marker = "album.toml", prune = false })
+            end,
+        })
     "#;
     engine.lua.load(code).exec().expect("register fixture");
 }
@@ -92,11 +94,18 @@ fn engine_with_cache(cache: &Path) -> LuaEngine {
     engine
 }
 
+fn source_path(value: &Value) -> &str {
+    value
+        .as_str()
+        .or_else(|| value["path"].as_str())
+        .expect("source path")
+}
+
 fn source_names(sources: &[Value]) -> Vec<String> {
     sources
         .iter()
         .map(|s| {
-            PathBuf::from(s["path"].as_str().expect("source path"))
+            PathBuf::from(source_path(s))
                 .file_name()
                 .expect("file name")
                 .to_string_lossy()
@@ -222,12 +231,12 @@ fn test_album_select_finds_nested_albums() {
             &json!({ "path": root.to_string_lossy(), "recursive": true }),
         )
         .expect("select");
-    sources.sort_by_key(|s| s["path"].as_str().unwrap_or("").to_string());
+    sources.sort_by_key(|s| source_path(s).to_string());
 
     let names: Vec<String> = sources
         .iter()
         .map(|s| {
-            let path = PathBuf::from(s["path"].as_str().expect("path"));
+            let path = PathBuf::from(source_path(s));
             path.strip_prefix(root)
                 .expect("relative")
                 .to_string_lossy()
@@ -237,9 +246,9 @@ fn test_album_select_finds_nested_albums() {
     assert_eq!(names, vec!["A", "A/nested", "B"]);
 }
 
-/// A non-recursive scope inspects only the given directory.
+/// Selecting a specific directory evaluates that directory as a root.
 #[test]
-fn test_album_select_non_recursive() {
+fn test_album_select_specific_directory() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     let album = root.join("A");

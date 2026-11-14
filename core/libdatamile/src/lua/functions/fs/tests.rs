@@ -927,7 +927,7 @@ fn test_files_filter_sort() {
     assert_eq!(names, vec!["note.mp3", "track10.flac", "track2.flac"]);
 }
 
-/// Verify roots selects by marker or predicate, honors pruning, and recursive scopes.
+/// Verify roots returns directory path strings and honors pruning.
 #[test]
 fn test_roots_marker_pred() {
     let engine = LuaEngine::new().expect("engine");
@@ -943,8 +943,8 @@ fn test_roots_marker_pred() {
     let code = format!(
         r#"
         local out = {{}}
-        for _, seed in ipairs(d.fs.roots({{ path = '{root}', recursive = true }}, 'album.toml')) do
-            table.insert(out, d.fs.relpath('{root}', seed.path))
+        for _, path in ipairs(d.fs.roots('{root}', 'album.toml')) do
+            table.insert(out, d.fs.relpath('{root}', path))
         end
         return out
     "#
@@ -955,8 +955,8 @@ fn test_roots_marker_pred() {
     let code = format!(
         r#"
         local out = {{}}
-        for _, seed in ipairs(d.fs.roots({{ path = '{root}', recursive = true }}, {{ marker = 'album.toml', prune = false }})) do
-            table.insert(out, d.fs.relpath('{root}', seed.path))
+        for _, path in ipairs(d.fs.roots('{root}', {{ marker = 'album.toml', prune = false }})) do
+            table.insert(out, d.fs.relpath('{root}', path))
         end
         return out
     "#
@@ -967,15 +967,15 @@ fn test_roots_marker_pred() {
     let code = format!(
         r#"
         local out = {{}}
-        for _, seed in ipairs(d.fs.roots({{ path = '{root}', recursive = true }}, function(path, entries)
+        for _, path in ipairs(d.fs.roots('{root}', function(_, entries)
             for _, entry in ipairs(entries) do
                 if entry.name == 'album.toml' then
-                    return {{ label = d.fs.basename(path) }}, 'prune'
+                    return true, 'prune'
                 end
             end
             return false
         end)) do
-            table.insert(out, seed.label)
+            table.insert(out, d.fs.basename(path))
         end
         return out
     "#
@@ -986,8 +986,8 @@ fn test_roots_marker_pred() {
     let code = format!(
         r#"
         local out = {{}}
-        for _, seed in ipairs(d.fs.roots({{ path = '{root}/A', recursive = false }}, 'album.toml')) do
-            table.insert(out, d.fs.basename(seed.path))
+        for _, path in ipairs(d.fs.roots('{root}/A', 'album.toml')) do
+            table.insert(out, d.fs.basename(path))
         end
         return out
     "#

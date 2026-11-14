@@ -55,6 +55,10 @@ pub fn verify_trust(
         return Ok(TrustState::BrokenIntent);
     }
 
+    if check_files(entity_root, entity) == TrustState::BrokenIntent {
+        return Ok(TrustState::BrokenIntent);
+    }
+
     if check_image_integrity(entity_root, entity) == TrustState::BrokenAssets {
         return Ok(TrustState::BrokenAssets);
     }
@@ -108,6 +112,73 @@ fn check_manifest_mtimes(entity_root: &Path, entity: &serde_json::Value) -> Trus
             }
         }
     }
+    TrustState::Valid
+}
+
+/// Attached files live under `files.<name>` as one entry or a list.
+fn check_files(entity_root: &Path, entity: &serde_json::Value) -> TrustState {
+    if let Some(files) = entity.get("files").and_then(serde_json::Value::as_object) {
+        for value in files.values() {
+            if check_file_entries(entity_root, value) == TrustState::BrokenIntent {
+                return TrustState::BrokenIntent;
+            }
+        }
+    }
+
+    TrustState::Valid
+}
+
+fn check_file_entries(entity_root: &Path, value: &serde_json::Value) -> TrustState {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if check_file_entry(entity_root, item) == TrustState::BrokenIntent {
+                    return TrustState::BrokenIntent;
+                }
+            }
+            TrustState::Valid
+        }
+        other => check_file_entry(entity_root, other),
+    }
+}
+
+fn check_file_entry(entity_root: &Path, entry: &serde_json::Value) -> TrustState {
+    let rel_path = entry
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if rel_path.is_empty() {
+        return TrustState::BrokenIntent;
+    }
+
+    let abs_path = resolve(entity_root, rel_path);
+    let Ok(meta) = fs::metadata(&abs_path) else {
+        return TrustState::BrokenIntent;
+    };
+
+    let lock_mtime = entry
+        .get("mtime")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let current_mtime = meta.modified().map_or(0, |t| {
+        t.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    });
+
+    if lock_mtime != 0 && lock_mtime != current_mtime {
+        return TrustState::BrokenIntent;
+    }
+
+    let lock_size = entry
+        .get("byte_size")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+
+    if lock_size != 0 && lock_size != meta.len() {
+        return TrustState::BrokenIntent;
+    }
+
     TrustState::Valid
 }
 
@@ -206,6 +277,19 @@ fn location_matches(location: &serde_json::Value, entity_root: &Path) -> bool {
     let Ok(meta) = fs::metadata(&abs_path) else {
         return false;
     };
+
+    let kind = location
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let kind_matches = match kind {
+        "dir" => meta.is_dir(),
+        "file" => meta.is_file(),
+        _ => false,
+    };
+    if !kind_matches {
+        return false;
+    }
 
     let lock_mtime = location
         .get("mtime")

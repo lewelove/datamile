@@ -11,18 +11,25 @@ function M.audio_extensions()
 end
 
 function M.tracks(path)
-    local seeds = {}
+    local files = {}
     for _, file in ipairs(d.fs.files(path, { ext = M.audio_extensions() })) do
-        table.insert(seeds, { path = file, audio = d.fs.read_audio(file) })
+        table.insert(files, { path = file, audio = d.fs.read_audio(file) })
     end
 
-    return d.list.sort_by(seeds, function(item)
+    local sorted = d.list.sort_by(files, function(item)
         return {
             d.str.leading_int(d.get(item.audio, "tags.discnumber")) or 1,
             d.str.leading_int(d.get(item.audio, "tags.tracknumber")) or math.huge,
             item.path,
         }
     end)
+
+    local paths = {}
+    for _, item in ipairs(sorted) do
+        table.insert(paths, item.path)
+    end
+
+    return paths
 end
 
 function M.cover(path)

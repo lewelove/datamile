@@ -28,6 +28,7 @@ fn target(root_type: &str, target: &Path, lock: &Path) -> RootTarget {
         root_type: root_type.to_string(),
         target: target.to_path_buf(),
         lock_path: lock.to_path_buf(),
+        root_dir: target.parent().unwrap_or(target).to_path_buf(),
         source: json!({ "path": target.to_string_lossy() }),
     }
 }
@@ -236,21 +237,19 @@ fn overlapping_scope_paths_dedupe_roots() {
     fs::write(album.join("album.lock.json"), b"{}").expect("lock");
 
     let engine = LuaEngine::new().expect("engine");
-    let code = r#"
-        d.media.type("album")
-        d.compile.album.lock(function(t) return t.path .. "/album.lock.json" end)
-        d.compile.album.select(function(scope)
-            local marker = d.fs.joinpath(scope.path, "album.toml")
-            if d.fs.exists(marker) then
-                return { { path = scope.path } }
-            end
-            if not scope.recursive then
-                return {}
-            end
-            return d.fs.roots(scope, "album.toml")
-        end)
-    "#;
-    engine.lua.load(code).exec().expect("register");
+    let code = format!(
+        r#"
+        d.media("album", {{
+            kind = "root",
+            dir = "{root}",
+            select = function(dir)
+                return d.fs.roots(dir, "album.toml")
+            end,
+        }})
+    "#,
+        root = root.to_string_lossy()
+    );
+    engine.lua.load(&code).exec().expect("register");
 
     let scope = UpdateScope::Paths(HashSet::from([root.clone(), album.clone()]));
     let cache = LibraryCache::new();
@@ -284,18 +283,19 @@ fn verifying_message_reaches_log_txs() {
     fs::write(album.join("album.lock.json"), b"{}").expect("lock");
 
     let engine = LuaEngine::new().expect("engine");
-    let code = r#"
-        d.media.type("album")
-        d.compile.album.lock(function(t) return t.path .. "/album.lock.json" end)
-        d.compile.album.select(function(scope)
-            local marker = d.fs.joinpath(scope.path, "album.toml")
-            if d.fs.exists(marker) then
-                return { { path = scope.path } }
-            end
-            return {}
-        end)
-    "#;
-    engine.lua.load(code).exec().expect("register");
+    let code = format!(
+        r#"
+        d.media("album", {{
+            kind = "root",
+            dir = "{root}",
+            select = function(dir)
+                return d.fs.roots(dir, "album.toml")
+            end,
+        }})
+    "#,
+        root = root.to_string_lossy()
+    );
+    engine.lua.load(&code).exec().expect("register");
 
     let scope = UpdateScope::Paths(HashSet::from([album]));
     let cache = LibraryCache::new();

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
@@ -51,6 +52,10 @@ async fn resolve_tracks(body: &PlayBody, state: &Arc<AppState>) -> Vec<String> {
     logic.track_uris_for(&body.root_type, &body.id, body.track_ids.as_deref())
 }
 
+const fn offset_within(offset: usize, len: usize) -> bool {
+    offset < len
+}
+
 pub async fn play(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PlayBody>,
@@ -58,6 +63,14 @@ pub async fn play(
     let tracks = resolve_tracks(&body, &state).await;
     if tracks.is_empty() {
         return Json(json!({ "status": "empty" })).into_response();
+    }
+
+    if !offset_within(body.offset, tracks.len()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "offset is outside the resolved track list" })),
+        )
+            .into_response();
     }
 
     state

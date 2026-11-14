@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use super::{JumpBody, PlayBody};
+use super::{JumpBody, PlayBody, offset_within};
 
 /// `track_ids` is optional; omitting it means "the whole entity".
 #[test]
@@ -37,4 +37,13 @@ fn play_body_keeps_track_selection() {
 fn jump_body_reads_index() {
     let body: JumpBody = serde_json::from_value(json!({ "index": 7 })).expect("body");
     assert_eq!(body.index, 7);
+}
+
+/// Play offsets must address an existing track, never the queue tail.
+#[test]
+fn play_offset_must_be_inside_track_list() {
+    assert!(offset_within(0, 1));
+    assert!(offset_within(4, 5));
+    assert!(!offset_within(5, 5));
+    assert!(!offset_within(9, 5));
 }

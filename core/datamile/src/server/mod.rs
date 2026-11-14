@@ -67,11 +67,14 @@ pub async fn run(port: u16) -> Result<()> {
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
 
-    let media_dir_str = &config.app.storage.media_directory;
-
-    let media_directory = expand_path(media_dir_str)
-        .canonicalize()
-        .context("Invalid media_directory path")?;
+    let media_roots: Vec<_> = config
+        .root_dirs()
+        .into_iter()
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .collect();
+    if media_roots.is_empty() {
+        anyhow::bail!("No root media type declares a dir");
+    }
 
     let cache_root = expand_path(&config.app.storage.cache);
     let state_root = expand_path(&config.app.storage.state);
@@ -86,7 +89,7 @@ pub async fn run(port: u16) -> Result<()> {
     let mut logic_engine = logic::LogicEngine::new()?;
 
     let server_config = ServerConfig {
-        media_directory: media_directory.clone(),
+        media_roots: media_roots.clone(),
         cache_root: cache_root.clone(),
         state_root: state_root.clone(),
         resolved_dependencies,
@@ -100,7 +103,7 @@ pub async fn run(port: u16) -> Result<()> {
 
     let ui_state_val = load_state(&state_root);
 
-    let lib_scanner = library::scanner::Library::new(media_directory.clone());
+    let lib_scanner = library::scanner::Library::new(media_roots.clone());
     lib_scanner.scan(&mut logic_engine);
 
     let logic_arc = Arc::new(RwLock::new(logic_engine));
@@ -112,8 +115,7 @@ pub async fn run(port: u16) -> Result<()> {
         Arc::new(server_config.clone()),
     );
 
-    let deps_json_path =
-        crate::update::cache::deps_graph_path(&cache_root, &media_directory);
+    let deps_json_path = crate::update::cache::deps_graph_path(&cache_root, &media_roots);
     let initial_deps_graph = state::DependencyGraph::load_from_file(&deps_json_path);
 
     let app_state = Arc::new(AppState {

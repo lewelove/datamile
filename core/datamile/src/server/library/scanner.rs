@@ -3,16 +3,18 @@ use std::path::PathBuf;
 use rayon::prelude::*;
 
 pub struct Library {
-    pub root: PathBuf,
+    pub roots: Vec<PathBuf>,
 }
 
 impl Library {
-    pub const fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub const fn new(roots: Vec<PathBuf>) -> Self {
+        Self { roots }
     }
 
     pub fn scan(&self, logic_engine: &mut crate::server::logic::LogicEngine) {
-        log::info!("Scanning Library at {}", self.root.display());
+        for root in &self.roots {
+            log::info!("Scanning Library at {}", root.display());
+        }
 
         let config_path = &logic_engine.config_path;
 
@@ -25,10 +27,8 @@ impl Library {
                 log::error!("Failed to evaluate config for library scan: {e}");
                 return;
             }
-            let Ok(roots) =
-                crate::compile::media::discover_targets(&engine, &self.root, None)
-            else {
-                log::error!("Failed to discover roots under {}", self.root.display());
+            let Ok(roots) = crate::compile::media::discover_targets_all(&engine) else {
+                log::error!("Failed to discover media roots");
                 return;
             };
 
@@ -89,7 +89,7 @@ impl Library {
                 id: &id,
                 lock_json: &content,
                 eval_res,
-                media_directory: &self.root,
+                media_roots: &self.roots,
             };
 
             if let Err(e) = logic_engine.ingest_entity(ingest) {

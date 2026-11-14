@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
@@ -348,7 +348,7 @@ fn remove_vanished_locks(
 
 fn ingest_recompiled_items(
     items: Vec<RecompiledAlbumItem>,
-    media_directory: &Path,
+    media_roots: &[PathBuf],
     logic: &mut crate::server::logic::LogicEngine,
     deps_graph: &mut crate::server::state::DependencyGraph,
     outcome: &mut IngestOutcome,
@@ -365,7 +365,7 @@ fn ingest_recompiled_items(
             id: &item.id,
             lock_json: &item.lock_json,
             eval_res: eval,
-            media_directory,
+            media_roots,
         });
 
         if let Err(e) = ingest {
@@ -398,9 +398,9 @@ pub async fn ingest_and_broadcast_albums(
     origin: IngestOrigin,
     state: &Arc<AppState>,
 ) {
-    let (media_directory, cache_root) = {
+    let (media_roots, cache_root) = {
         let guard = state.config.read().await;
-        (guard.media_directory.clone(), guard.cache_root.clone())
+        (guard.media_roots.clone(), guard.cache_root.clone())
     };
 
     let logic_arc = Arc::clone(&state.logic);
@@ -415,7 +415,7 @@ pub async fn ingest_and_broadcast_albums(
 
         ingest_recompiled_items(
             recompiled_items,
-            &media_directory,
+            &media_roots,
             &mut logic,
             &mut deps_graph,
             &mut outcome,
@@ -426,7 +426,7 @@ pub async fn ingest_and_broadcast_albums(
         let graph_pruned = deps_graph.prune();
         if outcome.deps_modified || graph_pruned {
             let deps_json_path =
-                crate::update::cache::deps_graph_path(&cache_root, &media_directory);
+                crate::update::cache::deps_graph_path(&cache_root, &media_roots);
             if let Err(e) = deps_graph.save_to_file(&deps_json_path) {
                 log::error!("Failed to persist dependency graph: {e}");
             }

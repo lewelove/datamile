@@ -276,6 +276,7 @@ pub struct EvaluatedLuaData {
     pub interfaces: HashMap<String, InterfaceDef>,
     pub actions: HashMap<String, ActionDef>,
     pub dependencies: Vec<PathBuf>,
+    pub media_roots: Vec<(String, PathBuf)>,
     pub manifest: LogicManifest,
 }
 
@@ -472,6 +473,7 @@ impl LuaEngine {
         }
         dependencies.sort();
         dependencies.dedup();
+        let media_roots = self.media_root_dirs()?;
 
         Ok(EvaluatedLuaData {
             app: app_config,
@@ -479,6 +481,7 @@ impl LuaEngine {
             interfaces,
             actions,
             dependencies,
+            media_roots,
             manifest,
         })
     }
@@ -998,11 +1001,29 @@ pub struct ResolvedConfig {
     pub interfaces: HashMap<String, InterfaceDef>,
     pub actions: HashMap<String, ActionDef>,
     pub dependencies: Vec<PathBuf>,
+    pub media_roots: Vec<(String, PathBuf)>,
     pub manifest: LogicManifest,
     pub path: PathBuf,
 }
 
 impl ResolvedConfig {
+    #[must_use]
+    pub fn root_dirs(&self) -> Vec<PathBuf> {
+        if !self.media_roots.is_empty() {
+            return self
+                .media_roots
+                .iter()
+                .map(|(_, dir)| dir.clone())
+                .collect();
+        }
+
+        if self.app.storage.media_directory.is_empty() {
+            return Vec::new();
+        }
+
+        vec![PathBuf::from(&self.app.storage.media_directory)]
+    }
+
     pub fn load() -> Result<Self> {
         let path = resolve_config_path().context("Could not locate init.lua")?;
         let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -1066,6 +1087,7 @@ impl ResolvedConfig {
             interfaces: evaluated.interfaces,
             actions: evaluated.actions,
             dependencies,
+            media_roots: evaluated.media_roots,
             manifest: evaluated.manifest,
             path,
         })

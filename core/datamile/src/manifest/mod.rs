@@ -32,7 +32,34 @@ pub struct ManifestOptions {
 pub fn run(target_path: Option<&Path>, options: &ManifestOptions) -> Result<()> {
     let config =
         libdatamile::lua::ResolvedConfig::load().context("Failed to load config")?;
-    let media_dir = expand_path(&config.app.storage.media_directory);
+    let media_roots = config.root_dirs();
+    let fallback = expand_path(&config.app.storage.media_directory);
+    let media_dir = media_roots.first().cloned().unwrap_or(fallback);
+
+    if matches!(options.mode, ManifestMode::Library)
+        && target_path.is_none()
+        && media_roots.len() > 1
+    {
+        return config.app.manifest.audio_extensions.as_ref().map_or_else(
+            || {
+                for root in &media_roots {
+                    execute_manifest_run(
+                        Some(root),
+                        options,
+                        root,
+                        SUPPORTED_AUDIO_EXTENSIONS,
+                    )?;
+                }
+                Ok(())
+            },
+            |exts| {
+                for root in &media_roots {
+                    execute_manifest_run(Some(root), options, root, exts)?;
+                }
+                Ok(())
+            },
+        );
+    }
 
     config.app.manifest.audio_extensions.as_ref().map_or_else(
         || {

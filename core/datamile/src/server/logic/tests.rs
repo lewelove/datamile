@@ -22,6 +22,7 @@ fn ingest(
     })
     .to_string();
 
+    let media_roots = vec![dir.to_path_buf()];
     engine
         .ingest_entity(EntityIngest {
             root_type,
@@ -30,14 +31,14 @@ fn ingest(
             id: "Dune",
             lock_json: &lock_json,
             eval_res,
-            media_directory: dir,
+            media_roots: &media_roots,
         })
         .expect("ingest");
 }
 
-/// Ids are globally unique across root types (Law 2).
+/// Ids are unique within a root type, not across root types.
 #[test]
-fn logic_rejects_duplicate_id() {
+fn logic_scopes_ids_by_root_type() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = tmp.path().join("init.lua");
     fs::write(&config, "datamile.config({})").expect("config");
@@ -45,30 +46,35 @@ fn logic_rejects_duplicate_id() {
 
     let film = tmp.path().join("film");
     let audiobook = tmp.path().join("audiobook");
-    fs::create_dir_all(&film).expect("film dir");
-    fs::create_dir_all(&audiobook).expect("audiobook dir");
+    let other_film = tmp.path().join("other-film");
+    for dir in [&film, &audiobook, &other_film] {
+        fs::create_dir_all(dir).expect("dir");
+    }
 
     let mut engine = LogicEngine::new().expect("engine");
     ingest(&mut engine, "film", &film, json!({}));
+    ingest(&mut engine, "audiobook", &audiobook, json!({}));
+    assert_eq!(engine.albums.len(), 2);
 
-    let lock_path = audiobook.join("entity.lock.json");
+    let lock_path = other_film.join("entity.lock.json");
     fs::write(&lock_path, b"{}").expect("lock");
     let lock_json = json!({
-        "audiobook": { "id": "Dune", "tags": {}, "objects": {}, "images": {} }
+        "film": { "id": "Dune", "tags": {}, "objects": {}, "images": {} }
     })
     .to_string();
+    let media_roots = vec![tmp.path().to_path_buf()];
 
     let err = engine
         .ingest_entity(EntityIngest {
-            root_type: "audiobook",
-            target: &audiobook,
+            root_type: "film",
+            target: &other_film,
             lock_path: &lock_path,
             id: "Dune",
             lock_json: &lock_json,
             eval_res: json!({}),
-            media_directory: tmp.path(),
+            media_roots: &media_roots,
         })
-        .expect_err("duplicate id");
+        .expect_err("duplicate film id");
 
     assert!(err.to_string().contains("Duplicate Media ID"));
 }

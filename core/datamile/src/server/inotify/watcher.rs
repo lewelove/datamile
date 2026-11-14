@@ -80,7 +80,7 @@ async fn sync_watches(
     let mut needed_non_recursive = std::collections::HashSet::new();
 
     needed_recursive.insert(config_dir.to_path_buf());
-    needed_recursive.insert(guard.media_directory.clone());
+    needed_recursive.extend(guard.media_roots.iter().cloned());
 
     for dep in &guard.resolved_dependencies {
         if let Some(parent) = dep.parent() {
@@ -91,7 +91,10 @@ async fn sync_watches(
     let deps_graph = state.deps_graph.read().await;
     for dep_file in deps_graph.file_to_locks.keys() {
         if !dep_file.starts_with(config_dir)
-            && !dep_file.starts_with(&guard.media_directory)
+            && !guard
+                .media_roots
+                .iter()
+                .any(|root| dep_file.starts_with(root))
             && let Some(parent) = dep_file.parent()
         {
             needed_non_recursive.insert(parent.to_path_buf());

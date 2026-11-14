@@ -27,9 +27,10 @@ fn untracked_marks_shallow() {
     );
 
     let empty_deps = HashSet::new();
+    let media_roots = [music];
     let ctx = ClassifierContext {
         config_dir: Path::new("/config"),
-        media_directory: &music,
+        media_roots: &media_roots,
         deps: &empty_deps,
         deps_graph: &graph,
     };

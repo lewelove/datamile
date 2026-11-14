@@ -70,7 +70,7 @@ pub struct EntityIngest<'a> {
     pub id: &'a str,
     pub lock_json: &'a str,
     pub eval_res: Value,
-    pub media_directory: &'a Path,
+    pub media_roots: &'a [PathBuf],
 }
 
 pub struct LogicEngine {
@@ -83,7 +83,7 @@ pub struct LogicEngine {
     pub(crate) shelves_cache: HashMap<String, Vec<u32>>,
     pub(crate) next_uid: u32,
     pub albums: HashMap<u32, AlbumRecord>,
-    pub id_to_uid: HashMap<String, u32>,
+    pub id_to_uid: HashMap<(String, String), u32>,
     pub lock_to_uid: HashMap<PathBuf, u32>,
     pub cover_lookup: HashMap<String, CoverLookupItem>,
     pub track_lookup: HashMap<String, TrackLookupItem>,
@@ -162,7 +162,8 @@ impl LogicEngine {
             return;
         };
 
-        self.id_to_uid.remove(&record.id);
+        self.id_to_uid
+            .remove(&(record.root_type.clone(), record.id.clone()));
         self.lock_to_uid.remove(&record.lock_path);
 
         for uri in &record.track_uris {
@@ -175,17 +176,21 @@ impl LogicEngine {
     }
 
     #[must_use]
-    pub fn uid_for_id(&self, id: &str) -> Option<u32> {
-        self.id_to_uid.get(id).copied()
+    pub fn uid_for_id(&self, root_type: &str, id: &str) -> Option<u32> {
+        self.id_to_uid
+            .get(&(root_type.to_string(), id.to_string()))
+            .copied()
     }
 
     fn validate_and_cleanup(
         &mut self,
+        root_type: &str,
         lock_path: &Path,
         target: &Path,
         id: &str,
     ) -> Result<()> {
-        if let Some(existing_uid) = self.id_to_uid.get(id).copied()
+        let key = (root_type.to_string(), id.to_string());
+        if let Some(existing_uid) = self.id_to_uid.get(&key).copied()
             && let Some(existing) = self.albums.get(&existing_uid)
         {
             if existing.lock_path != lock_path && existing.lock_path.exists() {
@@ -214,7 +219,7 @@ impl LogicEngine {
         tracks: &[Value],
         album_dir_canon: &Path,
         id: &str,
-        media_directory: &Path,
+        media_roots: &[PathBuf],
     ) -> Vec<String> {
         let mut track_uris = Vec::new();
 
@@ -237,10 +242,13 @@ impl LogicEngine {
             } else {
                 album_dir_canon.join(rel)
             };
-            let mpd_uri_raw = abs_track_path.strip_prefix(media_directory).map_or_else(
-                |_| abs_track_path.to_string_lossy().to_string(),
-                |p| p.to_string_lossy().to_string(),
-            );
+            let mpd_uri_raw = media_roots
+                .iter()
+                .find_map(|root| abs_track_path.strip_prefix(root).ok())
+                .map_or_else(
+                    || abs_track_path.to_string_lossy().to_string(),
+                    |p| p.to_string_lossy().to_string(),
+                );
             let mpd_uri = mpd_uri_raw.trim_start_matches('/').to_string();
 
             let tag_u32 = |key: &str, default: u32| -> u32 {
@@ -365,7 +373,7 @@ impl LogicEngine {
             id,
             lock_json: metadata_json,
             eval_res,
-            media_directory,
+            media_roots,
         } = ingest;
         let album_dir_canon = target
             .canonicalize()
@@ -373,7 +381,7 @@ impl LogicEngine {
         let lock_path = lock_path
             .canonicalize()
             .unwrap_or_else(|_| lock_path.to_path_buf());
-        self.validate_and_cleanup(&lock_path, &album_dir_canon, id)?;
+        self.validate_and_cleanup(root_type, &lock_path, &album_dir_canon, id)?;
 
         let parsed: Value = serde_json::from_str(metadata_json)?;
 
@@ -408,7 +416,7 @@ impl LogicEngine {
                 tracks,
                 &album_dir_canon,
                 &entity_id,
-                media_directory,
+                media_roots,
             )
         });
 
@@ -445,7 +453,8 @@ impl LogicEngine {
         };
 
         self.albums.insert(uid, record);
-        self.id_to_uid.insert(entity_id, uid);
+        self.id_to_uid
+            .insert((root_type.to_string(), entity_id), uid);
         self.lock_to_uid.insert(lock_path, uid);
         self.evaluated_logic.insert(uid, eval_res);
 
@@ -454,15 +463,13 @@ impl LogicEngine {
 
     #[must_use]
     pub fn album_record(&self, id: &str) -> Option<&AlbumRecord> {
-        let uid = self.uid_for_id(id)?;
-        self.albums.get(&uid)
+        self.albums.values().find(|record| record.id == id)
     }
 
     #[must_use]
     pub fn entity(&self, root_type: &str, id: &str) -> Option<&AlbumRecord> {
-        let uid = self.id_to_uid.get(id)?;
-        let record = self.albums.get(uid)?;
-        (record.root_type == root_type).then_some(record)
+        let uid = self.uid_for_id(root_type, id)?;
+        self.albums.get(&uid)
     }
 
     #[must_use]

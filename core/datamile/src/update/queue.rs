@@ -16,7 +16,7 @@ use crate::update::verify::{CacheIndex, verify_targets};
 pub struct WorkQueueContext<'a> {
     pub engine: &'a LuaEngine,
     pub scope: &'a UpdateScope,
-    pub media_directory: &'a Path,
+    pub media_roots: &'a [PathBuf],
     pub cache: &'a LibraryCache,
     pub deps_graph: &'a DependencyGraph,
     pub force: ForceMode,
@@ -37,7 +37,7 @@ pub fn resolve_work_queue(ctx: &WorkQueueContext<'_>) -> Result<WorkQueue> {
         (Some(tracked), ForceMode::Preserve) => {
             tracked_targets(ctx.engine, tracked, ctx.deps_graph)?
         }
-        _ => discover(ctx.engine, ctx.scope, ctx.media_directory)?,
+        _ => discover(ctx.engine, ctx.scope, ctx.media_roots)?,
     };
     roots.sort_by(|a, b| a.lock_path.cmp(&b.lock_path));
     roots.dedup_by(|a, b| a.lock_path == b.lock_path);
@@ -52,7 +52,7 @@ pub fn resolve_work_queue(ctx: &WorkQueueContext<'_>) -> Result<WorkQueue> {
                 .cloned()
                 .collect()
         }
-        _ => missing_locks(ctx.deps_graph, ctx.scope, ctx.media_directory, &roots),
+        _ => missing_locks(ctx.deps_graph, ctx.scope, ctx.media_roots, &roots),
     };
     missing.sort();
     missing.dedup();
@@ -75,10 +75,10 @@ pub fn resolve_work_queue(ctx: &WorkQueueContext<'_>) -> Result<WorkQueue> {
 fn discover(
     engine: &LuaEngine,
     scope: &UpdateScope,
-    media_directory: &Path,
+    _media_roots: &[PathBuf],
 ) -> Result<Vec<RootTarget>> {
     match scope {
-        UpdateScope::All => discover_targets(engine, media_directory, None),
+        UpdateScope::All => crate::compile::media::discover_targets_all(engine),
         UpdateScope::Paths(paths) => {
             let mut roots = Vec::new();
             for path in paths {
@@ -115,14 +115,17 @@ fn tracked_targets(
 fn missing_locks(
     deps_graph: &DependencyGraph,
     scope: &UpdateScope,
-    media_directory: &Path,
+    media_roots: &[PathBuf],
     discovered: &[RootTarget],
 ) -> Vec<PathBuf> {
     let found: HashSet<&PathBuf> =
         discovered.iter().map(|root| &root.lock_path).collect();
 
-    let mut missing = match scope {
-        UpdateScope::All => deps_graph.locks_under(media_directory),
+    let mut missing: Vec<PathBuf> = match scope {
+        UpdateScope::All => media_roots
+            .iter()
+            .flat_map(|root| deps_graph.locks_under(root))
+            .collect(),
         UpdateScope::Paths(paths) => paths
             .iter()
             .flat_map(|path| deps_graph.locks_under(path))

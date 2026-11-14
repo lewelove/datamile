@@ -63,6 +63,20 @@ fn discover(
         return Vec::new();
     };
 
+    resolve_discovered(roots)
+}
+
+fn discover_all(engine: &libdatamile::lua::LuaEngine) -> Vec<ResolvedAlbumTarget> {
+    let Ok(roots) = crate::compile::media::discover_targets_all(engine) else {
+        return Vec::new();
+    };
+
+    resolve_discovered(roots)
+}
+
+fn resolve_discovered(
+    roots: Vec<crate::compile::media::RootTarget>,
+) -> Vec<ResolvedAlbumTarget> {
     roots
         .into_iter()
         .filter_map(|root| {
@@ -87,7 +101,7 @@ fn discover(
 
 async fn resolve_by_id(
     id: &str,
-    media_directory: &Path,
+    _media_roots: &[PathBuf],
     config_path: &Path,
 ) -> Result<Vec<ResolvedAlbumTarget>> {
     let client = reqwest::Client::new();
@@ -106,7 +120,7 @@ async fn resolve_by_id(
     }
 
     let engine = load_engine(config_path)?;
-    Ok(discover(&engine, media_directory)
+    Ok(discover_all(&engine)
         .into_iter()
         .find(|target| target.id == id)
         .into_iter()
@@ -114,10 +128,14 @@ async fn resolve_by_id(
 }
 
 async fn resolve_by_playing(
-    media_directory: &Path,
+    media_roots: &[PathBuf],
     config_path: &Path,
 ) -> Result<Vec<ResolvedAlbumTarget>> {
-    let playing_album_dir = playing_album(&media_directory.to_string_lossy()).await?;
+    let Some(root) = media_roots.first() else {
+        return Ok(Vec::new());
+    };
+
+    let playing_album_dir = playing_album(&root.to_string_lossy()).await?;
     let engine = load_engine(config_path)?;
 
     Ok(discover(&engine, &playing_album_dir)
@@ -127,19 +145,19 @@ async fn resolve_by_playing(
 }
 
 pub async fn resolve_target_albums(
-    media_directory: &Path,
+    media_roots: &[PathBuf],
     target: &TargetFlags,
     config_path: &Path,
 ) -> Result<Vec<ResolvedAlbumTarget>> {
     if let Some(query_str) = &target.query {
         resolve_by_query(query_str).await
     } else if let Some(id) = &target.id {
-        resolve_by_id(id, media_directory, config_path).await
+        resolve_by_id(id, media_roots, config_path).await
     } else if target.playing {
-        resolve_by_playing(media_directory, config_path).await
+        resolve_by_playing(media_roots, config_path).await
     } else if target.library {
         let engine = load_engine(config_path)?;
-        Ok(discover(&engine, media_directory))
+        Ok(discover_all(&engine))
     } else if let Some(dir) = &target.recursive {
         let engine = load_engine(config_path)?;
         Ok(discover(&engine, &expand_path(dir)))
@@ -164,12 +182,10 @@ pub async fn execute(
         anyhow::bail!("Action '{name}' is not declared in configuration.");
     }
 
-    let media_directory = expand_path(&config.app.storage.media_directory)
-        .canonicalize()
-        .unwrap_or_else(|_| expand_path(&config.app.storage.media_directory));
+    let media_roots = config.root_dirs();
 
     let resolved_targets =
-        resolve_target_albums(&media_directory, &target, &config.path).await?;
+        resolve_target_albums(&media_roots, &target, &config.path).await?;
 
     let albums_payload: Vec<serde_json::Value> = resolved_targets
         .iter()

@@ -138,11 +138,11 @@ pub async fn trigger_full_reset(State(state): State<Arc<AppState>>) -> Response 
     log::info!("Rebuilding library database...");
     let start_time = std::time::Instant::now();
 
-    let media_directory = state.config.read().await.media_directory.clone();
+    let media_roots = state.config.read().await.media_roots.clone();
     let logic_arc = Arc::clone(&state.logic);
 
     let (album_count, manifest) = tokio::task::spawn_blocking(move || {
-        let scanner = crate::server::library::scanner::Library::new(media_directory);
+        let scanner = crate::server::library::scanner::Library::new(media_roots);
         let mut logic = logic_arc.blocking_write();
         scanner.scan(&mut logic);
         (logic.albums.len(), logic.manifest.clone())

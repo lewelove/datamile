@@ -34,19 +34,27 @@ struct CurrentState {
     pub hash: String,
 }
 
-pub fn calculate_path_hash(path: &Path) -> String {
-    blake3::hash(path.as_os_str().as_encoded_bytes())
-        .to_hex()
-        .to_string()
+/// Cache namespace for all declared root dirs. Sorted so declaration order
+/// does not split the cache.
+pub fn library_key(roots: &[PathBuf]) -> String {
+    let mut sorted = roots.to_vec();
+    sorted.sort();
+
+    let mut hasher = blake3::Hasher::new();
+    for root in &sorted {
+        hasher.update(root.as_os_str().as_encoded_bytes());
+        hasher.update(&[0]);
+    }
+
+    hasher.finalize().to_hex().to_string()
 }
 
-pub fn library_cache_dir(cache_root: &Path, media_directory: &Path) -> PathBuf {
-    let lib_hash = calculate_path_hash(media_directory);
-    cache_root.join("libraries").join(lib_hash)
+pub fn library_cache_dir(cache_root: &Path, roots: &[PathBuf]) -> PathBuf {
+    cache_root.join("libraries").join(library_key(roots))
 }
 
-pub fn deps_graph_path(cache_root: &Path, media_directory: &Path) -> PathBuf {
-    library_cache_dir(cache_root, media_directory).join("dependencies.json")
+pub fn deps_graph_path(cache_root: &Path, roots: &[PathBuf]) -> PathBuf {
+    library_cache_dir(cache_root, roots).join("dependencies.json")
 }
 
 pub fn lua_config_hash(dependencies: &[PathBuf]) -> String {

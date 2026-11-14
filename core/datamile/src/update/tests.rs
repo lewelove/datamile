@@ -254,10 +254,11 @@ fn overlapping_scope_paths_dedupe_roots() {
     let scope = UpdateScope::Paths(HashSet::from([root.clone(), album.clone()]));
     let cache = LibraryCache::new();
     let graph = DependencyGraph::default();
+    let media_roots = std::slice::from_ref(&root);
     let ctx = WorkQueueContext {
         engine: &engine,
         scope: &scope,
-        media_directory: &root,
+        media_roots,
         cache: &cache,
         deps_graph: &graph,
         force: ForceMode::Force,
@@ -270,6 +271,68 @@ fn overlapping_scope_paths_dedupe_roots() {
     let queue = resolve_work_queue(&ctx).expect("queue");
     assert_eq!(queue.roots.len(), 1);
     assert_eq!(queue.roots[0].target, album);
+}
+
+/// `UpdateScope::All` discovers roots across every declared root dir.
+#[test]
+fn update_all_discovers_multiple_root_dirs() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let music = tmp.path().join("music");
+    let movies = tmp.path().join("movies");
+    let album = music.join("Album");
+    let film = movies.join("Film");
+    for dir in [&album, &film] {
+        fs::create_dir_all(dir).expect("dir");
+    }
+    fs::write(album.join("album.toml"), b"").expect("marker");
+    fs::write(film.join("film.toml"), b"").expect("marker");
+
+    let engine = LuaEngine::new().expect("engine");
+    let code = format!(
+        r#"
+        d.media("album", {{
+            kind = "root",
+            dir = "{music}",
+            select = function(dir) return d.fs.roots(dir, "album.toml") end,
+        }})
+        d.compile.album.id(function() return "Dune" end)
+        d.media("film", {{
+            kind = "root",
+            dir = "{movies}",
+            select = function(dir) return d.fs.roots(dir, "film.toml") end,
+        }})
+        d.compile.film.id(function() return "Dune" end)
+    "#,
+        music = music.to_string_lossy(),
+        movies = movies.to_string_lossy()
+    );
+    engine.lua.load(&code).exec().expect("register");
+
+    let scope = UpdateScope::All;
+    let cache = LibraryCache::new();
+    let graph = DependencyGraph::default();
+    let media_roots = vec![music.clone(), movies.clone()];
+    let ctx = WorkQueueContext {
+        engine: &engine,
+        scope: &scope,
+        media_roots: &media_roots,
+        cache: &cache,
+        deps_graph: &graph,
+        force: ForceMode::Force,
+        effective_jobs: Some(1),
+        tracked: None,
+        verbosity: LogVerbosity::Silent,
+        log_txs: &[],
+    };
+
+    let queue = resolve_work_queue(&ctx).expect("queue");
+    let mut types: Vec<_> = queue
+        .roots
+        .iter()
+        .map(|root| root.root_type.as_str())
+        .collect();
+    types.sort_unstable();
+    assert_eq!(types, vec!["album", "film"]);
 }
 
 /// Progress messages reach every log subscriber, not just the server log.
@@ -301,10 +364,11 @@ fn verifying_message_reaches_log_txs() {
     let cache = LibraryCache::new();
     let graph = DependencyGraph::default();
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let media_roots = std::slice::from_ref(&root);
     let ctx = WorkQueueContext {
         engine: &engine,
         scope: &scope,
-        media_directory: &root,
+        media_roots,
         cache: &cache,
         deps_graph: &graph,
         force: ForceMode::Force,

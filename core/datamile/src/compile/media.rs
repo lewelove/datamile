@@ -32,6 +32,12 @@ pub struct MediaBuild {
     pub dirs: HashSet<PathBuf>,
 }
 
+struct EntityScope<'a> {
+    root_dir: &'a Path,
+    lock_root: &'a Path,
+    cache_root: &'a Path,
+}
+
 /// Collects prepared contexts whose children failed to compile.
 struct CtxGuard<'a> {
     engine: &'a LuaEngine,
@@ -181,14 +187,17 @@ fn validate_root_target(
 
     if !canon.is_dir() {
         bail!(
-            "root media type '{root_type}' selected {canon:?}, which is not an existing directory"
+            "root media type '{root_type}' selected {}, which is not an existing directory",
+            canon.display()
         );
     }
 
     let root = canonical_or_owned(root_dir);
     if !canon.starts_with(&root) {
         bail!(
-            "root media type '{root_type}' selected {canon:?}, outside its declared dir {root:?}"
+            "root media type '{root_type}' selected {}, outside its declared dir {}",
+            canon.display(),
+            root.display()
         );
     }
 
@@ -210,7 +219,8 @@ fn resolve_targets(
 
         if !target_path.is_dir() {
             bail!(
-                "root media type '{root_type}' selected {target_path:?}, which is not an existing directory"
+                "root media type '{root_type}' selected {}, which is not an existing directory",
+                target_path.display()
             );
         }
 
@@ -241,12 +251,16 @@ pub fn compile_root(
     take_directories(engine);
 
     let mut files = HashSet::new();
+    let scope = EntityScope {
+        root_dir: &root.root_dir,
+        lock_root: &root.target,
+        cache_root,
+    };
     let value = compile_entity(
         engine,
         &root.root_type,
         &root.source,
-        &root.root_dir,
-        cache_root,
+        &scope,
         None,
         &mut files,
     )?;
@@ -277,8 +291,7 @@ fn compile_entity(
     engine: &LuaEngine,
     type_name: &str,
     source: &Value,
-    root_dir: &Path,
-    cache_root: &Path,
+    scope: &EntityScope<'_>,
     parent_ctx_id: Option<u64>,
     dependencies: &mut HashSet<PathBuf>,
 ) -> Result<Value> {
@@ -318,8 +331,7 @@ fn compile_entity(
                 engine,
                 &child.type_name,
                 &child_source,
-                root_dir,
-                cache_root,
+                scope,
                 Some(prepared.ctx_id),
                 dependencies,
             )?);
@@ -335,9 +347,17 @@ fn compile_entity(
     drop(guard);
 
     let path = source_path(source);
-    let id = resolve_id(type_name, &kind, path, root_dir, raw.get("id"))?;
-    let location = path.map(|path| auto_location(path, root_dir)).transpose()?;
-    let files = process_files(engine, raw.get("files"), path, root_dir, dependencies)?;
+    let id = resolve_id(type_name, &kind, path, scope.root_dir, raw.get("id"))?;
+    let location = path
+        .map(|path| auto_location(path, scope.lock_root))
+        .transpose()?;
+    let files = process_files(
+        engine,
+        raw.get("files"),
+        path,
+        scope.lock_root,
+        dependencies,
+    );
 
     let image_map = match path {
         Some(path) => {
@@ -348,7 +368,7 @@ fn compile_entity(
             };
             images::process_images(
                 entity_root,
-                cache_root,
+                scope.cache_root,
                 raw.get("images"),
                 dependencies,
             )?
@@ -458,7 +478,11 @@ fn validate_physical_target(
     })?;
 
     if !canon.starts_with(&base) {
-        bail!("media type '{type_name}' selected {canon:?}, outside its parent {base:?}");
+        bail!(
+            "media type '{type_name}' selected {}, outside its parent {}",
+            canon.display(),
+            base.display()
+        );
     }
 
     if canon.is_dir() {
@@ -474,7 +498,10 @@ fn validate_physical_target(
             );
         }
     } else {
-        bail!("media type '{type_name}' selected unsupported path {canon:?}");
+        bail!(
+            "media type '{type_name}' selected unsupported path {}",
+            canon.display()
+        );
     }
 
     Ok(path_source(&canon))
@@ -512,7 +539,7 @@ fn process_files(
     entity_path: Option<&Path>,
     root_dir: &Path,
     dependencies: &mut HashSet<PathBuf>,
-) -> Result<Value> {
+) -> Value {
     let entity_dir = entity_path.map(|path| {
         if path.is_dir() {
             path.to_path_buf()
@@ -523,7 +550,7 @@ fn process_files(
 
     let mut out: BTreeMap<String, Value> = BTreeMap::new();
     let Some(files) = raw_files.and_then(Value::as_object) else {
-        return Ok(Value::Object(Map::new()));
+        return Value::Object(Map::new());
     };
 
     for (name, value) in files {
@@ -566,7 +593,7 @@ fn process_files(
     for (key, value) in out {
         map.insert(key, sort_maps(&value));
     }
-    Ok(Value::Object(map))
+    Value::Object(map)
 }
 
 fn process_file_entry(

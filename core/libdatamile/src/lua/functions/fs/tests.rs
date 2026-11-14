@@ -995,3 +995,39 @@ fn test_roots_marker_pred() {
     let names: Vec<String> = engine.lua.load(&code).eval().expect("roots shallow");
     assert_eq!(names, vec!["A"]);
 }
+
+/// Verify dirs returns immediate directory path strings and filters by pattern.
+#[test]
+fn test_dirs_paths_and_pattern() {
+    let engine = LuaEngine::new().expect("engine");
+    let dir = TempDir::new();
+    let root = dir.path_str();
+    for path in ["Alpha", "Beta", "Season 1", "Season 2"] {
+        std::fs::create_dir_all(dir.0.join(path)).expect("dir");
+    }
+    std::fs::write(dir.0.join("file.txt"), b"x").expect("file");
+
+    let code = format!(
+        r#"
+        local out = {{}}
+        for _, path in ipairs(d.fs.dirs('{root}')) do
+            table.insert(out, d.fs.basename(path))
+        end
+        return out
+    "#
+    );
+    let names: Vec<String> = engine.lua.load(&code).eval().expect("dirs");
+    assert_eq!(names, vec!["Alpha", "Beta", "Season 1", "Season 2"]);
+
+    let code = format!(
+        r#"
+        local out = {{}}
+        for _, path in ipairs(d.fs.dirs('{root}', {{ pattern = '^Season ' }})) do
+            table.insert(out, d.fs.basename(path))
+        end
+        return out
+    "#
+    );
+    let names: Vec<String> = engine.lua.load(&code).eval().expect("pattern");
+    assert_eq!(names, vec!["Season 1", "Season 2"]);
+}

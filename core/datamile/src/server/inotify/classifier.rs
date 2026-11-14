@@ -15,9 +15,13 @@ pub(super) struct ChangeFlags {
 
 struct ClassifierContext<'a> {
     config_dir: &'a Path,
-    media_directory: &'a Path,
+    media_roots: &'a [PathBuf],
     deps: &'a HashSet<PathBuf>,
     deps_graph: &'a crate::server::state::DependencyGraph,
+}
+
+fn under_roots(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path.starts_with(root))
 }
 
 fn classify_path_change(
@@ -40,7 +44,7 @@ fn classify_path_change(
     }
 
     for ancestor in p_canon.ancestors() {
-        if !ancestor.starts_with(ctx.media_directory) {
+        if !under_roots(ancestor, ctx.media_roots) {
             break;
         }
         if let Some(locks) = ctx.deps_graph.locks_for_dir(ancestor) {
@@ -56,7 +60,7 @@ fn classify_path_change(
     }
 
     // A new directory may hold a root whose marker appeared with it.
-    if p_canon.is_dir() && p_canon.starts_with(ctx.media_directory) {
+    if p_canon.is_dir() && under_roots(p_canon, ctx.media_roots) {
         flags.changed_paths.insert(p_canon.to_path_buf());
         return;
     }
@@ -64,7 +68,7 @@ fn classify_path_change(
     // A marker dropped into an untracked folder only reveals a root by
     // inspecting that folder's immediate children.
     if !matched
-        && p_canon.starts_with(ctx.media_directory)
+        && under_roots(p_canon, ctx.media_roots)
         && let Some(parent) = p_canon.parent()
     {
         flags.shallow_paths.insert(parent.to_path_buf());
@@ -86,13 +90,13 @@ pub(super) async fn classify_events(
     let deps_graph = state.deps_graph.read().await;
     let guard = state.config.read().await;
     let config_dir = guard.config_dir.clone();
-    let media_directory = guard.media_directory.clone();
+    let media_roots = guard.media_roots.clone();
     let deps: HashSet<PathBuf> = guard.resolved_dependencies.iter().cloned().collect();
     drop(guard);
 
     let ctx = ClassifierContext {
         config_dir: &config_dir,
-        media_directory: &media_directory,
+        media_roots: &media_roots,
         deps: &deps,
         deps_graph: &deps_graph,
     };

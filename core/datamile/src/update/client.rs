@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use libdatamile::utils::expand_path;
@@ -9,7 +9,7 @@ use crate::compile::{self, LogVerbosity};
 use crate::logging;
 use crate::server::state::{DependencyGraph, RootMeta, UpdateScope};
 use crate::update::cache::{
-    calculate_path_hash, deps_graph_path, library_cache_dir, load_cache, save_cache,
+    deps_graph_path, library_cache_dir, library_key, load_cache, save_cache,
     validate_library_root,
 };
 use crate::update::queue::{
@@ -34,21 +34,22 @@ pub async fn run(
 
     let config =
         libdatamile::lua::ResolvedConfig::load().context("Failed to load config")?;
-    let media_directory = expand_path(&config.app.storage.media_directory)
-        .canonicalize()
-        .context("Invalid media_directory")?;
+    let media_roots = config.root_dirs();
+    if media_roots.is_empty() {
+        anyhow::bail!("No root media types declare a dir");
+    }
 
     let effective_jobs = jobs.or(config.app.compiler.jobs);
 
     let cache_root = expand_path(&config.app.storage.cache);
-    let base_cache_dir = library_cache_dir(&cache_root, &media_directory);
+    let base_cache_dir = library_cache_dir(&cache_root, &media_roots);
     fs::create_dir_all(&base_cache_dir)?;
 
-    let lib_hash = calculate_path_hash(&media_directory);
+    let lib_hash = library_key(&media_roots);
     validate_library_root(&base_cache_dir, &lib_hash).await?;
 
     let mut cache = load_cache(&base_cache_dir.join("library.json"));
-    let deps_json_path = deps_graph_path(&cache_root, &media_directory);
+    let deps_json_path = deps_graph_path(&cache_root, &media_roots);
     let mut deps_graph = DependencyGraph::load_from_file(&deps_json_path);
 
     let (config_changed, lua_hash_file, lua_hash) =
@@ -64,7 +65,7 @@ pub async fn run(
         }
     };
 
-    let (scan_root, scope) = resolve_target_scope(target_path.as_ref(), &media_directory);
+    let (scan_root, scope) = resolve_target_scope(target_path.as_ref(), &media_roots);
 
     let queue = {
         let engine =
@@ -76,7 +77,7 @@ pub async fn run(
         resolve_work_queue(&WorkQueueContext {
             engine: &engine,
             scope: &scope,
-            media_directory: &media_directory,
+            media_roots: &media_roots,
             cache: &cache,
             deps_graph: &deps_graph,
             force: effective_force,
@@ -215,10 +216,11 @@ fn apply_missing(
 
 fn resolve_target_scope(
     target_path: Option<&PathBuf>,
-    media_directory: &Path,
+    media_roots: &[PathBuf],
 ) -> (PathBuf, UpdateScope) {
+    let fallback = media_roots.first().cloned().unwrap_or_default();
     let scan_root = target_path.map_or_else(
-        || media_directory.to_path_buf(),
+        || fallback.clone(),
         |p| p.canonicalize().unwrap_or_else(|_| p.clone()),
     );
 

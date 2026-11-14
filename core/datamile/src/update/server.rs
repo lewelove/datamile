@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -10,7 +10,7 @@ use crate::logging;
 use crate::server::inotify::handler::{IngestOrigin, RecompiledAlbumItem};
 use crate::server::state::{AppState, PendingUpdateParams, UpdateScope};
 use crate::update::cache::{
-    calculate_path_hash, deps_graph_path, library_cache_dir, load_cache, save_cache,
+    deps_graph_path, library_cache_dir, library_key, load_cache, save_cache,
     validate_library_root,
 };
 use crate::update::client::ForceMode;
@@ -21,7 +21,7 @@ use crate::update::queue::{
 
 pub struct CompilePassContext<'a> {
     pub scope: &'a UpdateScope,
-    pub media_directory: &'a Path,
+    pub media_roots: &'a [PathBuf],
     pub roots: &'a [crate::compile::media::RootTarget],
     pub missing: &'a [PathBuf],
     pub effective_jobs: Option<usize>,
@@ -195,17 +195,17 @@ async fn run_server_update_pass(
 ) -> Result<()> {
     let config = state.config.read().await.app.clone();
     let config_path = state.config.read().await.config_path.clone();
-    let media_directory = state.config.read().await.media_directory.clone();
+    let media_roots = state.config.read().await.media_roots.clone();
     let cache_root = state.config.read().await.cache_root.clone();
     let dependencies = state.config.read().await.resolved_dependencies.clone();
 
     let effective_jobs = jobs.or(config.compiler.jobs);
     let is_full_library = scope == UpdateScope::All;
 
-    let base_cache_dir = library_cache_dir(&cache_root, &media_directory);
+    let base_cache_dir = library_cache_dir(&cache_root, &media_roots);
     fs::create_dir_all(&base_cache_dir)?;
 
-    let lib_hash = calculate_path_hash(&media_directory);
+    let lib_hash = library_key(&media_roots);
     validate_library_root(&base_cache_dir, &lib_hash).await?;
 
     let mut cache = load_cache(&base_cache_dir.join("library.json"));
@@ -240,7 +240,7 @@ async fn run_server_update_pass(
         resolve_work_queue(&WorkQueueContext {
             engine: &engine,
             scope: &scope,
-            media_directory: &media_directory,
+            media_roots: &media_roots,
             cache: &cache,
             deps_graph: &deps_graph,
             force: effective_force,
@@ -255,7 +255,7 @@ async fn run_server_update_pass(
         logging::emit("Library is up to date.", verbosity, &log_txs);
         let _ = fs::write(&lua_hash_file, &lua_hash);
         save_cache(&cache, &base_cache_dir.join("library.json"))?;
-        let deps_json_path = deps_graph_path(&cache_root, &media_directory);
+        let deps_json_path = deps_graph_path(&cache_root, &media_roots);
         let deps_graph_arc = Arc::clone(&state.deps_graph);
         tokio::task::spawn_blocking(move || {
             let mut guard = deps_graph_arc.blocking_write();
@@ -276,7 +276,7 @@ async fn run_server_update_pass(
         &state,
         CompilePassContext {
             scope: &scope,
-            media_directory: &media_directory,
+            media_roots: &media_roots,
             roots: &queue.roots,
             missing: &queue.missing,
             effective_jobs,
@@ -333,13 +333,14 @@ async fn process_missing_and_compile(
             .await;
     }
 
+    let fallback = ctx.media_roots.first().cloned().unwrap_or_default();
     let scan_root = match ctx.scope {
-        UpdateScope::All => ctx.media_directory.to_path_buf(),
+        UpdateScope::All => fallback.clone(),
         UpdateScope::Paths(paths) => {
             if paths.len() == 1 {
                 paths.iter().next().cloned().unwrap_or_default()
             } else {
-                ctx.media_directory.to_path_buf()
+                fallback.clone()
             }
         }
     };

@@ -236,6 +236,77 @@ fn compile_root_file_parent_virtual_children() {
     assert!(part["chapters"][0].get("location").is_none());
 }
 
+/// Combined kinds dispatch strings to physical kinds and tables to virtual.
+#[test]
+fn compile_root_combined_kind_dispatch() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path().join("root");
+    fs::create_dir_all(&root).expect("root");
+    fs::write(root.join("track.flac"), b"audio").expect("track");
+
+    let engine = LuaEngine::new().expect("engine");
+    let code = r#"
+        d.media("track", {
+            kind = { "file", "virtual" },
+            select = function(parent)
+                return {
+                    parent.path .. "/track.flac",
+                    { title = "Virtual" },
+                }
+            end,
+        })
+        d.compile.track.id(function(ctx)
+            if ctx.path then return "file-track" end
+            return "virtual-" .. ctx.title
+        end)
+        d.media("root", {
+            kind = "root",
+            dir = "/",
+            select = function() return {} end,
+            children = { tracks = "track" },
+        })
+    "#;
+    engine.lua.load(code).exec().expect("register");
+
+    let build = compile_root(&engine, &root_target(&root, "root", &root), tmp.path())
+        .expect("compile");
+    let tracks = build.lock_json["root"]["tracks"]
+        .as_array()
+        .expect("tracks");
+    assert_eq!(tracks[0]["location"]["kind"], "file");
+    assert_eq!(tracks[0]["id"], "file-track");
+    assert!(tracks[1].get("location").is_none());
+    assert_eq!(tracks[1]["id"], "virtual-Virtual");
+}
+
+/// Virtual-only types reject physical path targets.
+#[test]
+fn compile_root_virtual_rejects_path() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path().join("root");
+    fs::create_dir_all(&root).expect("root");
+    fs::write(root.join("track.flac"), b"audio").expect("track");
+
+    let engine = LuaEngine::new().expect("engine");
+    let code = r#"
+        d.media("leaf", {
+            kind = "virtual",
+            select = function(parent) return { parent.path .. "/track.flac" } end,
+        })
+        d.media("root", {
+            kind = "root",
+            dir = "/",
+            select = function() return {} end,
+            children = { leaves = "leaf" },
+        })
+    "#;
+    engine.lua.load(code).exec().expect("register");
+
+    let err = compile_root(&engine, &root_target(&root, "root", &root), tmp.path())
+        .expect_err("virtual path");
+    assert!(err.to_string().contains("virtual-only"));
+}
+
 /// Root selections must be directory path strings inside the declared dir.
 #[test]
 fn discover_rejects_invalid_root_targets() {

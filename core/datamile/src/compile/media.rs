@@ -542,15 +542,18 @@ fn validate_physical_target(
     Ok(path_source(&canon))
 }
 
-fn auto_location(path: &Path, root_dir: &Path) -> Result<Value> {
-    let meta = std::fs::metadata(path)
-        .with_context(|| format!("failed to stat {}", path.display()))?;
-    let mtime = meta
-        .modified()
+fn mtime_secs(meta: &std::fs::Metadata) -> u64 {
+    meta.modified()
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
+        .as_secs()
+}
+
+fn auto_location(path: &Path, root_dir: &Path) -> Result<Value> {
+    let meta = std::fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?;
+    let mtime = mtime_secs(&meta);
     let rel = relpath_string(path, root_dir);
 
     if meta.is_dir() {
@@ -652,15 +655,18 @@ fn process_file_entry(
         ctx.record_dir(parent);
     }
 
-    // Lua already statted the file for its hooks; reuse those values so the
-    // file is not statted a second time here.
+    // Lua already statted the file for its hooks; reuse those values, statting
+    // only when Lua omitted them so integrity never records a bogus zero.
+    let meta = canon.metadata().ok();
     let mtime = value
         .get("mtime")
         .and_then(Value::as_u64)
+        .or_else(|| meta.as_ref().map(mtime_secs))
         .unwrap_or_default();
     let byte_size = value
         .get("byte_size")
         .and_then(Value::as_u64)
+        .or_else(|| meta.as_ref().map(std::fs::Metadata::len))
         .unwrap_or_default();
     let rel = relpath_string(&canon, root_dir);
 

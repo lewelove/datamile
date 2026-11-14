@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use roaring::RoaringBitmap;
 use serde_json::Value;
 
@@ -32,14 +34,13 @@ impl LogicEngine {
             }
         }
 
-        let fallback;
-        let sorted_uids: &[u32] =
-            if let Some(uids) = query.sort.and_then(|sort| self.orders_cache.get(sort)) {
-                uids
-            } else {
-                fallback = self.uids_for_type(query.root_type);
-                &fallback
-            };
+        let sorted_uids: Cow<'_, [u32]> = query
+            .sort
+            .and_then(|sort| self.orders_cache.get(sort))
+            .map_or_else(
+                || Cow::Owned(self.uids_for_type(query.root_type)),
+                |uids| Cow::Borrowed(uids.as_slice()),
+            );
 
         let mut ids: Vec<String> = sorted_uids
             .iter()

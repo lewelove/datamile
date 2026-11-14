@@ -186,8 +186,16 @@ impl LogicEngine {
             self.track_lookup.remove(uri);
         }
 
+        // Two entities may share one cover hash; keep the mapping while any
+        // remaining entity still references it.
         for (_, addr) in &record.cover_namespaces {
-            self.cover_lookup.remove(addr);
+            let shared = self
+                .albums
+                .values()
+                .any(|other| other.cover_namespaces.iter().any(|(_, a)| a == addr));
+            if !shared {
+                self.cover_lookup.remove(addr);
+            }
         }
     }
 

@@ -71,6 +71,17 @@ fn targets_for_ids(
     targets
 }
 
+fn scoped_targets(
+    mut targets: Vec<(String, String)>,
+    root_type: Option<&str>,
+) -> Vec<(String, String)> {
+    if let Some(root_type) = root_type {
+        targets.retain(|(target_type, _)| target_type == root_type);
+    }
+
+    targets
+}
+
 async fn resolve_targets(
     body: &ActionBody,
     state: &Arc<AppState>,
@@ -80,11 +91,8 @@ async fn resolve_targets(
     }
 
     if let Some(query) = body.query.as_deref().filter(|q| !q.trim().is_empty()) {
-        let targets = {
-            let logic = state.logic.read().await;
-            logic.find_targets(query)
-        };
-        return targets;
+        let targets = state.logic.read().await.find_targets(query);
+        return scoped_targets(targets, body.root_type.as_deref());
     }
 
     {

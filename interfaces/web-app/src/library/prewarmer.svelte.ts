@@ -19,10 +19,15 @@ class Prewarmer {
         json.event === "logic.updated" ||
         json.event === "config.updated"
       ) {
-        this.pruneTextures();
-        this.orchestrate();
+        this.refresh();
       }
     });
+  }
+
+  /// Dict changed, so rebuild the valid set before warming new covers.
+  refresh() {
+    this.pruneTextures();
+    this.orchestrate();
   }
 
   pruneTextures() {

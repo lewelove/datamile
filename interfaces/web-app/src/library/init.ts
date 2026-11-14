@@ -28,5 +28,5 @@ export async function initApp() {
   view.validateAndNormalizeLibrary();
   await view.refreshView(true);
   await view.refreshSidebar();
-  prewarmer.orchestrate();
+  prewarmer.refresh();
 }

@@ -271,7 +271,7 @@ export class ViewState {
     if (this._pendingViewReset) {
       this.libraryResetVersion++;
     }
-    prewarmer.orchestrate();
+    prewarmer.refresh();
   }
 
   async refreshShelfView(seq: number) {
@@ -307,7 +307,7 @@ export class ViewState {
     if (this._pendingViewReset) {
       this.shelfResetVersion++;
     }
-    prewarmer.orchestrate();
+    prewarmer.refresh();
   }
 
   async refreshSidebar() {

@@ -131,17 +131,22 @@ async fn resolve_by_playing(
     media_roots: &[PathBuf],
     config_path: &Path,
 ) -> Result<Vec<ResolvedAlbumTarget>> {
-    let Some(root) = media_roots.first() else {
-        return Ok(Vec::new());
-    };
+    for root in media_roots {
+        let Ok(playing_album_dir) = playing_album(&root.to_string_lossy()).await else {
+            continue;
+        };
 
-    let playing_album_dir = playing_album(&root.to_string_lossy()).await?;
-    let engine = load_engine(config_path)?;
+        let engine = load_engine(config_path)?;
+        let found: Vec<_> = discover(&engine, &playing_album_dir)
+            .into_iter()
+            .take(1)
+            .collect();
+        if !found.is_empty() {
+            return Ok(found);
+        }
+    }
 
-    Ok(discover(&engine, &playing_album_dir)
-        .into_iter()
-        .take(1)
-        .collect())
+    Ok(Vec::new())
 }
 
 pub async fn resolve_target_albums(

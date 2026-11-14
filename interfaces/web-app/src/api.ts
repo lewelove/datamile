@@ -7,10 +7,15 @@ export function getSocketUrl(): string {
   return `${protocol}//${host}/ws`;
 }
 
+const NO_CONTENT = 204;
+
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init);
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status} ${input}`);
+  }
+  if (response.status === NO_CONTENT) {
+    return undefined as T;
   }
   return (await response.json()) as T;
 }

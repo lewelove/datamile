@@ -1,4 +1,4 @@
-import { SvelteMap, SvelteSet } from "svelte/reactivity";
+import { SvelteMap } from "svelte/reactivity";
 import { sync } from "./sync.svelte.ts";
 import { player, updatePlayerState } from "../modules/player.svelte.ts";
 import { config as globalConfig, updateConfig } from "../config.svelte.ts";
@@ -66,7 +66,7 @@ class CollectionStore {
   types: Record<string, { dir: string; count: number; children: Record<string, string> }> =
     $state({});
   actions: Record<string, { label?: string; description?: string }> = $state({});
-  private pendingEntries = new SvelteSet<string>();
+  private pendingFullAlbums = new Map<string, Promise<FullAlbum | null>>();
 
   constructor() {
     sync.addEventListener("message", (e: Event) =>
@@ -140,7 +140,6 @@ class CollectionStore {
       query
     );
 
-    triggerCoverPrewarm();
     return response.ids;
   }
 
@@ -164,11 +163,6 @@ class CollectionStore {
     }
 
     await Promise.all(missing.map((id) => this.ensureAlbumEntry(id)));
-
-    // A concurrent in-flight entry can still be pending; fall back to one list.
-    if (missing.some((id) => !this.dict[id])) {
-      await this.reloadCards(query);
-    }
   }
 
   private async reloadCards(query: ItemsQuery) {
@@ -210,38 +204,40 @@ class CollectionStore {
     if (this.dict[id]) {
       return this.dict[id];
     }
-    if (this.pendingEntries.has(id)) {
+    const full = await this.ensureFullAlbum(id);
+    if (!full) {
       return null;
     }
-
-    this.pendingEntries.add(id);
-    try {
-      const full = await this.ensureFullAlbum(id);
-      if (!full) {
-        return null;
-      }
-      this.dict[id] = full.album;
-      return full.album;
-    } finally {
-      this.pendingEntries.delete(id);
-    }
+    this.dict[id] = full.album;
+    return full.album;
   }
 
-  async ensureFullAlbum(id: string): Promise<FullAlbum | null> {
+  ensureFullAlbum(id: string): Promise<FullAlbum | null> {
     if (!id) {
-      return null;
+      return Promise.resolve(null);
     }
-    if (this.fullAlbumCache[id]) {
-      return this.fullAlbumCache[id];
+    const cached = this.fullAlbumCache[id];
+    if (cached) {
+      return Promise.resolve(cached);
     }
-    try {
-      const data = await fetchItem<FullAlbum>(ROOT_TYPE, id);
-      this.fullAlbumCache[id] = data;
-      return data;
-    } catch (err) {
-      console.error(err);
+    const inflight = this.pendingFullAlbums.get(id);
+    if (inflight) {
+      return inflight;
     }
-    return null;
+
+    const promise = fetchItem<FullAlbum>(ROOT_TYPE, id)
+      .then((data) => {
+        this.fullAlbumCache[id] = data;
+        return data;
+      })
+      .catch((err) => {
+        console.error(err);
+        return null;
+      })
+      .finally(() => this.pendingFullAlbums.delete(id));
+
+    this.pendingFullAlbums.set(id, promise);
+    return promise;
   }
 
   get availableFilters(): Record<string, FilterDef> {

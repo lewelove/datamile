@@ -258,25 +258,27 @@ fn not_found_type() -> Response {
         .into_response()
 }
 
+/// Both locks are held so a config reload cannot split the response.
+fn discovery_payload(
+    logic: &LogicEngine,
+    config: &AppConfig,
+    root_type: Option<&str>,
+) -> Value {
+    json!({
+        "types": types_payload(logic, root_type),
+        "logic": logic_payload(&logic.manifest, root_type),
+        "actions": actions_payload(config),
+        "config": config_payload(config),
+    })
+}
+
 pub async fn list_media(State(state): State<Arc<AppState>>) -> Response {
-    let payload = {
-        let logic = state.logic.read().await;
-        let types = types_payload(&logic, None);
-        let logic_json = logic_payload(&logic.manifest, None);
-        drop(logic);
+    let logic = state.logic.read().await;
+    let config = state.config.read().await;
 
-        let config = state.config.read().await;
-        let actions = actions_payload(&config);
-        let config_json = config_payload(&config);
-        drop(config);
-
-        json!({
-            "types": types,
-            "logic": logic_json,
-            "actions": actions,
-            "config": config_json,
-        })
-    };
+    let payload = discovery_payload(&logic, &config, None);
+    drop(config);
+    drop(logic);
 
     Json(payload).into_response()
 }
@@ -285,27 +287,15 @@ pub async fn media_info(
     Path(root_type): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let payload = {
-        let logic = state.logic.read().await;
-        if !logic.media_types.contains_key(&root_type) {
-            return not_found_type();
-        }
-        let types = types_payload(&logic, Some(&root_type));
-        let logic_json = logic_payload(&logic.manifest, Some(&root_type));
-        drop(logic);
+    let logic = state.logic.read().await;
+    if !logic.media_types.contains_key(&root_type) {
+        return not_found_type();
+    }
+    let config = state.config.read().await;
 
-        let config = state.config.read().await;
-        let actions = actions_payload(&config);
-        let config_json = config_payload(&config);
-        drop(config);
-
-        json!({
-            "types": types,
-            "logic": logic_json,
-            "actions": actions,
-            "config": config_json,
-        })
-    };
+    let payload = discovery_payload(&logic, &config, Some(&root_type));
+    drop(config);
+    drop(logic);
 
     Json(payload).into_response()
 }

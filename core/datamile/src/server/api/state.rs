@@ -108,7 +108,7 @@ pub async fn save_state(
         .tx
         .send(json!({ "event": "state.updated", "namespace": namespace }).to_string());
 
-    Json(Map::<String, Value>::new()).into_response()
+    Json(json!({ "status": "ok" })).into_response()
 }
 
 fn bad_namespace() -> Response {

@@ -4,15 +4,22 @@ import { view } from "./view.svelte.ts";
 import { prewarmer } from "./prewarmer.svelte.ts";
 import { updateConfig } from "../config.svelte.ts";
 import { initColors } from "../colors.svelte.ts";
-import { WEB_APP_NAMESPACE, fetchState } from "../api.ts";
+import { updatePlayerState } from "../modules/player.svelte.ts";
+import { WEB_APP_NAMESPACE, fetchPlayback, fetchState } from "../api.ts";
 import { applyPersistedState } from "./persistence.svelte.ts";
-import type { PersistedState } from "../types.ts";
+import type { MpdStatusPayload, PersistedState } from "../types.ts";
 import appConfig from "../../config.json";
 
 export async function initApp() {
   prewarmer.pruneTextures();
 
   initColors();
+
+  const playback = await fetchPlayback().catch(() => null);
+  if (playback) {
+    updatePlayerState(playback as MpdStatusPayload);
+  }
+
   sync.connect();
 
   collection.config = { ...collection.config, ...appConfig };

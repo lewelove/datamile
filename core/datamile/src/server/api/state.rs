@@ -62,9 +62,9 @@ pub async fn get_state(
 pub async fn save_state(
     AxumPath(namespace): AxumPath<String>,
     State(state): State<Arc<AppState>>,
-    Json(patch): Json<Value>,
+    Json(payload): Json<Value>,
 ) -> Response {
-    if !patch.is_object() {
+    if !payload.is_object() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "Body must be a JSON object" })),
@@ -79,13 +79,10 @@ pub async fn save_state(
     };
 
     let mut current = read_namespace(&path);
-    merge(&mut current, patch);
+    merge(&mut current, payload);
 
-    let saved = match serde_json::to_string_pretty(&current) {
-        Ok(saved) => saved,
-        Err(_) => {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
+    let Ok(saved) = serde_json::to_string_pretty(&current) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
 
     if let Some(parent) = path.parent()
@@ -112,3 +109,6 @@ fn bad_namespace() -> Response {
     )
         .into_response()
 }
+
+#[cfg(test)]
+mod tests;

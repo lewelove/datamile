@@ -187,24 +187,26 @@ pub async fn run_query(
         .unwrap_or("")
         .trim();
 
-    let logic = state.logic.read().await;
-    let results: Vec<serde_json::Value> = logic
-        .find_targets(q_str)
-        .into_iter()
-        .filter_map(|(root_type, id)| {
-            let record = logic.entity(&root_type, &id)?;
-            let lock_json =
-                serde_json::from_str::<serde_json::Value>(&record.raw_json).ok()?;
+    let results: Vec<serde_json::Value> = {
+        let logic = state.logic.read().await;
+        logic
+            .find_targets(q_str)
+            .into_iter()
+            .filter_map(|(root_type, id)| {
+                let record = logic.entity(&root_type, &id)?;
+                let lock_json =
+                    serde_json::from_str::<serde_json::Value>(&record.raw_json).ok()?;
 
-            Some(json!({
-                "type": root_type,
-                "id": id,
-                "path": record.path,
-                "lock_path": record.lock_path,
-                "lock": lock_json,
-            }))
-        })
-        .collect();
+                Some(json!({
+                    "type": root_type,
+                    "id": id,
+                    "path": record.path,
+                    "lock_path": record.lock_path,
+                    "lock": lock_json,
+                }))
+            })
+            .collect()
+    };
 
     Json(results).into_response()
 }

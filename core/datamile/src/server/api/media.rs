@@ -208,49 +208,64 @@ fn types_payload(logic: &LogicEngine, root_type: Option<&str>) -> Value {
     Value::Object(out)
 }
 
-fn ensure_root_type(logic: &LogicEngine, root: &str) -> Result<(), Response> {
-    if logic.media_types.contains_key(root) {
-        return Ok(());
-    }
-
-    Err((
+fn not_found_type() -> Response {
+    (
         StatusCode::NOT_FOUND,
         Json(json!({ "error": "Unknown media type" })),
     )
-        .into_response())
+        .into_response()
 }
 
 pub async fn list_media(State(state): State<Arc<AppState>>) -> Response {
-    let logic = state.logic.read().await;
-    let config = state.config.read().await;
+    let payload = {
+        let logic = state.logic.read().await;
+        let types = types_payload(&logic, None);
+        let logic_json = logic_payload(&logic.manifest, None);
+        drop(logic);
 
-    Json(json!({
-        "types": types_payload(&logic, None),
-        "logic": logic_payload(&logic.manifest, None),
-        "actions": actions_payload(&config),
-        "config": config_payload(&config),
-    }))
-    .into_response()
+        let config = state.config.read().await;
+        let actions = actions_payload(&config);
+        let config_json = config_payload(&config);
+        drop(config);
+
+        json!({
+            "types": types,
+            "logic": logic_json,
+            "actions": actions,
+            "config": config_json,
+        })
+    };
+
+    Json(payload).into_response()
 }
 
 pub async fn get_media(
     Path(root_type): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let logic = state.logic.read().await;
-    if let Err(response) = ensure_root_type(&logic, &root_type) {
-        return response;
-    }
+    let payload = {
+        let logic = state.logic.read().await;
+        if !logic.media_types.contains_key(&root_type) {
+            return not_found_type();
+        }
+        let types = types_payload(&logic, Some(&root_type));
+        let logic_json = logic_payload(&logic.manifest, Some(&root_type));
+        drop(logic);
 
-    let config = state.config.read().await;
+        let config = state.config.read().await;
+        let actions = actions_payload(&config);
+        let config_json = config_payload(&config);
+        drop(config);
 
-    Json(json!({
-        "types": types_payload(&logic, Some(&root_type)),
-        "logic": logic_payload(&logic.manifest, Some(&root_type)),
-        "actions": actions_payload(&config),
-        "config": config_payload(&config),
-    }))
-    .into_response()
+        json!({
+            "types": types,
+            "logic": logic_json,
+            "actions": actions,
+            "config": config_json,
+        })
+    };
+
+    Json(payload).into_response()
 }
 
 pub async fn list_items(
@@ -258,23 +273,22 @@ pub async fn list_items(
     Query(query): Query<ItemsQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let logic = state.logic.read().await;
-    if let Err(response) = ensure_root_type(&logic, &root_type) {
-        return response;
-    }
+    let payload = {
+        let logic = state.logic.read().await;
+        if !logic.media_types.contains_key(&root_type) {
+            return not_found_type();
+        }
 
-    let library = query
-        .library
-        .clone()
-        .unwrap_or_else(|| default_library(&logic.manifest));
-    let order = reverse_order(query.reverse.as_deref());
+        let library = query
+            .library
+            .clone()
+            .unwrap_or_else(|| default_library(&logic.manifest));
+        let order = reverse_order(query.reverse.as_deref());
 
-    let ids = match query.shelf.as_deref() {
-        Some(shelf) => {
+        let ids = if let Some(shelf) = query.shelf.as_deref() {
             let sort = query.sort.as_deref().filter(|key| *key != "original");
             logic.request_shelf_view(&root_type, shelf, sort, order)
-        }
-        None => {
+        } else {
             let group = query.group.as_deref().zip(query.group_val.as_deref());
             logic.request_view(&ViewQuery {
                 root_type: &root_type,
@@ -284,16 +298,19 @@ pub async fn list_items(
                 sort: query.sort.as_deref(),
                 order,
             })
-        }
+        };
+
+        let view = View::parse(query.view.as_deref());
+        let items = match view {
+            View::None => Vec::new(),
+            _ => logic.view_entries(&root_type, &ids, view.sections()),
+        };
+        drop(logic);
+
+        json!({ "ids": ids, "items": items })
     };
 
-    let view = View::parse(query.view.as_deref());
-    let items = match view {
-        View::None => Vec::new(),
-        _ => logic.view_entries(&root_type, &ids, view.sections()),
-    };
-
-    Json(json!({ "ids": ids, "items": items })).into_response()
+    Json(payload).into_response()
 }
 
 pub async fn get_item(
@@ -301,12 +318,15 @@ pub async fn get_item(
     Query(query): Query<ItemQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let logic = state.logic.read().await;
-    if let Err(response) = ensure_root_type(&logic, &root_type) {
-        return response;
-    }
+    let lock = {
+        let logic = state.logic.read().await;
+        if !logic.media_types.contains_key(&root_type) {
+            return not_found_type();
+        }
+        logic.entity_json(&root_type, &query.id)
+    };
 
-    let Some(json) = logic.entity_json(&root_type, &query.id) else {
+    let Some(json) = lock else {
         return StatusCode::NOT_FOUND.into_response();
     };
 
@@ -322,21 +342,26 @@ pub async fn get_groups(
     Query(query): Query<GroupQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let logic = state.logic.read().await;
-    if let Err(response) = ensure_root_type(&logic, &root_type) {
-        return response;
-    }
+    let tree = {
+        let logic = state.logic.read().await;
+        if !logic.media_types.contains_key(&root_type) {
+            return not_found_type();
+        }
 
-    let library = query
-        .library
-        .clone()
-        .unwrap_or_else(|| default_library(&logic.manifest));
-    let tree = logic.request_group(
-        &root_type,
-        &library,
-        query.library_filter.as_deref(),
-        &grouper,
-    );
+        let library = query
+            .library
+            .clone()
+            .unwrap_or_else(|| default_library(&logic.manifest));
+        logic.request_group(
+            &root_type,
+            &library,
+            query.library_filter.as_deref(),
+            &grouper,
+        )
+    };
 
     Json(tree).into_response()
 }
+
+#[cfg(test)]
+mod tests;

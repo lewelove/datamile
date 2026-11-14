@@ -6,7 +6,7 @@ let { variant = "solid" }: { variant?: "solid" | "transparent" } = $props();
 
 async function handleOpenConfig() {
   try {
-    await executeAction("open_config_in_terminal", "");
+    await executeAction("open_config_in_terminal");
   } catch {}
 }
 </script>

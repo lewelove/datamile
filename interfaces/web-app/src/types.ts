@@ -254,32 +254,12 @@ export interface MpdStatusPayload {
 
 export type WsMessage =
   | {
-      type: "INIT_DICT";
-      dict?: Record<string, AlbumDictEntry>;
-      trackMap?: Record<string, unknown>;
-      manifest?: LogicManifest;
-      shelves?: Record<string, string[]>;
-      ui_state?: PersistedState;
-      config?: Record<string, unknown>;
+      event: "media.updated";
+      type: string;
+      updated: string[];
+      removed: string[];
     }
-  | { type: "VIEW_DATA"; ids?: string[] }
-  | { type: "SHELF_DATA"; ids?: string[] }
-  | { type: "GROUP_RESULT"; key: string; result: GrouperTreeNode[] }
-  | { type: "ALBUM_REMOVED"; id: string; shelves?: Record<string, string[]> }
-  | {
-      type: "ALBUM_UPDATED";
-      id: string;
-      old_id?: string;
-      dictEntry?: AlbumDictEntry;
-      shelves?: Record<string, string[]>;
-    }
-  | {
-      type: "ALBUMS_UPDATED";
-      removed?: string[];
-      updated?: Record<string, AlbumDictEntry>;
-      shelves?: Record<string, string[]>;
-    }
-  | { type: "LOGIC_UPDATE"; manifest?: LogicManifest }
-  | { type: "CONFIG_UPDATE"; config?: Record<string, unknown> }
-  | { type: "CACHE_REBUILT" }
-  | (MpdStatusPayload & { type: "MPD_STATUS" });
+  | { event: "logic.updated" }
+  | { event: "config.updated"; config?: Record<string, unknown> }
+  | { event: "state.updated"; namespace: string }
+  | (MpdStatusPayload & { event: "playback.updated" });

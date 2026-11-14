@@ -1,4 +1,5 @@
 import { nav } from "../navigation.svelte.ts";
+import { WEB_APP_NAMESPACE, saveState } from "../api.ts";
 import type { ViewState } from "./view.svelte.ts";
 import type { PersistedState } from "../types.ts";
 
@@ -45,25 +46,21 @@ export function applyPersistedState(state: PersistedState, view: ViewState) {
 
 export function persistState(view: ViewState) {
   view.saveCurrentLibraryState();
-  fetch("/api/state", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      activeTab: nav.activeTab,
-      homeSubView: view.homeSubView,
-      activeLibrary: view.activeLibrary,
-      activeCabinet: view.activeCabinet,
-      librariesState: $state.snapshot(view.librariesState),
-      activeLibraryFilter: view.activeLibraryFilter,
-      sortKey: view.userSortPreference,
-      sortOrder: view.userSortOrder,
-      groupKey: view.activeSidebarGrouper,
-      filter: $state.snapshot(view.activeFilter),
-      activeShelf: view.activeShelf,
-      activeShelfOrder: view.activeShelfOrder,
-      activeShelfOrderReverse: view.activeShelfOrderReverse,
-      isShaderEnabled: view.isShaderEnabled,
-      sidebarWidth: view.sidebarWidth
-    })
+  saveState(WEB_APP_NAMESPACE, {
+    activeTab: nav.activeTab,
+    homeSubView: view.homeSubView,
+    activeLibrary: view.activeLibrary,
+    activeCabinet: view.activeCabinet,
+    librariesState: $state.snapshot(view.librariesState),
+    activeLibraryFilter: view.activeLibraryFilter,
+    sortKey: view.userSortPreference,
+    sortOrder: view.userSortOrder,
+    groupKey: view.activeSidebarGrouper,
+    filter: $state.snapshot(view.activeFilter),
+    activeShelf: view.activeShelf,
+    activeShelfOrder: view.activeShelfOrder,
+    activeShelfOrderReverse: view.activeShelfOrderReverse,
+    isShaderEnabled: view.isShaderEnabled,
+    sidebarWidth: view.sidebarWidth
   }).catch((err) => console.error(err));
 }

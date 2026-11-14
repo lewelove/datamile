@@ -15,12 +15,9 @@ class Prewarmer {
     sync.addEventListener("message", (e: Event) => {
       const json = (e as CustomEvent<WsMessage>).detail;
       if (
-        json.type === "ALBUM_REMOVED" ||
-        json.type === "ALBUM_UPDATED" ||
-        json.type === "ALBUMS_UPDATED" ||
-        json.type === "INIT_DICT" ||
-        json.type === "LOGIC_UPDATE" ||
-        json.type === "CONFIG_UPDATE"
+        json.event === "media.updated" ||
+        json.event === "logic.updated" ||
+        json.event === "config.updated"
       ) {
         this.pruneTextures();
         this.orchestrate();

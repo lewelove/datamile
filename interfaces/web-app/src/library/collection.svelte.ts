@@ -1,7 +1,15 @@
 import { SvelteMap } from "svelte/reactivity";
 import { sync } from "./sync.svelte.ts";
-import { updatePlayerState } from "../modules/player.svelte.ts";
+import { player, updatePlayerState } from "../modules/player.svelte.ts";
 import { config as globalConfig, updateConfig } from "../config.svelte.ts";
+import {
+  ROOT_TYPE,
+  fetchGroups,
+  fetchItem,
+  fetchMedia,
+  fetchItems,
+  type ItemsQuery
+} from "../api.ts";
 import type {
   AlbumCardItem,
   AlbumDictEntry,
@@ -21,9 +29,11 @@ import type {
   WsMessage
 } from "../types.ts";
 
+const CARD_VIEW = "tags,objects,images,location";
+const COVER_SIZES = [200, 619];
+
 function triggerCoverPrewarm() {
-  const sizes = [200, 619];
-  for (const size of sizes) {
+  for (const size of COVER_SIZES) {
     fetch("/api/internal/cache_images", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -39,9 +49,6 @@ function triggerCoverPrewarm() {
 
 class CollectionStore {
   dict: Record<string, AlbumDictEntry> = $state({});
-  trackPathMap: Record<string, unknown> = $state({});
-  sidebarShelves: Record<string, string[]> = $state({});
-  libraryViewIds: string[] = $state([]);
   sidebarGroups: SvelteMap<string, GrouperTreeNode[]> = $state(new SvelteMap());
   fullAlbumCache: Record<string, FullAlbum> = $state({});
   manifest: LogicManifest = $state({
@@ -53,6 +60,9 @@ class CollectionStore {
     cabinets: {}
   });
   config: Record<string, unknown> = $state({});
+  types: Record<string, { dir: string; count: number; children: Record<string, string> }> =
+    $state({});
+  actions: Record<string, { label?: string; description?: string }> = $state({});
 
   constructor() {
     sync.addEventListener("message", (e: Event) =>
@@ -60,83 +70,72 @@ class CollectionStore {
     );
   }
 
+  async initialize() {
+    const discovery = await fetchMedia(ROOT_TYPE);
+    this.manifest = discovery.logic as LogicManifest;
+    this.types = discovery.types;
+    this.actions = discovery.actions;
+    this.config = { ...this.config, ...discovery.config };
+
+    triggerCoverPrewarm();
+  }
+
   handleMessage(json: WsMessage) {
-    if (json.type === "INIT_DICT") {
-      if (json.shelves) {
-        this.sidebarShelves = json.shelves;
+    if (json.event === "media.updated") {
+      if (json.type !== ROOT_TYPE) {
+        return;
       }
-      this.dict = json.dict || {};
-      this.trackPathMap = json.trackMap || {};
-      if (json.manifest) {
-        this.manifest = json.manifest;
+      for (const id of json.removed) {
+        delete this.dict[id];
+        delete this.fullAlbumCache[id];
       }
-      if (json.config) {
-        this.config = { ...this.config, ...json.config };
+      for (const id of json.updated) {
+        delete this.dict[id];
+        delete this.fullAlbumCache[id];
       }
-      triggerCoverPrewarm();
-    } else if (json.type === "VIEW_DATA") {
-      this.libraryViewIds = json.ids || [];
-    } else if (json.type === "GROUP_RESULT") {
-      const newMap = new SvelteMap(this.sidebarGroups);
-      newMap.set(json.key, json.result);
-      this.sidebarGroups = newMap;
-    } else if (json.type === "ALBUM_REMOVED") {
-      if (json.shelves) {
-        this.sidebarShelves = json.shelves;
-      }
-      delete this.dict[json.id];
-      delete this.fullAlbumCache[json.id];
-      triggerCoverPrewarm();
-    } else if (json.type === "ALBUM_UPDATED") {
-      if (json.shelves) {
-        this.sidebarShelves = json.shelves;
-      }
-      if (json.old_id && json.old_id !== json.id) {
-        delete this.dict[json.old_id];
-        delete this.fullAlbumCache[json.old_id];
-      }
-      if (json.dictEntry && Object.keys(json.dictEntry).length > 0) {
-        this.dict[json.id] = json.dictEntry;
-      } else {
-        delete this.dict[json.id];
-      }
-      delete this.fullAlbumCache[json.id];
-      triggerCoverPrewarm();
-    } else if (json.type === "ALBUMS_UPDATED") {
-      if (json.shelves) {
-        this.sidebarShelves = json.shelves;
-      }
-      if (json.removed) {
-        for (const id of json.removed) {
-          if (!json.updated || !json.updated[id]) {
-            delete this.dict[id];
-            delete this.fullAlbumCache[id];
-          }
-        }
-      }
-      if (json.updated) {
-        for (const [id, dictEntry] of Object.entries(json.updated)) {
-          if (dictEntry && Object.keys(dictEntry).length > 0) {
-            this.dict[id] = dictEntry;
-          } else {
-            delete this.dict[id];
-          }
-          delete this.fullAlbumCache[id];
-        }
+      if (player.currentAlbumId) {
+        this.ensureAlbumEntry(player.currentAlbumId);
       }
       triggerCoverPrewarm();
-    } else if (json.type === "LOGIC_UPDATE") {
-      if (json.manifest) {
-        this.manifest = json.manifest;
-      }
-    } else if (json.type === "CONFIG_UPDATE") {
+    } else if (json.event === "config.updated") {
       if (json.config) {
         this.config = { ...this.config, ...json.config };
         updateConfig(json.config);
       }
-    } else if (json.type === "MPD_STATUS") {
+    } else if (json.event === "playback.updated") {
       updatePlayerState(json);
+      if (json.album_id && !this.dict[json.album_id]) {
+        this.ensureAlbumEntry(json.album_id);
+      }
     }
+  }
+
+  async loadItems(query: ItemsQuery): Promise<string[]> {
+    const response = await fetchItems<AlbumDictEntry>(ROOT_TYPE, {
+      ...query,
+      view: query.view ?? CARD_VIEW
+    });
+
+    for (const item of response.items) {
+      const entity = item[ROOT_TYPE];
+      if (entity) {
+        this.dict[entity.id] = entity;
+      }
+    }
+
+    triggerCoverPrewarm();
+    return response.ids;
+  }
+
+  async loadGroups(
+    grouper: string,
+    query: { library?: string; library_filter?: string }
+  ): Promise<GrouperTreeNode[]> {
+    const tree = (await fetchGroups(ROOT_TYPE, grouper, query)) as GrouperTreeNode[];
+    const next = new SvelteMap(this.sidebarGroups);
+    next.set(grouper, tree);
+    this.sidebarGroups = next;
+    return tree;
   }
 
   mapIdsToAlbums(ids: string[]): AlbumCardItem[] {
@@ -155,6 +154,15 @@ class CollectionStore {
     return `/api/images/${address}.bmp?size=${size}&filter=${algo}`;
   }
 
+  async ensureAlbumEntry(id: string): Promise<AlbumDictEntry | null> {
+    const full = await this.ensureFullAlbum(id);
+    if (!full) {
+      return null;
+    }
+    this.dict[id] = full.album;
+    return full.album;
+  }
+
   async ensureFullAlbum(id: string): Promise<FullAlbum | null> {
     if (!id) {
       return null;
@@ -163,12 +171,9 @@ class CollectionStore {
       return this.fullAlbumCache[id];
     }
     try {
-      const res = await fetch(`/api/album/${encodeURIComponent(id)}`);
-      if (res.ok) {
-        const data = (await res.json()) as FullAlbum;
-        this.fullAlbumCache[id] = data;
-        return data;
-      }
+      const data = await fetchItem<FullAlbum>(ROOT_TYPE, id);
+      this.fullAlbumCache[id] = data;
+      return data;
     } catch (err) {
       console.error(err);
     }

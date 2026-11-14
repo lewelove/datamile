@@ -23,7 +23,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     loop {
         tokio::select! {
             Some(msg) = socket.recv() => {
-                if !handle_inbound(msg) {
+                if !handle_inbound(&msg) {
                     break;
                 }
             }
@@ -38,7 +38,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     log::info!("Client disconnected");
 }
 
-fn handle_inbound(msg: Result<ax_ws::Message, axum::Error>) -> bool {
+const fn handle_inbound(msg: &Result<ax_ws::Message, axum::Error>) -> bool {
     !matches!(msg, Ok(ax_ws::Message::Close(_)) | Err(_))
 }
 

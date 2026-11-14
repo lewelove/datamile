@@ -3,7 +3,7 @@ import { onMount } from "svelte";
 import { view } from "./library/view.svelte.ts";
 import { initApp } from "./library/init.ts";
 import { nav, setTab } from "./navigation.svelte.ts";
-import { executeAction } from "./api.ts";
+import { ROOT_TYPE, executeAction, playback } from "./api.ts";
 import { player } from "./modules/player.svelte.ts";
 
 import HomeView from "./modules/HomeView/HomeView.svelte";
@@ -56,7 +56,7 @@ function handleKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && (key === "," || code === "Comma")) {
     e.preventDefault();
     e.stopPropagation();
-    executeAction("open_config_in_terminal", "").catch(() => {});
+    executeAction("open_config_in_terminal").catch(() => {});
     return;
   }
 
@@ -70,7 +70,7 @@ function handleKeydown(e: KeyboardEvent) {
         : null;
 
     if (targetId) {
-      executeAction("open_terminal", targetId).catch(() => {});
+      executeAction("open_terminal", { type: ROOT_TYPE, id: targetId }).catch(() => {});
     }
     return;
   }
@@ -85,7 +85,7 @@ function handleKeydown(e: KeyboardEvent) {
         : null;
 
     if (targetId) {
-      executeAction("open_folder", targetId).catch(() => {});
+      executeAction("open_folder", { type: ROOT_TYPE, id: targetId }).catch(() => {});
     }
     return;
   }
@@ -93,7 +93,7 @@ function handleKeydown(e: KeyboardEvent) {
   if (code === "Space") {
     e.preventDefault();
     e.stopPropagation();
-    fetch("/api/toggle-pause", { method: "POST" }).catch(() => {});
+    playback("toggle-pause").catch(() => {});
     return;
   }
 

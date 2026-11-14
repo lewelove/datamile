@@ -112,3 +112,6 @@ pub async fn toggle_pause(State(state): State<Arc<AppState>>) -> Response {
     state.mpd_engine.send(MpdCommand::TogglePause).await;
     Json(json!({ "status": "ok" })).into_response()
 }
+
+#[cfg(test)]
+mod tests;

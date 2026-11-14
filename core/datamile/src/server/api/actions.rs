@@ -79,13 +79,21 @@ async fn resolve_targets(
         return playing_target(state).await.into_iter().collect();
     }
 
-    let logic = state.logic.read().await;
-
     if let Some(query) = body.query.as_deref().filter(|q| !q.trim().is_empty()) {
-        return logic.find_targets(query);
+        let targets = {
+            let logic = state.logic.read().await;
+            logic.find_targets(query)
+        };
+        return targets;
     }
 
-    targets_for_ids(&logic, body.root_type.as_deref(), &body.requested_ids())
+    {
+        let logic = state.logic.read().await;
+        let targets =
+            targets_for_ids(&logic, body.root_type.as_deref(), &body.requested_ids());
+        drop(logic);
+        targets
+    }
 }
 
 async fn entity_payload(
@@ -166,3 +174,6 @@ pub async fn execute_action(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

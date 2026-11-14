@@ -1,5 +1,6 @@
 <script lang="ts">
 import { player } from "../player.svelte.ts";
+import { playback } from "../../api.ts";
 
 let isPlaying = $derived(player.state === "play");
 let tickingElapsed = $state(0);
@@ -29,19 +30,19 @@ $effect(() => {
 
 async function togglePlay() {
   try {
-    await fetch("/api/toggle-pause", { method: "POST" });
+    await playback("toggle-pause");
   } catch {}
 }
 
 async function next() {
   try {
-    await fetch("/api/next", { method: "POST" });
+    await playback("next");
   } catch {}
 }
 
 async function prev() {
   try {
-    await fetch("/api/prev", { method: "POST" });
+    await playback("prev");
   } catch {}
 }
 </script>

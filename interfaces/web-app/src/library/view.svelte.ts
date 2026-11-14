@@ -2,7 +2,9 @@ import { sync } from "./sync.svelte.ts";
 import { collection } from "./collection.svelte.ts";
 import { nav } from "../navigation.svelte.ts";
 import { player } from "../modules/player.svelte.ts";
-import { applyPersistedState, persistState } from "./persistence.svelte.ts";
+import { persistState } from "./persistence.svelte.ts";
+import { prewarmer } from "./prewarmer.svelte.ts";
+import { ROOT_TYPE } from "../api.ts";
 import type {
   AlbumCardItem,
   FilterState,
@@ -31,6 +33,7 @@ export class ViewState {
   activeShelf: string | null = $state(null);
   activeShelfOrder: string = $state("original");
   activeShelfOrderReverse: boolean = $state(false);
+  libraryViewIds: string[] = $state([]);
   shelfViewIds: string[] = $state([]);
   librariesState: Record<string, LibraryState> = $state({});
   libraryVersion: number = $state(0);
@@ -41,11 +44,13 @@ export class ViewState {
   sidebarWidth: number = $state(280);
   isFocusInstant: boolean = $state(false);
   _pendingViewReset: boolean = false;
+  _viewSeq: number = 0;
+  _sidebarSeq: number = 0;
 
   libraryAlbums = $derived.by((): AlbumCardItem[] => {
     void this.libraryVersion;
     void collection.dict;
-    return collection.mapIdsToAlbums(collection.libraryViewIds);
+    return collection.mapIdsToAlbums(this.libraryViewIds);
   });
 
   shelfAlbums = $derived.by((): AlbumCardItem[] => {
@@ -120,73 +125,41 @@ export class ViewState {
   }
 
   handleMessage(json: WsMessage) {
-    if (json.type === "INIT_DICT") {
-      if (json.ui_state) {
-        applyPersistedState(json.ui_state, this);
+    if (json.event === "media.updated") {
+      if (json.type !== ROOT_TYPE) {
+        return;
       }
-      this.validateAndNormalizeLibrary();
-      this.refreshView(true);
-      this.refreshSidebar();
-    } else if (json.type === "VIEW_DATA") {
-      this.libraryVersion++;
-      if (this._pendingViewReset) {
-        this.libraryResetVersion++;
-      }
-      this.isLoading = false;
-      this._pendingViewReset = false;
-    } else if (json.type === "SHELF_DATA") {
-      this.shelfViewIds = json.ids || [];
-      this.shelfVersion++;
-      if (this._pendingViewReset) {
-        this.shelfResetVersion++;
-      }
-      this.isLoading = false;
-      this._pendingViewReset = false;
-    } else if (json.type === "CONFIG_UPDATE") {
-      this.refreshView(false);
-      this.refreshSidebar();
-    } else if (json.type === "LOGIC_UPDATE") {
-      if (json.manifest) {
-        collection.manifest = json.manifest;
-      }
-      this.validateAndNormalizeLibrary();
-      this.refreshView(false);
-      this.refreshSidebar();
-    } else if (
-      json.type === "ALBUM_REMOVED" ||
-      json.type === "ALBUM_UPDATED" ||
-      json.type === "ALBUMS_UPDATED"
-    ) {
-      if (this.focusedAlbum) {
-        const focusedId = this.focusedAlbum.album.id;
-        const isRemoved =
-          (json.type === "ALBUM_REMOVED" && json.id === focusedId) ||
-          (json.type === "ALBUMS_UPDATED" &&
-            json.removed &&
-            json.removed.includes(focusedId) &&
-            (!json.updated || !json.updated[focusedId]));
+      this.refreshFocused(json.updated, json.removed);
+      void this.refreshView(false);
+      void this.refreshSidebar();
+    } else if (json.event === "logic.updated") {
+      collection.initialize().then(() => {
+        this.validateAndNormalizeLibrary();
+        void this.refreshView(false);
+        void this.refreshSidebar();
+      });
+    } else if (json.event === "config.updated") {
+      void this.refreshView(false);
+      void this.refreshSidebar();
+    }
+  }
 
-        if (isRemoved) {
-          this.focusedAlbum = null;
-        } else {
-          const isUpdated =
-            (json.type === "ALBUM_UPDATED" && json.id === focusedId) ||
-            (json.type === "ALBUMS_UPDATED" && json.updated && json.updated[focusedId]);
-          if (isUpdated) {
-            delete collection.fullAlbumCache[focusedId];
-            collection.ensureFullAlbum(focusedId).then((data) => {
-              if (data && this.focusedAlbum?.album.id === focusedId) {
-                this.focusedAlbum = data;
-              }
-            });
-          }
+  refreshFocused(updated: string[], removed: string[]) {
+    const focusedId = this.focusedAlbum?.album.id;
+    if (!focusedId) {
+      return;
+    }
+    if (removed.includes(focusedId)) {
+      this.focusedAlbum = null;
+      return;
+    }
+    if (updated.includes(focusedId)) {
+      delete collection.fullAlbumCache[focusedId];
+      collection.ensureFullAlbum(focusedId).then((data) => {
+        if (data && this.focusedAlbum?.album.id === focusedId) {
+          this.focusedAlbum = data;
         }
-      }
-      this.refreshView(false);
-      this.refreshSidebar();
-    } else if (json.type === "CACHE_REBUILT") {
-      this.refreshSidebar();
-      this.refreshView(false);
+      });
     }
   }
 
@@ -196,10 +169,6 @@ export class ViewState {
 
   getSidebarGroup(key: string | null): GrouperTreeNode[] {
     if (!key) {
-      return [];
-    }
-    if (!collection.sidebarGroups.has(key) && sync.isOpen) {
-      this.refreshSidebar();
       return [];
     }
     return collection.sidebarGroups.get(key) || [];
@@ -262,58 +231,101 @@ export class ViewState {
     this.activeFilter = { ...state.activeFilter };
   }
 
-  refreshView(resetScroll: boolean = true) {
-    if (!sync.isOpen) {
-      return;
-    }
+  async refreshView(resetScroll: boolean = true) {
     this._pendingViewReset = resetScroll;
+    this.isLoading = true;
+    const seq = ++this._viewSeq;
 
-    if (nav.activeTab === "home" && this.homeSubView === "cabinets") {
-      const visibleShelves = collection.getVisibleShelvesForCabinet(this.activeCabinet);
-      if (visibleShelves.length > 0 && !visibleShelves.some((s) => s.key === this.activeShelf)) {
-        this.activeShelf = visibleShelves[0].key;
+    try {
+      if (nav.activeTab === "home" && this.homeSubView === "cabinets") {
+        await this.refreshShelfView(seq);
+      } else {
+        await this.refreshLibraryView(seq);
       }
-      const visibleOrders = collection.getVisibleOrdersForCabinet(this.activeCabinet);
-      if (
-        this.activeShelfOrder !== "original" &&
-        !visibleOrders.some((o) => o.key === this.activeShelfOrder)
-      ) {
-        this.activeShelfOrder = "original";
+    } catch (err) {
+      console.error(err);
+    } finally {
+      if (seq === this._viewSeq) {
+        this.isLoading = false;
+        this._pendingViewReset = false;
       }
-
-      const shelfKey =
-        this.activeShelf ||
-        (collection.manifest.shelves_order && collection.manifest.shelves_order[0]) ||
-        Object.keys(collection.availableShelves)[0];
-
-      sync.send({
-        type: "SHELF_REQUEST",
-        shelf: shelfKey,
-        order: this.activeShelfOrder === "original" ? null : this.activeShelfOrder,
-        reverse: this.activeShelfOrderReverse
-      });
-    } else {
-      sync.send({
-        type: "VIEW_REQUEST",
-        library: this.activeLibrary,
-        library_filter: this.activeLibraryFilter,
-        sort: this.activeSort.key,
-        reverse: this.activeSort.order === "reverse",
-        filter: this.activeFilter
-      });
     }
   }
 
-  refreshSidebar() {
-    if (!sync.isOpen || !this.activeSidebarGrouper) {
+  async refreshLibraryView(seq: number) {
+    const ids = await collection.loadItems({
+      library: this.activeLibrary,
+      library_filter: this.activeLibraryFilter ?? undefined,
+      group: this.activeFilter.key ?? undefined,
+      group_val: this.activeFilter.val ?? undefined,
+      sort: this.activeSort.key ?? undefined,
+      reverse: this.activeSort.order === "reverse"
+    });
+
+    if (seq !== this._viewSeq) {
       return;
     }
-    sync.send({
-      type: "GROUP_REQUEST",
-      library: this.activeLibrary,
-      library_filter: this.activeLibraryFilter,
-      key: this.activeSidebarGrouper
+
+    this.libraryViewIds = ids;
+    this.libraryVersion++;
+    if (this._pendingViewReset) {
+      this.libraryResetVersion++;
+    }
+    prewarmer.orchestrate();
+  }
+
+  async refreshShelfView(seq: number) {
+    const visibleShelves = collection.getVisibleShelvesForCabinet(this.activeCabinet);
+    if (visibleShelves.length > 0 && !visibleShelves.some((s) => s.key === this.activeShelf)) {
+      this.activeShelf = visibleShelves[0].key;
+    }
+    const visibleOrders = collection.getVisibleOrdersForCabinet(this.activeCabinet);
+    if (
+      this.activeShelfOrder !== "original" &&
+      !visibleOrders.some((o) => o.key === this.activeShelfOrder)
+    ) {
+      this.activeShelfOrder = "original";
+    }
+
+    const shelfKey =
+      this.activeShelf ||
+      (collection.manifest.shelves_order && collection.manifest.shelves_order[0]) ||
+      Object.keys(collection.availableShelves)[0];
+
+    const ids = await collection.loadItems({
+      shelf: shelfKey,
+      sort: this.activeShelfOrder === "original" ? undefined : this.activeShelfOrder,
+      reverse: this.activeShelfOrderReverse
     });
+
+    if (seq !== this._viewSeq) {
+      return;
+    }
+
+    this.shelfViewIds = ids;
+    this.shelfVersion++;
+    if (this._pendingViewReset) {
+      this.shelfResetVersion++;
+    }
+    prewarmer.orchestrate();
+  }
+
+  async refreshSidebar() {
+    if (!this.activeSidebarGrouper) {
+      return;
+    }
+
+    const seq = ++this._sidebarSeq;
+    try {
+      await collection.loadGroups(this.activeSidebarGrouper, {
+        library: this.activeLibrary,
+        library_filter: this.activeLibraryFilter ?? undefined
+      });
+    } catch (err) {
+      if (seq === this._sidebarSeq) {
+        console.error(err);
+      }
+    }
   }
 
   setLibrary(key: string) {

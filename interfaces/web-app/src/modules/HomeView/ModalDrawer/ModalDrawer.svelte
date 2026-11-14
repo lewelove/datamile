@@ -2,7 +2,7 @@
 import { fade, type FadeParams } from "svelte/transition";
 import { cubicOut } from "svelte/easing";
 import { view } from "../../../library/view.svelte.ts";
-import { playAlbum, playDisc, executeAction, updateAlbum } from "../../../api.ts";
+import { ROOT_TYPE, executeAction, play, updateEntity } from "../../../api.ts";
 import ClearCover from "../../ClearCover.svelte";
 import ModalDrawerTracks from "./ModalDrawerTracks.svelte";
 import type { FullAlbum } from "../../../types.ts";
@@ -50,15 +50,22 @@ function fadeIf(node: Element, params: FadeParams) {
   return fade(node, params);
 }
 
+function discTrackIds(tracks: { id?: string; tags?: { discnumber?: unknown } }[], disc: number) {
+  return tracks
+    .filter((track) => Number(track.tags?.discnumber ?? 1) === disc)
+    .map((track) => track.id)
+    .filter((id): id is string => Boolean(id));
+}
+
 async function handlePlay() {
   try {
-    await playAlbum(albumData.id);
+    await play({ type: ROOT_TYPE, id: albumData.id });
   } catch {}
 }
 
 async function handleUpdate() {
   try {
-    await updateAlbum(albumData.id);
+    await updateEntity(albumData.id);
   } catch {}
 }
 
@@ -70,21 +77,26 @@ async function handlePlayTrack(index: number) {
       return;
     }
     const discNumber = Number(track.tags?.discnumber ?? 1);
+    const discIds = discTrackIds(tracks, discNumber);
+    const trackId = track.id;
+    const offset = trackId ? discIds.indexOf(trackId) : 0;
 
-    let intraDiscOffset = 0;
-    for (let i = 0; i < index; i++) {
-      if (Number(tracks[i].tags?.discnumber ?? 1) === discNumber) {
-        intraDiscOffset++;
-      }
-    }
-
-    await playDisc(albumData.id, discNumber, intraDiscOffset);
+    await play({
+      type: ROOT_TYPE,
+      id: albumData.id,
+      track_ids: discIds,
+      offset: Math.max(offset, 0)
+    });
   } catch {}
 }
 
 async function handlePlayDisc(discNumber: number) {
   try {
-    await playDisc(albumData.id, discNumber);
+    await play({
+      type: ROOT_TYPE,
+      id: albumData.id,
+      track_ids: discTrackIds(albumData.tracks || [], discNumber)
+    });
   } catch {}
 }
 
@@ -149,7 +161,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_folder", albumData.id)}
+              onclick={() => executeAction("open_folder", { type: ROOT_TYPE, id: albumData.id })}
               title="Open Local Folder"
             >
               <span class="icon">folder</span>
@@ -157,7 +169,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_manifest", albumData.id)}
+              onclick={() => executeAction("open_manifest", { type: ROOT_TYPE, id: albumData.id })}
               title="Open Manifest"
             >
               <span class="icon">edit_document</span>
@@ -165,7 +177,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_lock", albumData.id)}
+              onclick={() => executeAction("open_lock", { type: ROOT_TYPE, id: albumData.id })}
               title="Open Data Object"
             >
               <span class="icon">code</span>
@@ -173,7 +185,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_terminal", albumData.id)}
+              onclick={() => executeAction("open_terminal", { type: ROOT_TYPE, id: albumData.id })}
               title="Open Terminal"
             >
               <span class="icon">terminal_2</span>

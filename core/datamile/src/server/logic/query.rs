@@ -32,11 +32,14 @@ impl LogicEngine {
             }
         }
 
-        let sorted_uids = query
-            .sort
-            .and_then(|sort| self.orders_cache.get(sort))
-            .cloned()
-            .unwrap_or_else(|| self.uids_for_type(query.root_type));
+        let fallback;
+        let sorted_uids: &[u32] =
+            if let Some(uids) = query.sort.and_then(|sort| self.orders_cache.get(sort)) {
+                uids
+            } else {
+                fallback = self.uids_for_type(query.root_type);
+                &fallback
+            };
 
         let mut ids: Vec<String> = sorted_uids
             .iter()

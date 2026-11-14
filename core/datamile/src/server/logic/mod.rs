@@ -2,7 +2,9 @@ pub mod cache;
 pub mod query;
 pub mod sort;
 
-pub use sort::{SortKey, SortOrder, value_to_sort_key};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 use libdatamile::error::DatamileError;
@@ -10,10 +12,9 @@ use libdatamile::images::{FilterType, FitMode, parse_filter, parse_fit_mode};
 use libdatamile::lua::{LogicManifest, with_evaluated_lua_vm};
 use roaring::RoaringBitmap;
 use serde::Serialize;
-use serde_json::{Value, json, value::RawValue};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use serde_json::value::RawValue;
+use serde_json::{Value, json};
+pub use sort::{SortKey, SortOrder, value_to_sort_key};
 
 #[derive(Clone, Debug)]
 pub struct CoverLookupItem {
@@ -452,25 +453,25 @@ impl LogicEngine {
     }
 
     #[must_use]
-    pub fn get_album_record(&self, id: &str) -> Option<&AlbumRecord> {
+    pub fn album_record(&self, id: &str) -> Option<&AlbumRecord> {
         let uid = self.uid_for_id(id)?;
         self.albums.get(&uid)
     }
 
     #[must_use]
-    pub fn get_entity(&self, root_type: &str, id: &str) -> Option<&AlbumRecord> {
+    pub fn entity(&self, root_type: &str, id: &str) -> Option<&AlbumRecord> {
         let uid = self.id_to_uid.get(id)?;
         let record = self.albums.get(uid)?;
         (record.root_type == root_type).then_some(record)
     }
 
     #[must_use]
-    pub fn get_album_path(&self, id: &str) -> Option<&Path> {
-        self.get_album_record(id).map(|r| r.path.as_path())
+    pub fn album_path(&self, id: &str) -> Option<&Path> {
+        self.album_record(id).map(|r| r.path.as_path())
     }
 
     #[must_use]
-    pub fn get_album_id_by_target(&self, target: &Path) -> Option<&str> {
+    pub fn album_id_by_target(&self, target: &Path) -> Option<&str> {
         self.albums
             .values()
             .find(|record| record.path == target)
@@ -478,8 +479,8 @@ impl LogicEngine {
     }
 
     #[must_use]
-    pub fn get_album_dict(&self, id: &str) -> Option<&RawValue> {
-        self.get_album_record(id).map(|r| &*r.dict_raw)
+    pub fn album_dict(&self, id: &str) -> Option<&RawValue> {
+        self.album_record(id).map(|r| &*r.dict_raw)
     }
 
     #[must_use]
@@ -491,21 +492,21 @@ impl LogicEngine {
     }
 
     #[must_use]
-    pub fn get_album_json(&self, id: &str) -> Option<Arc<str>> {
-        let record = self.get_album_record(id)?;
+    pub fn album_json(&self, id: &str) -> Option<Arc<str>> {
+        let record = self.album_record(id)?;
         Some(Arc::clone(&record.raw_json))
     }
 
     #[must_use]
-    pub fn get_entity_json(&self, root_type: &str, id: &str) -> Option<Arc<str>> {
-        let record = self.get_entity(root_type, id)?;
+    pub fn entity_json(&self, root_type: &str, id: &str) -> Option<Arc<str>> {
+        let record = self.entity(root_type, id)?;
         Some(Arc::clone(&record.raw_json))
     }
 
     /// Playback URIs in compiled order, optionally limited to one disc.
     #[must_use]
     pub fn track_uris_for(&self, id: &str, disc: Option<u32>) -> Vec<String> {
-        let Some(record) = self.get_album_record(id) else {
+        let Some(record) = self.album_record(id) else {
             return Vec::new();
         };
 

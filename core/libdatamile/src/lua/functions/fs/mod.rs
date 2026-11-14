@@ -1,13 +1,15 @@
 #[cfg(test)]
 mod tests;
 
-use crate::error::DatamileError;
-use crate::lua::EngineContext;
-use mlua::serde::SerializeOptions;
-use mlua::{Lua, LuaSerdeExt, Table};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+
+use mlua::serde::SerializeOptions;
+use mlua::{Lua, LuaSerdeExt, Table};
+
+use crate::error::DatamileError;
+use crate::lua::EngineContext;
 
 const LUA_FS: &str = include_str!("mod.lua");
 
@@ -216,8 +218,10 @@ fn fs_stat(lua: &Lua, path_str: Option<String>) -> mlua::Result<Option<Table>> {
     Ok(Some(out))
 }
 
-// mlua callbacks must return Result even when the body is infallible.
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "mlua callbacks must return Result"
+)]
 fn fs_ext(_: &Lua, path: Option<String>) -> mlua::Result<Option<String>> {
     Ok(path.and_then(|path| {
         std::path::Path::new(&path)
@@ -227,8 +231,10 @@ fn fs_ext(_: &Lua, path: Option<String>) -> mlua::Result<Option<String>> {
     }))
 }
 
-// mlua callbacks must return Result even when the body is infallible.
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "mlua callbacks must return Result"
+)]
 fn fs_stem(_: &Lua, path: Option<String>) -> mlua::Result<Option<String>> {
     Ok(path.and_then(|path| {
         std::path::Path::new(&path)
@@ -238,8 +244,10 @@ fn fs_stem(_: &Lua, path: Option<String>) -> mlua::Result<Option<String>> {
     }))
 }
 
-// mlua callbacks must return Result even when the body is infallible.
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "mlua callbacks must return Result"
+)]
 fn fs_is_audio(
     _: &Lua,
     (path, exts): (String, Option<Vec<String>>),

@@ -56,7 +56,9 @@ pub fn extract(img: &DynamicImage, args: &str) -> Vec<Srgb> {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let darkest = lch_pool.remove(0);
-    let lightest = lch_pool.pop().unwrap();
+    let lightest = lch_pool
+        .pop()
+        .expect("palette must hold at least two colors");
 
     lch_pool.sort_by(|a, b| {
         b.1.chroma

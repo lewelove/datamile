@@ -1,5 +1,6 @@
-use super::*;
 use std::path::{Path, PathBuf};
+
+use super::*;
 
 fn atom(kind: &[u8], payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();

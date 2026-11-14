@@ -1,10 +1,12 @@
-use crate::server::mpd::MpdCommand;
-use crate::server::state::AppState;
+use std::sync::Arc;
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use std::sync::Arc;
+
+use crate::server::mpd::MpdCommand;
+use crate::server::state::AppState;
 
 pub async fn play_album(
     Path(id): Path<String>,
@@ -15,7 +17,7 @@ pub async fn play_album(
         .get("offset")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let tracks = get_tracks_internal(&id, &state, None).await;
+    let tracks = tracks_internal(&id, &state, None).await;
     state
         .mpd_engine
         .send(MpdCommand::Play { tracks, offset })
@@ -33,7 +35,7 @@ pub async fn play_disc(
         .get("offset")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let tracks = get_tracks_internal(&id, &state, disc).await;
+    let tracks = tracks_internal(&id, &state, disc).await;
     state
         .mpd_engine
         .send(MpdCommand::Play { tracks, offset })
@@ -45,7 +47,7 @@ pub async fn queue_album(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let tracks = get_tracks_internal(&id, &state, None).await;
+    let tracks = tracks_internal(&id, &state, None).await;
     state.mpd_engine.send(MpdCommand::Queue { tracks }).await;
     Json(json!({"status": "ok"})).into_response()
 }
@@ -83,7 +85,7 @@ pub async fn toggle_pause(State(state): State<Arc<AppState>>) -> Response {
     Json(json!({"status": "ok"})).into_response()
 }
 
-async fn get_tracks_internal(
+async fn tracks_internal(
     id: &str,
     state: &Arc<AppState>,
     disc_filter: Option<String>,

@@ -5,10 +5,11 @@ newline_style = "Unix"
 reorder_imports = true
 reorder_modules = true
 
-# unstable_features = true
+# One use statement per module, std/external/crate grouped.
+# Both options are nightly-only; devenv pins a nightly toolchain.
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
 
-# imports_granularity = "Crate"
-# group_imports = "StdExternalCrate"
 # use_field_init_shorthand = true
 # use_try_shorthand = true
 # match_block_trailing_comma = true

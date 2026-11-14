@@ -1,11 +1,13 @@
-use crate::server::inotify::classifier::ChangeFlags;
-use crate::server::logic::SortOrder;
-use crate::server::state::{AppState, RootMeta};
-use rayon::prelude::*;
-use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+use rayon::prelude::*;
+use serde_json::json;
+
+use crate::server::inotify::classifier::ChangeFlags;
+use crate::server::logic::SortOrder;
+use crate::server::state::{AppState, RootMeta};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IngestOrigin {
@@ -382,7 +384,7 @@ fn ingest_recompiled_items(
         );
         outcome.deps_modified = true;
 
-        if let Some(entry) = logic.get_album_dict(&item.id) {
+        if let Some(entry) = logic.album_dict(&item.id) {
             outcome
                 .updated_dict_entries
                 .insert(item.id, entry.to_owned());

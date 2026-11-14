@@ -1,9 +1,10 @@
+use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
 use libdatamile::utils::expand_path;
 use mpd_client::Client;
 use serde::{Deserialize, Serialize};
-use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
 use tokio::net::TcpStream;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +117,7 @@ async fn resolve_by_playing(
     media_directory: &Path,
     config_path: &Path,
 ) -> Result<Vec<ResolvedAlbumTarget>> {
-    let playing_album_dir = get_playing_album(&media_directory.to_string_lossy()).await?;
+    let playing_album_dir = playing_album(&media_directory.to_string_lossy()).await?;
     let engine = load_engine(config_path)?;
 
     Ok(discover(&engine, &playing_album_dir)
@@ -201,7 +202,7 @@ pub async fn execute(
     Ok(())
 }
 
-pub async fn get_playing_track_url() -> Result<String> {
+pub async fn playing_track_url() -> Result<String> {
     let host = std::env::var("MPD_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = std::env::var("MPD_PORT").unwrap_or_else(|_| "6600".to_string());
     let addr = format!("{host}:{port}");
@@ -220,8 +221,8 @@ pub async fn get_playing_track_url() -> Result<String> {
 
 /// Walk upward from the playing track until a shallow media selection yields a
 /// root whose lock exists.
-pub async fn get_playing_album(lib_root: &str) -> Result<PathBuf> {
-    let rel_path = get_playing_track_url().await?;
+pub async fn playing_album(lib_root: &str) -> Result<PathBuf> {
+    let rel_path = playing_track_url().await?;
     let clean_rel = rel_path.trim_start_matches('/');
     let root = expand_path(lib_root)
         .canonicalize()

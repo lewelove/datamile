@@ -1,5 +1,6 @@
-use crate::lua::LuaEngine;
 use mlua::Table;
+
+use crate::lua::LuaEngine;
 
 /// Verify that `d.json.decode` and `d.json.encode` convert data between Lua and JSON.
 #[test]

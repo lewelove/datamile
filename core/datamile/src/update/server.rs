@@ -1,3 +1,10 @@
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+
 use crate::compile::{self, LogVerbosity};
 use crate::logging;
 use crate::server::inotify::handler::{IngestOrigin, RecompiledAlbumItem};
@@ -11,11 +18,6 @@ use crate::update::queue::{
     WorkQueueContext, check_lua_config_changed, rebuild_cache, resolve_work_queue,
     try_get_server_tracked_roots,
 };
-use anyhow::{Context, Result};
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 pub struct CompilePassContext<'a> {
     pub scope: &'a UpdateScope,
@@ -314,8 +316,7 @@ async fn process_missing_and_compile(
     for lock in ctx.missing {
         let id = lock
             .file_stem()
-            .map(|stem| stem.to_string_lossy().to_string())
-            .unwrap_or_default();
+            .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
         logging::emit(&format!("Removed entity: {id}"), ctx.verbosity, log_txs);
         let _ = ingest_tx
             .send(crate::server::api::system::EntityIngestPayload {

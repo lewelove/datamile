@@ -1,8 +1,10 @@
-use crate::mapping::{canonical_key, flag_to_item_key};
-use crate::models::{AutoMode, CliOptions, CoverDeleteMode, TagDeleteMode, TrackTask};
-use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+use anyhow::Result;
+
+use crate::mapping::{canonical_key, flag_to_item_key};
+use crate::models::{AutoMode, CliOptions, CoverDeleteMode, TagDeleteMode, TrackTask};
 
 pub fn parse_cli_args() -> Result<CliOptions> {
     let mut cover: Option<PathBuf> = None;

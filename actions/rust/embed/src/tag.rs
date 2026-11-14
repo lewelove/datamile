@@ -1,5 +1,7 @@
-use crate::mapping::canonical_key;
-use crate::models::{CoverDeleteMode, CoverStatus, DiskCover, TagDeleteMode, TrackTask};
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -8,15 +10,15 @@ use lofty::picture::{Picture, PictureType};
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, Tag, TagType};
-use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::path::Path;
 use xxhash_rust::xxh64::xxh64;
+
+use crate::mapping::canonical_key;
+use crate::models::{CoverDeleteMode, CoverStatus, DiskCover, TagDeleteMode, TrackTask};
 
 const HASH_SEED: u64 = 0;
 
 #[must_use]
-pub fn get_hash(data: &[u8]) -> String {
+pub fn hash(data: &[u8]) -> String {
     let h = xxh64(data, HASH_SEED).to_be_bytes();
     URL_SAFE_NO_PAD.encode(h)
 }
@@ -49,7 +51,7 @@ pub fn read_file_tag(path: &Path) -> Result<(Tag, Option<String>)> {
         .iter()
         .find(|p| p.pic_type() == PictureType::CoverFront)
         .or_else(|| tag.pictures().first())
-        .map(|p| get_hash(p.data()));
+        .map(|p| hash(p.data()));
 
     Ok((tag, cover_hash))
 }
@@ -88,7 +90,7 @@ pub fn read_disk_cover(cover_path: Option<&Path>) -> Result<Option<DiskCover>> {
     }
     let bytes = std::fs::read(path)
         .with_context(|| format!("Failed to read cover image: {}", path.display()))?;
-    let hash = get_hash(&bytes);
+    let hash = hash(&bytes);
     Ok(Some(DiskCover {
         path: path.to_path_buf(),
         hash,

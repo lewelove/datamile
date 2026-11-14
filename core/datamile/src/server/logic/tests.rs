@@ -1,6 +1,8 @@
-use super::{EntityIngest, LogicEngine, SortOrder};
-use serde_json::{Value, json};
 use std::fs;
+
+use serde_json::{Value, json};
+
+use super::{EntityIngest, LogicEngine, SortOrder};
 
 fn ingest(
     engine: &mut LogicEngine,

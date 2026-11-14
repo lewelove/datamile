@@ -1,15 +1,17 @@
-use crate::compile::LogVerbosity;
-use crate::server::inotify::handler::{IngestOrigin, RecompiledAlbumItem};
-use crate::server::state::AppState;
-use crate::update::client::ForceMode;
+use std::path::{Path as StdPath, PathBuf};
+use std::sync::Arc;
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::path::{Path as StdPath, PathBuf};
-use std::sync::Arc;
+
+use crate::compile::LogVerbosity;
+use crate::server::inotify::handler::{IngestOrigin, RecompiledAlbumItem};
+use crate::server::state::AppState;
+use crate::update::client::ForceMode;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct EntityIngestPayload {
@@ -85,7 +87,7 @@ pub async fn trigger_update(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-pub async fn get_tracked_albums(State(state): State<Arc<AppState>>) -> Response {
+pub async fn tracked_albums(State(state): State<Arc<AppState>>) -> Response {
     let full_rescan = state
         .full_rescan_needed
         .swap(false, std::sync::atomic::Ordering::Relaxed);
@@ -212,7 +214,7 @@ pub async fn force_update_album(
 ) -> Response {
     let path_opt = {
         let logic = state.logic.read().await;
-        logic.get_album_path(&id).map(StdPath::to_path_buf)
+        logic.album_path(&id).map(StdPath::to_path_buf)
     };
 
     if let Some(path) = path_opt {
@@ -248,7 +250,7 @@ pub async fn run_query(
     let ids = logic.find_ids(q_str);
     let mut results = Vec::new();
     for id in ids {
-        if let Some(record) = logic.get_album_record(&id)
+        if let Some(record) = logic.album_record(&id)
             && let Ok(lock_json) =
                 serde_json::from_str::<serde_json::Value>(&record.raw_json)
         {

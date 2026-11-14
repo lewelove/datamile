@@ -1,8 +1,9 @@
 use image::DynamicImage;
 use kmeans_colors::get_kmeans_hamerly;
 use palette::{FromColor, Lab, Srgb};
+use rand::SeedableRng;
 use rand::distr::{Distribution, Uniform};
-use rand::{SeedableRng, rngs::StdRng};
+use rand::rngs::StdRng;
 
 pub fn extract(img: &DynamicImage, args: &str) -> Vec<Srgb> {
     let k = args

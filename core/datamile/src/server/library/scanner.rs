@@ -1,5 +1,6 @@
-use rayon::prelude::*;
 use std::path::PathBuf;
+
+use rayon::prelude::*;
 
 pub struct Library {
     pub root: PathBuf,

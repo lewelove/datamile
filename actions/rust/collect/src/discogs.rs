@@ -1,10 +1,11 @@
-use crate::models::{AlbumData, Track};
 use anyhow::Result;
 pub use libactions::discogs::{TargetUrl, parse_discogs_url};
 use libactions::discogs::{
     fetch_discogs_master, fetch_discogs_release, format_artist_credits,
     parse_discogs_position,
 };
+
+use crate::models::{AlbumData, Track};
 
 pub async fn execute_discogs(target: TargetUrl, data: &mut AlbumData) -> Result<()> {
     match target {

@@ -1,11 +1,13 @@
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+use rayon::prelude::*;
+
 use crate::compile::media::RootTarget;
 use crate::server::state::DependencyGraph;
 use crate::update::cache::{FileStat, LibraryCache};
 use crate::update::client::ForceMode;
-use anyhow::Result;
-use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
 /// Cache stats indexed by parent directory so a directory listing can be
 /// compared to the previous pass without scanning the whole cache.

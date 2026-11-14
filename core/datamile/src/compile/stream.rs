@@ -1,11 +1,13 @@
-use crate::compile::{CompileReport, ExportTarget, LogVerbosity, media};
-use anyhow::Result;
-use rayon::prelude::*;
-use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+use anyhow::Result;
+use rayon::prelude::*;
+use serde_json::Value;
+
+use crate::compile::{CompileReport, ExportTarget, LogVerbosity, media};
 
 pub struct CompiledItem {
     pub root_type: String,
@@ -148,7 +150,7 @@ fn spawn_builders(
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(jobs.unwrap_or(default_jobs))
             .build()
-            .unwrap();
+            .expect("rayon pool accepts the configured job count");
         pool.install(|| {
             roots.par_iter().for_each_init(
                 || match libdatamile::lua::LuaEngine::new() {

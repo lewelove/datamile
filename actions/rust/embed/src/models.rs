@@ -1,6 +1,7 @@
-use lofty::tag::ItemKey;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+use lofty::tag::ItemKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagDeleteMode {

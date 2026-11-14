@@ -2,10 +2,11 @@ pub mod images;
 pub mod media;
 pub mod stream;
 
-use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use anyhow::{Context, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileMode {

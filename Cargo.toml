@@ -27,6 +27,10 @@ missing_panics_doc = "allow"
 cognitive_complexity = "deny"
 fn_params_excessive_bools = "deny"
 
+# Restriction lints opted in one by one.
+unwrap_used = "deny"
+allow_attributes_without_reason = "deny"
+
 [workspace.dependencies]
 
 libdatamile = { path = "core/libdatamile" }
@@ -46,7 +50,6 @@ fast_image_resize = "6.0.0"
 futures = "0.3.31"
 image = "0.25.9"
 indexmap = { version = "2.13.0", features = ["serde"] }
-indicatif = "0.18.4"
 kmeans_colors = "0.7.1"
 lofty = "0.25.2"
 log = "0.4.29"

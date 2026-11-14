@@ -1,4 +1,7 @@
-use crate::server::state::AppState;
+use std::collections::HashSet;
+use std::path::{Path as StdPath, PathBuf};
+use std::sync::Arc;
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -10,12 +13,11 @@ use libdatamile::images::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashSet;
-use std::path::{Path as StdPath, PathBuf};
-use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
+
+use crate::server::state::AppState;
 
 #[derive(Deserialize)]
 pub struct ImageQuery {
@@ -108,7 +110,7 @@ async fn ensure_master_image(
     })
     .await;
 
-    if gen_result.is_err() || gen_result.unwrap().is_none() {
+    if !matches!(gen_result, Ok(Some(()))) {
         return Err(StatusCode::NOT_FOUND);
     }
 
@@ -248,7 +250,7 @@ async fn render_in_memory(
     .and_then(|opt| opt.ok_or(StatusCode::INTERNAL_SERVER_ERROR))
 }
 
-pub async fn get_image(
+pub async fn image(
     Path(target): Path<String>,
     Query(query): Query<ImageQuery>,
     State(state): State<Arc<AppState>>,
@@ -540,13 +542,13 @@ pub async fn trigger_cache_images(
     StatusCode::ACCEPTED.into_response()
 }
 
-pub async fn get_album_metadata(
+pub async fn album_metadata(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let json_opt = {
         let logic = state.logic.read().await;
-        logic.get_album_json(&id)
+        logic.album_json(&id)
     };
     if let Some(data) = json_opt {
         return (
@@ -558,13 +560,13 @@ pub async fn get_album_metadata(
     StatusCode::NOT_FOUND.into_response()
 }
 
-pub async fn get_entity_metadata(
+pub async fn entity_metadata(
     Path((root_type, id)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let json_opt = {
         let logic = state.logic.read().await;
-        logic.get_entity_json(&root_type, &id)
+        logic.entity_json(&root_type, &id)
     };
     if let Some(data) = json_opt {
         return (

@@ -1,6 +1,7 @@
-use super::{DependencyGraph, RootMeta};
 use std::collections::HashSet;
 use std::path::PathBuf;
+
+use super::{DependencyGraph, RootMeta};
 
 fn root_meta(target: &str, files: &[&str], dirs: &[&str]) -> RootMeta {
     RootMeta {

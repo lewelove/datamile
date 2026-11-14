@@ -1,6 +1,7 @@
-use crate::lua::LuaEngine;
 use std::fs;
 use std::path::PathBuf;
+
+use crate::lua::LuaEngine;
 
 /// Verify that `evaluate_config` resolves a relative `media_directory`
 /// against the config directory so Lua sees the same absolute path as Rust.

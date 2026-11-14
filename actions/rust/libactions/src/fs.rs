@@ -1,6 +1,7 @@
-use anyhow::Result;
 use std::fs;
 use std::path::Path;
+
+use anyhow::Result;
 
 #[must_use]
 pub fn sanitize_filename(name: &str) -> String {

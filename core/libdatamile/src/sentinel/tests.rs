@@ -1,8 +1,10 @@
-use super::{TrustState, verify_trust};
-use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
+
+use serde_json::{Value, json};
+
+use super::{TrustState, verify_trust};
 
 fn mtime_secs(path: &Path) -> u64 {
     fs::metadata(path)

@@ -1,11 +1,13 @@
 #[cfg(test)]
 mod tests;
 
-use crate::error::DatamileError;
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::DatamileError;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum TrustState {

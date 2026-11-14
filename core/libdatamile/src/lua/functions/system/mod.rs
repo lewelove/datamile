@@ -1,13 +1,14 @@
 #[cfg(test)]
 mod tests;
 
-use mlua::{Lua, Table, Value};
 use std::collections::HashMap;
 use std::io::{IsTerminal, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+use mlua::{Lua, Table, Value};
 
 type ReaderHandle = JoinHandle<Vec<u8>>;
 

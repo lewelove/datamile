@@ -3,17 +3,19 @@ pub mod functions;
 #[cfg(test)]
 mod tests;
 
-use crate::config::{ActionDef, AppConfig, CoversConfig, CoversRegistry, InterfaceDef};
-use crate::error::DatamileError;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
 use mlua::serde::SerializeOptions;
 use mlua::{Lua, LuaSerdeExt, Table};
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+
+use crate::config::{ActionDef, AppConfig, CoversConfig, CoversRegistry, InterfaceDef};
+use crate::error::DatamileError;
 
 const LUA_CORE: &str = include_str!("core.lua");
 const LUA_CONFIG: &str = include_str!("config.lua");

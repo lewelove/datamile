@@ -7,7 +7,6 @@ edition = "2024"
 workspace = true
 
 [dependencies]
-libactions = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }

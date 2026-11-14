@@ -24,7 +24,6 @@ lofty = { workspace = true }
 log = { workspace = true }
 mlua = { workspace = true }
 qoi = { workspace = true }
-roaring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tempfile = { workspace = true }

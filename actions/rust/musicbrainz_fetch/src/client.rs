@@ -1,7 +1,8 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
-use std::time::Duration;
 
 const RATE_LIMIT_DELAY: Duration = Duration::from_millis(1050);
 const RETRY_DELAY: Duration = Duration::from_millis(1500);

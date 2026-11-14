@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, config, ... }:
 
 let
   lyricsgenius = ps: ps.buildPythonPackage rec {
@@ -42,7 +42,8 @@ in
 {
   languages.rust = {
     enable = true;
-    channel = "stable";
+    channel = "nightly";
+    version = "2026-10-22";
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer" ];
   };
 
@@ -65,6 +66,8 @@ in
 
   enterShell = ''
     export PATH="$PWD/interfaces/web-app/node_modules/.bin:$PATH"
+    # coreutils ships a command named `fmt`; keep our script ahead of it.
+    export PATH="${config.scripts.fmt.scriptPackage}/bin:$PATH"
   '';
 
   scripts.build.exec = ''
@@ -91,5 +94,27 @@ in
 
     cargo check --workspace "$@"
     (cd "$ROOT/interfaces/web-app" && bun run check && bun run lint:logic)
+  '';
+
+  scripts.fmt.exec = ''
+    set -euo pipefail
+
+    cargo fmt --all "$@"
+  '';
+
+  scripts.lint.exec = ''
+    set -euo pipefail
+
+    ROOT=$(git rev-parse --show-toplevel)
+    cd "$ROOT"
+
+    cargo fmt --all --check
+    cargo clippy --workspace --lib --bins -- --deny warnings
+
+    if grep -rnE --include='*.rs' '\bfn get_[a-z]' core actions; then
+      printf '\n' >&2
+      echo 'lint: drop the get_ prefix, name the getter after the value' >&2
+      exit 1
+    fi
   '';
 }

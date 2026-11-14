@@ -5,13 +5,14 @@ mod kmeansnh;
 mod kmeansnv;
 mod mean_shift;
 
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use image::DynamicImage;
 use image::imageops::FilterType;
 use libactions::color::{calculate_palette_ratios, sort_palette};
 use palette::Srgb;
-use std::path::{Path, PathBuf};
 
 const COVER_CANDIDATES: &[&str] = &[
     "cover.jpg",

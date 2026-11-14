@@ -1,3 +1,10 @@
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+use libdatamile::lua::LuaEngine;
+
 use crate::compile::LogVerbosity;
 use crate::compile::media::{RootTarget, discover_targets};
 use crate::logging::{self, LogTx};
@@ -5,11 +12,6 @@ use crate::server::state::{DependencyGraph, UpdateScope};
 use crate::update::cache::{FileStat, LibraryCache};
 use crate::update::client::ForceMode;
 use crate::update::verify::{CacheIndex, verify_targets};
-use anyhow::Result;
-use libdatamile::lua::LuaEngine;
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
 
 pub struct WorkQueueContext<'a> {
     pub engine: &'a LuaEngine,
@@ -195,7 +197,7 @@ pub fn check_lua_config_changed(
     verbosity: LogVerbosity,
     log_txs: &[LogTx],
 ) -> (bool, PathBuf, String) {
-    let lua_hash = crate::update::cache::get_lua_config_hash(dependencies);
+    let lua_hash = crate::update::cache::lua_config_hash(dependencies);
     let lua_hash_file = cache_root.join("config.blake3");
     let previous_lua_hash = fs::read_to_string(&lua_hash_file).unwrap_or_default();
     let config_changed = lua_hash != previous_lua_hash;

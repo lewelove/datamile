@@ -1,9 +1,11 @@
-use crate::compile::images;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
 use libdatamile::lua::{EngineContext, LuaEngine};
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+
+use crate::compile::images;
 
 #[cfg(test)]
 mod tests;

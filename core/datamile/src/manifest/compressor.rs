@@ -1,5 +1,6 @@
-use serde_json::Value;
 use std::collections::HashSet;
+
+use serde_json::Value;
 
 pub fn compress(
     mut raw_tracks: Vec<serde_json::Map<String, Value>>,
@@ -34,7 +35,13 @@ pub fn compress(
                 continue;
             }
             keys_to_promote.push(key.clone());
-            album_pool.insert(key.clone(), first_track.get(&key).unwrap().clone());
+            album_pool.insert(
+                key.clone(),
+                first_track
+                    .get(&key)
+                    .expect("key is read from the first track")
+                    .clone(),
+            );
         }
     }
 

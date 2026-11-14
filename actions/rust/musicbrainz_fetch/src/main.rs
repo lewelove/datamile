@@ -3,13 +3,14 @@ mod core;
 mod models;
 mod writer;
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use models::{
     EntityType, FetchPlan, FetchTarget, OverwriteMode, TargetKind, extract_mbid,
     is_valid_uuid, parse_url,
 };
-use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Fetch raw JSON responses from MusicBrainz")]

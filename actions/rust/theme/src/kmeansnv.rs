@@ -1,6 +1,6 @@
 use image::DynamicImage;
 use kmeans_colors::get_kmeans_hamerly;
-use libactions::color::get_oklab_dist;
+use libactions::color::oklab_dist;
 use palette::{FromColor, Lab, Oklab, Srgb};
 
 pub fn extract(img: &DynamicImage, args: &str) -> Vec<Srgb> {
@@ -66,7 +66,7 @@ pub fn extract(img: &DynamicImage, args: &str) -> Vec<Srgb> {
 
     data.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     let darkest = data.remove(0);
-    let lightest = data.pop().unwrap();
+    let lightest = data.pop().expect("palette must hold at least two colors");
 
     data.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -79,7 +79,7 @@ pub fn extract(img: &DynamicImage, args: &str) -> Vec<Srgb> {
 
         let mut too_close = false;
         for existing in &selected {
-            if get_oklab_dist(&candidate.3, &existing.3) < d_min {
+            if oklab_dist(&candidate.3, &existing.3) < d_min {
                 too_close = true;
                 break;
             }

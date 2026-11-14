@@ -1,3 +1,10 @@
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use libdatamile::lua::LuaEngine;
+use serde_json::json;
+
 use crate::compile::LogVerbosity;
 use crate::compile::media::RootTarget;
 use crate::server::state::{DependencyGraph, RootMeta, UpdateScope};
@@ -5,11 +12,6 @@ use crate::update::cache::LibraryCache;
 use crate::update::client::ForceMode;
 use crate::update::queue::{WorkQueueContext, rebuild_cache, resolve_work_queue};
 use crate::update::verify::{CacheIndex, verify_targets};
-use libdatamile::lua::LuaEngine;
-use serde_json::json;
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
 
 /// Directory-backed roots, each in its own directory and with its own lock.
 struct Fixture {

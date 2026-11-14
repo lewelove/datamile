@@ -1,9 +1,8 @@
-use base64::{
-    Engine as _,
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+use base64::Engine as _;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +54,7 @@ pub fn resolve_path(path_str: &str, config_dir: &Path) -> PathBuf {
     direct
 }
 
-pub fn get_file_info(
+pub fn file_info(
     path: &std::path::Path,
     rel_path: &str,
     hash_mode: HashMode,

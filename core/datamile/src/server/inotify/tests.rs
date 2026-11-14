@@ -1,6 +1,8 @@
-use super::handler::filter_reingested_ids;
-use serde_json::json;
 use std::collections::HashMap;
+
+use serde_json::json;
+
+use super::handler::filter_reingested_ids;
 
 /// Verify that an album ID present in both removal and update sets is purged from removals.
 ///
@@ -48,8 +50,9 @@ fn test_filter_noop_on_empty_inputs() {
     assert!(removed_ids.is_empty());
 }
 
-use libdatamile::lua::LuaEngine;
 use std::fs;
+
+use libdatamile::lua::LuaEngine;
 
 /// A marker dropped into a pre-existing untracked directory is found by a
 /// shallow discovery pass and compiles into a lock.

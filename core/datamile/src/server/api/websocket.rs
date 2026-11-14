@@ -1,12 +1,13 @@
+use std::sync::Arc;
+
+use ax_ws::WebSocket;
+use axum::extract::{State, WebSocketUpgrade, ws as ax_ws};
+use axum::response::Response;
+use serde_json::{Value, json};
+
 use crate::server::logic::SortOrder;
 use crate::server::mpd::MpdCommand;
 use crate::server::state::AppState;
-use ax_ws::WebSocket;
-use axum::extract::ws as ax_ws;
-use axum::extract::{State, WebSocketUpgrade};
-use axum::response::Response;
-use serde_json::{Value, json};
-use std::sync::Arc;
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,

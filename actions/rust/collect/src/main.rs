@@ -5,10 +5,11 @@ mod musicbrainz;
 #[cfg(test)]
 mod tests;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::Parser;
 use models::{AlbumData, FormattingConfig};
-use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(

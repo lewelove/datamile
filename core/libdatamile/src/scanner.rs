@@ -1,6 +1,8 @@
-use crate::harvest::is_audio_file;
 use std::path::{Path, PathBuf};
+
 use walkdir::WalkDir;
+
+use crate::harvest::is_audio_file;
 
 pub fn scan_audio_files<S: AsRef<str>>(root: &Path, extensions: &[S]) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = WalkDir::new(root)

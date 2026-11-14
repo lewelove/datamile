@@ -1,7 +1,13 @@
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use libdatamile::utils::expand_path;
+
 use crate::compile::{self, LogVerbosity};
 use crate::logging;
-use crate::server::state::RootMeta;
-use crate::server::state::{DependencyGraph, UpdateScope};
+use crate::server::state::{DependencyGraph, RootMeta, UpdateScope};
 use crate::update::cache::{
     calculate_path_hash, deps_graph_path, library_cache_dir, load_cache, save_cache,
     validate_library_root,
@@ -9,11 +15,6 @@ use crate::update::cache::{
 use crate::update::queue::{
     WorkQueueContext, check_lua_config_changed, rebuild_cache, resolve_work_queue,
 };
-use anyhow::{Context, Result};
-use libdatamile::utils::expand_path;
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForceMode {
@@ -206,8 +207,7 @@ fn apply_missing(
     for lock in missing {
         let id = lock
             .file_stem()
-            .map(|stem| stem.to_string_lossy().to_string())
-            .unwrap_or_default();
+            .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
         logging::emit(&format!("Removed entity: {id}"), verbosity, &[]);
         deps_graph.remove_lock(lock);
     }

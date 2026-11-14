@@ -1,9 +1,11 @@
-use super::{RootTarget, compile_root};
-use libdatamile::lua::LuaEngine;
-use serde_json::json;
 use std::fs;
 use std::path::Path;
+
+use libdatamile::lua::LuaEngine;
+use serde_json::json;
 use tempfile::tempdir;
+
+use super::{RootTarget, compile_root};
 
 fn root_target(root: &Path) -> RootTarget {
     RootTarget {

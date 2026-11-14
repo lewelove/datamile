@@ -1,6 +1,7 @@
+use std::path::Path;
+
 use anyhow::Result;
 use discogs_rs::{ArtistCredit, Auth, DiscogsClient, Master, Release};
-use std::path::Path;
 
 pub enum TargetUrl {
     DiscogsMaster(u64),
@@ -91,7 +92,7 @@ pub fn format_artist_credits(artists: &[ArtistCredit]) -> String {
 }
 
 fn clean_artist_name(name: &str) -> String {
-    let re = regex::Regex::new(r" \(\d+\)$").unwrap();
+    let re = regex::Regex::new(r" \(\d+\)$").expect("artist suffix regex is valid");
     re.replace(name, "").to_string()
 }
 

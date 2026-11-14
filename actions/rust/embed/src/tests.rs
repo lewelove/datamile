@@ -1,11 +1,13 @@
-use crate::models::{CoverDeleteMode, CoverStatus, TagDeleteMode, TrackTask};
-use crate::tag::{extract_tag_map, read_file_tag, write_tasks};
-use lofty::id3::v2::{Frame, FrameId, Id3v2Tag};
-use lofty::tag::{ItemKey, Tag, TagType};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
+
+use lofty::id3::v2::{Frame, FrameId, Id3v2Tag};
+use lofty::tag::{ItemKey, Tag, TagType};
 use tempfile::tempdir;
+
+use crate::models::{CoverDeleteMode, CoverStatus, TagDeleteMode, TrackTask};
+use crate::tag::{extract_tag_map, read_file_tag, write_tasks};
 
 const DUMMY_MP3: &[u8] = include_bytes!("../tests/fixtures/full_test.mp3");
 

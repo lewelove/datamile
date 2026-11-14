@@ -1,5 +1,14 @@
 # AGENTS.md
 
+## Tooling
+
+Never call `cargo fmt` or `cargo clippy` directly.
+
+- `devenv shell -- fmt` formats the workspace. Run it after every Rust edit.
+- `devenv shell -- lint` is the gate. Run it before reporting work done. It fails on unformatted code, clippy warnings (pedantic, nursery, `unwrap_used`, undocumented `#[allow]`), and `get_*` getter names.
+
+If `lint` fails, fix the code. Do not relax the lint.
+
 - When writing something intended for human consumption, (comment, commit message, reply to prompt) use as few words as possible. Pick every word meticulously to reduce the volume to a strict minimum. Be down to the point. Less is more.
 
 - Avoid superlatives and praise. Stop telling me I am absolutely right. Give me the cold hard truth.

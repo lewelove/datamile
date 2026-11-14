@@ -1,7 +1,9 @@
-use crate::lua::{EngineContext, LuaEngine};
-use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use serde_json::{Value, json};
+
+use crate::lua::{EngineContext, LuaEngine};
 
 /// Register the media types these tests exercise. Nothing is built into the
 /// engine, so every fixture declares its own selectors.

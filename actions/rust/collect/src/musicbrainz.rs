@@ -1,8 +1,10 @@
-use crate::models::{AlbumData, Track};
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde_json::Value;
-use std::time::Duration;
+
+use crate::models::{AlbumData, Track};
 
 pub enum MbTargetUrl {
     Release(String),

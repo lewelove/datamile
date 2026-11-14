@@ -1,6 +1,7 @@
-use crate::lua::LuaEngine;
 use mlua::LuaSerdeExt;
 use serde::Deserialize;
+
+use crate::lua::LuaEngine;
 
 const SHIM: &str = include_str!("shim.lua");
 

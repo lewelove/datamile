@@ -1,11 +1,11 @@
-use libdatamile::harvest::{SUPPORTED_AUDIO_EXTENSIONS, is_audio_file};
-use rayon::prelude::*;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
 pub use libdatamile::harvest::harvest_file;
+use libdatamile::harvest::{SUPPORTED_AUDIO_EXTENSIONS, is_audio_file};
+use rayon::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatMode {
@@ -47,7 +47,9 @@ pub fn run(roots: Vec<PathBuf>, format: FormatMode) {
         }
     });
 
-    printer_handle.join().unwrap();
+    printer_handle
+        .join()
+        .expect("harvester printer thread panicked");
 }
 
 fn scan_files(root: &Path, extensions: &[&str]) -> Vec<PathBuf> {

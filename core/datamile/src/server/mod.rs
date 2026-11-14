@@ -5,15 +5,16 @@ pub mod logic;
 pub mod mpd;
 pub mod state;
 
-use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use libdatamile::utils::expand_path;
 use tokio::sync::{RwLock, broadcast};
 use tower_http::cors::{Any, CorsLayer};
 
 use self::state::{AppConfig as ServerConfig, AppState};
-use libdatamile::utils::expand_path;
 
 fn create_directories(cache_root: &Path, state_root: &Path) {
     std::fs::create_dir_all(cache_root).ok();

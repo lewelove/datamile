@@ -1,5 +1,6 @@
-use crate::error::DatamileError;
 use std::collections::HashSet;
+
+use crate::error::DatamileError;
 
 pub const BUILTIN_MANIFESTS: &[&str] =
     &["album", "history", "id", "local", "theme", "virtual"];

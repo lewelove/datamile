@@ -1,6 +1,7 @@
-use crate::lua::LuaEngine;
 use mlua::Table;
 use serde_json::{Value, json};
+
+use crate::lua::LuaEngine;
 
 fn compile_leaf(engine: &LuaEngine, type_name: &str, seed: &Value) -> Value {
     let prepared = engine.media_prepare(type_name, seed).expect("prepare");

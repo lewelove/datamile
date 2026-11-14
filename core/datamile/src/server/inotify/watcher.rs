@@ -1,12 +1,13 @@
-use crate::server::inotify::classifier;
-use crate::server::inotify::handler;
-use crate::server::state::AppState;
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+
+use crate::server::inotify::{classifier, handler};
+use crate::server::state::AppState;
 
 pub fn setup_watcher(tx: UnboundedSender<Vec<PathBuf>>) -> RecommendedWatcher {
     RecommendedWatcher::new(

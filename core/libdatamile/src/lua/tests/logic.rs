@@ -1,5 +1,6 @@
-use crate::lua::LuaEngine;
 use serde_json::json;
+
+use crate::lua::LuaEngine;
 
 /// Entities are extracted from their own root type, and typed definitions only
 /// evaluate for matching roots. Two roots with the same id never cross-talk.

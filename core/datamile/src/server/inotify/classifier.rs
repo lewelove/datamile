@@ -1,7 +1,8 @@
-use crate::server::state::AppState;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use crate::server::state::AppState;
 
 pub(super) struct ChangeFlags {
     pub config: bool,

@@ -1,6 +1,6 @@
 use image::DynamicImage;
 use kmeans_colors::get_kmeans_hamerly;
-use libactions::color::get_hue_dist;
+use libactions::color::hue_dist;
 use palette::{FromColor, Lab, Oklch, Srgb};
 
 pub fn extract(img: &DynamicImage, args: &str) -> Vec<Srgb> {
@@ -65,7 +65,9 @@ pub fn extract(img: &DynamicImage, args: &str) -> Vec<Srgb> {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let darkest = lch_pool.remove(0);
-    let lightest = lch_pool.pop().unwrap();
+    let lightest = lch_pool
+        .pop()
+        .expect("palette must hold at least two colors");
 
     lch_pool.sort_by(|a, b| {
         b.1.chroma
@@ -82,7 +84,7 @@ pub fn extract(img: &DynamicImage, args: &str) -> Vec<Srgb> {
 
         let mut too_close = false;
         for existing in &selected {
-            if get_hue_dist(
+            if hue_dist(
                 candidate.1.hue.into_raw_degrees(),
                 existing.1.hue.into_raw_degrees(),
             ) < h_min

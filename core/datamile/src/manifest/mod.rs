@@ -2,13 +2,14 @@ pub mod compressor;
 pub mod engine;
 pub mod grouper;
 
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
 use grouper::AnchorValidation;
 use libdatamile::harvest::{SUPPORTED_AUDIO_EXTENSIONS, harvest_file, is_audio_file};
 use libdatamile::utils::expand_path;
 use rayon::prelude::*;
-use std::fs;
-use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

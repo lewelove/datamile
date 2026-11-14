@@ -1,6 +1,8 @@
-use crate::lua::{EngineContext, LuaEngine};
-use mlua::Table;
 use std::path::PathBuf;
+
+use mlua::Table;
+
+use crate::lua::{EngineContext, LuaEngine};
 
 struct TempDir(PathBuf);
 

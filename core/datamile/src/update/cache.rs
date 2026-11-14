@@ -1,8 +1,9 @@
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 /// Last observed stat for every file a compiled root depends on.
 pub type LibraryCache = HashMap<PathBuf, FileStat>;
@@ -48,7 +49,7 @@ pub fn deps_graph_path(cache_root: &Path, media_directory: &Path) -> PathBuf {
     library_cache_dir(cache_root, media_directory).join("dependencies.json")
 }
 
-pub fn get_lua_config_hash(dependencies: &[PathBuf]) -> String {
+pub fn lua_config_hash(dependencies: &[PathBuf]) -> String {
     let mut sorted_deps = dependencies.to_vec();
     sorted_deps.sort();
     let mut hasher = blake3::Hasher::new();

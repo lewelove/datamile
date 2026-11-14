@@ -1,11 +1,14 @@
-use crate::server::logic::LogicEngine;
-use crate::server::mpd::MpdEngine;
-use libdatamile::config::{ActionDef, CoversRegistry, InterfaceDef};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, atomic::AtomicBool};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+
+use libdatamile::config::{ActionDef, CoversRegistry, InterfaceDef};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast};
+
+use crate::server::logic::LogicEngine;
+use crate::server::mpd::MpdEngine;
 
 #[cfg(test)]
 mod tests;
@@ -23,7 +26,10 @@ pub struct CoverTaskGuard {
 impl CoverTaskRegistry {
     #[must_use]
     pub fn try_claim(self: &Arc<Self>, path: PathBuf) -> Option<CoverTaskGuard> {
-        let mut set = self.tasks.lock().unwrap();
+        let mut set = self
+            .tasks
+            .lock()
+            .expect("cover task registry lock poisoned");
         if set.insert(path.clone()) {
             Some(CoverTaskGuard {
                 path,

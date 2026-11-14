@@ -1,7 +1,8 @@
-use crate::fs::create_album_directory;
-use crate::models::{AlbumData, FormattingConfig, Track};
 use tempfile::tempdir;
 use walkdir::WalkDir;
+
+use crate::fs::create_album_directory;
+use crate::models::{AlbumData, FormattingConfig, Track};
 
 /// Verify that create_album_directory produces only TOML manifests and no JSON files.
 #[test]

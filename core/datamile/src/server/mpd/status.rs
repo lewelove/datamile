@@ -1,10 +1,11 @@
-use crate::server::logic::{LogicEngine, TrackLookupItem};
-use anyhow::{Context, Result};
-use mpd_client::Client;
-use mpd_client::commands;
-use mpd_client::responses::{PlayState, SongInQueue};
 use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use mpd_client::responses::{PlayState, SongInQueue};
+use mpd_client::{Client, commands};
 use tokio::sync::{RwLock, broadcast};
+
+use crate::server::logic::{LogicEngine, TrackLookupItem};
 
 fn format_queue_item(
     idx: usize,

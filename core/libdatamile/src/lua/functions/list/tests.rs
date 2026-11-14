@@ -1,5 +1,6 @@
-use crate::lua::LuaEngine;
 use mlua::Table;
+
+use crate::lua::LuaEngine;
 
 /// Verify sort_by sorts scalar and tuple keys in place with natural string order.
 #[test]

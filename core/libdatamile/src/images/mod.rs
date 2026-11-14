@@ -1,11 +1,11 @@
 pub mod fast_rgb_to_bmp;
 
-pub use fast_image_resize::FilterType;
-use fast_image_resize::PixelType;
-use fast_image_resize::images::Image;
-use fast_image_resize::{ResizeAlg, ResizeOptions, Resizer};
-use image::ImageEncoder;
 use std::io::Cursor;
+
+pub use fast_image_resize::FilterType;
+use fast_image_resize::images::Image;
+use fast_image_resize::{PixelType, ResizeAlg, ResizeOptions, Resizer};
+use image::ImageEncoder;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FitMode {
@@ -111,8 +111,11 @@ pub fn read_qoi_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 #[must_use]
-// Rounded values are clamped to 1..=4096 before the integer cast.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "rounded values are clamped to 1..=4096 before the cast"
+)]
 pub fn calculate_rendered_dimensions(
     src_w: u32,
     src_h: u32,
@@ -199,8 +202,11 @@ pub fn resize_image_fit(
 }
 
 #[must_use]
-// Rounded values are clamped to 1..=4096 before the integer cast.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "rounded values are clamped to 1..=4096 before the cast"
+)]
 pub fn resize_image_max_edge(
     src: &image::RgbImage,
     max_edge: u32,

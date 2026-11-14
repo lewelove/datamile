@@ -1,6 +1,7 @@
-use crate::x::{TargetFlags, resolve_target_albums};
 use anyhow::{Context, Result};
 use libdatamile::utils::expand_path;
+
+use crate::x::{TargetFlags, resolve_target_albums};
 
 pub struct QueryFlags {
     pub playing: bool,

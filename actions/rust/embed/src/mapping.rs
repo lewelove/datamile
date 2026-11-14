@@ -1,7 +1,9 @@
 use lofty::tag::ItemKey;
 
-// One exhaustive table keeps CLI flags and tag keys in lockstep.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one table keeps CLI flags and tag keys in lockstep"
+)]
 #[must_use]
 pub fn flag_to_item_key(flag: &str) -> Option<ItemKey> {
     let name = flag.trim_start_matches('-');
@@ -87,8 +89,10 @@ pub fn flag_to_item_key(flag: &str) -> Option<ItemKey> {
     }
 }
 
-// One exhaustive table keeps CLI flags and tag keys in lockstep.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one table keeps CLI flags and tag keys in lockstep"
+)]
 #[must_use]
 pub const fn item_key_to_flag(key: ItemKey) -> &'static str {
     match key {

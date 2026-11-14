@@ -5,7 +5,7 @@ const RATIO_SCALE: u64 = 65_535;
 const RATIO_SCALE_F32: f32 = 65_535.0;
 
 #[must_use]
-pub fn get_oklab_dist(c1: &Oklab, c2: &Oklab) -> f32 {
+pub fn oklab_dist(c1: &Oklab, c2: &Oklab) -> f32 {
     (c1.b - c2.b)
         .mul_add(
             c1.b - c2.b,
@@ -15,7 +15,7 @@ pub fn get_oklab_dist(c1: &Oklab, c2: &Oklab) -> f32 {
 }
 
 #[must_use]
-pub fn get_hue_dist(h1: f32, h2: f32) -> f32 {
+pub fn hue_dist(h1: f32, h2: f32) -> f32 {
     let diff = (h1 - h2).abs() % 360.0;
     if diff > 180.0 { 360.0 - diff } else { diff }
 }

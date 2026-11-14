@@ -1,12 +1,14 @@
 #[cfg(test)]
 mod tests;
 
-use crate::lua::EngineContext;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
 use mlua::serde::SerializeOptions;
 use mlua::{Lua, LuaSerdeExt, Table, Value};
 use serde_json::Value as JsonValue;
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+
+use crate::lua::EngineContext;
 
 fn cache_key(namespace: &str, path: &Path, size: u64, mtime: u128) -> String {
     let raw = format!("{namespace}:{}:{size}:{mtime}", path.display());

@@ -30,6 +30,9 @@ import type {
 } from "../types.ts";
 
 const CARD_VIEW = "tags,objects,images,location";
+const VIEW_NONE = "none";
+// Above this fraction of unknown ids a single card request beats N item requests.
+const BULK_HYDRATE_RATIO = 0.25;
 const COVER_SIZES = [200, 619];
 
 function triggerCoverPrewarm() {
@@ -124,20 +127,56 @@ class CollectionStore {
   }
 
   async loadItems(query: ItemsQuery): Promise<string[]> {
+    const warm = Object.keys(this.dict).length > 0;
     const response = await fetchItems<AlbumDictEntry>(ROOT_TYPE, {
       ...query,
-      view: query.view ?? CARD_VIEW
+      view: query.view ?? (warm ? VIEW_NONE : CARD_VIEW)
     });
 
-    for (const item of response.items) {
+    this.storeEntries(response.items);
+    await this.hydrateMissing(
+      response.ids.filter((id) => !this.dict[id]),
+      response.ids.length,
+      query
+    );
+
+    triggerCoverPrewarm();
+    return response.ids;
+  }
+
+  private storeEntries(items: Record<string, AlbumDictEntry>[]) {
+    for (const item of items) {
       const entity = item[ROOT_TYPE];
       if (entity) {
         this.dict[entity.id] = entity;
       }
     }
+  }
 
-    triggerCoverPrewarm();
-    return response.ids;
+  private async hydrateMissing(missing: string[], total: number, query: ItemsQuery) {
+    if (missing.length === 0) {
+      return;
+    }
+
+    if (missing.length > total * BULK_HYDRATE_RATIO) {
+      await this.reloadCards(query);
+      return;
+    }
+
+    await Promise.all(missing.map((id) => this.ensureAlbumEntry(id)));
+
+    // A concurrent in-flight entry can still be pending; fall back to one list.
+    if (missing.some((id) => !this.dict[id])) {
+      await this.reloadCards(query);
+    }
+  }
+
+  private async reloadCards(query: ItemsQuery) {
+    const response = await fetchItems<AlbumDictEntry>(ROOT_TYPE, {
+      ...query,
+      view: CARD_VIEW
+    });
+    this.storeEntries(response.items);
   }
 
   async loadGroups(

@@ -292,6 +292,15 @@ export class ViewState {
       (collection.manifest.shelves_order && collection.manifest.shelves_order[0]) ||
       Object.keys(collection.availableShelves)[0];
 
+    if (!shelfKey) {
+      this.shelfViewIds = [];
+      this.shelfVersion++;
+      if (this._pendingViewReset) {
+        this.shelfResetVersion++;
+      }
+      return;
+    }
+
     const ids = await collection.loadItems({
       shelf: shelfKey,
       sort: this.activeShelfOrder === "original" ? undefined : this.activeShelfOrder,

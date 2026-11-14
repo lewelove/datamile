@@ -53,7 +53,16 @@ fn dispatch(
         table.set(index + 1, arg)?;
     }
 
-    lua_system(lua, (Value::Table(table), opts))
+    // Default to inherited stdio so the user sees subcommand progress.
+    let opts = if let Some(opts) = opts {
+        opts
+    } else {
+        let opts = lua.create_table()?;
+        opts.set("stdio", "inherit")?;
+        opts
+    };
+
+    lua_system(lua, (Value::Table(table), Some(opts)))
 }
 
 pub fn register(lua: &Lua, datamile_tbl: &Table) -> mlua::Result<()> {

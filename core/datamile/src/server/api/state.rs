@@ -46,7 +46,7 @@ fn merge(current: &mut Value, patch: Value) {
     }
 }
 
-pub async fn get_state(
+pub async fn read_state(
     AxumPath(namespace): AxumPath<String>,
     State(state): State<Arc<AppState>>,
 ) -> Response {

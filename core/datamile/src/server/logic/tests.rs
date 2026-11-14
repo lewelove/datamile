@@ -1,8 +1,27 @@
 use std::fs;
+use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 
 use super::{EntityIngest, LogicEngine, SortOrder};
+
+/// One process-lifetime config keeps parallel tests off each other's temp dirs.
+fn install_test_config() {
+    static CONFIG: OnceLock<PathBuf> = OnceLock::new();
+
+    let path = CONFIG.get_or_init(|| {
+        let dir = std::env::temp_dir().join("datamile-logic-tests");
+        fs::create_dir_all(&dir).expect("config dir");
+        let path = dir.join("init.lua");
+        fs::write(&path, "datamile.config({})").expect("config");
+        libdatamile::lua::set_config_path_override(path.clone());
+
+        path
+    });
+
+    assert!(path.exists());
+}
 
 fn ingest(
     engine: &mut LogicEngine,
@@ -39,11 +58,9 @@ fn ingest(
 /// Ids are unique within a root type, not across root types.
 #[test]
 fn logic_scopes_ids_by_root_type() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config = tmp.path().join("init.lua");
-    fs::write(&config, "datamile.config({})").expect("config");
-    libdatamile::lua::set_config_path_override(config);
+    install_test_config();
 
+    let tmp = tempfile::tempdir().expect("tempdir");
     let film = tmp.path().join("film");
     let audiobook = tmp.path().join("audiobook");
     let other_film = tmp.path().join("other-film");
@@ -93,11 +110,9 @@ fn logic_scopes_ids_by_root_type() {
 /// Re-ingesting an unchanged entity replaces it; views must not duplicate it.
 #[test]
 fn logic_replaces_reingested_entity() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config = tmp.path().join("init.lua");
-    fs::write(&config, "datamile.config({})").expect("config");
-    libdatamile::lua::set_config_path_override(config);
+    install_test_config();
 
+    let tmp = tempfile::tempdir().expect("tempdir");
     let dir = tmp.path().join("album");
     fs::create_dir_all(&dir).expect("album dir");
 

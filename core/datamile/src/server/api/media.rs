@@ -239,7 +239,7 @@ pub async fn list_media(State(state): State<Arc<AppState>>) -> Response {
     Json(payload).into_response()
 }
 
-pub async fn get_media(
+pub async fn media_info(
     Path(root_type): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
@@ -313,7 +313,7 @@ pub async fn list_items(
     Json(payload).into_response()
 }
 
-pub async fn get_item(
+pub async fn media_item(
     Path(root_type): Path<String>,
     Query(query): Query<ItemQuery>,
     State(state): State<Arc<AppState>>,
@@ -337,7 +337,7 @@ pub async fn get_item(
         .into_response()
 }
 
-pub async fn get_groups(
+pub async fn media_groups(
     Path((root_type, grouper)): Path<(String, String)>,
     Query(query): Query<GroupQuery>,
     State(state): State<Arc<AppState>>,

@@ -17,10 +17,13 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/ws", get(websocket::ws_handler))
         .route("/api/media", get(media::list_media))
-        .route("/api/media/{type}", get(media::get_media))
+        .route("/api/media/{type}", get(media::media_info))
         .route("/api/media/{type}/items", get(media::list_items))
-        .route("/api/media/{type}/item", get(media::get_item))
-        .route("/api/media/{type}/groups/{grouper}", get(media::get_groups))
+        .route("/api/media/{type}/item", get(media::media_item))
+        .route(
+            "/api/media/{type}/groups/{grouper}",
+            get(media::media_groups),
+        )
         .route("/api/playback", get(playback::get))
         .route("/api/playback/play", post(playback::play))
         .route("/api/playback/queue", post(playback::queue))
@@ -30,7 +33,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/playback/stop", post(playback::stop))
         .route("/api/playback/clear", post(playback::clear))
         .route("/api/playback/toggle-pause", post(playback::toggle_pause))
-        .route("/api/state/{namespace}", get(state::get_state))
+        .route("/api/state/{namespace}", get(state::read_state))
         .route("/api/state/{namespace}", post(state::save_state))
         .route("/api/actions/{name}", post(actions::execute_action))
         .route(

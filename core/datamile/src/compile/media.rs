@@ -118,12 +118,16 @@ pub fn discover_targets(
     resolve_targets(discover_roots(engine, target, specific)?, engine)
 }
 
-/// Discover roots that anchor directly inside `target` without recursing.
+/// Discover roots that anchor directly at `target`, never its descendants.
 pub fn discover_targets_shallow(
     engine: &LuaEngine,
     target: &Path,
 ) -> Result<Vec<RootTarget>> {
-    resolve_targets(discover_roots(engine, target, None)?, engine)
+    let anchor = canonical_or_owned(target);
+    let mut roots = resolve_targets(discover_roots(engine, target, None)?, engine)?;
+    roots.retain(|root| root.target == anchor);
+
+    Ok(roots)
 }
 
 fn root_scopes(

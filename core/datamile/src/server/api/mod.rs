@@ -1,20 +1,38 @@
 pub mod actions;
 pub mod assets;
+pub mod media;
 pub mod playback;
+pub mod state;
 pub mod system;
 pub mod websocket;
 
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::{any, get, post};
+use axum::routing::{get, post};
 
 use crate::server::state::AppState;
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/ws", get(websocket::ws_handler))
-        .route("/api/state", post(system::update_state))
+        .route("/api/media", get(media::list_media))
+        .route("/api/media/{type}", get(media::get_media))
+        .route("/api/media/{type}/items", get(media::list_items))
+        .route("/api/media/{type}/item", get(media::get_item))
+        .route("/api/media/{type}/groups/{grouper}", get(media::get_groups))
+        .route("/api/playback", get(playback::get))
+        .route("/api/playback/play", post(playback::play))
+        .route("/api/playback/queue", post(playback::queue))
+        .route("/api/playback/jump", post(playback::jump))
+        .route("/api/playback/next", post(playback::next))
+        .route("/api/playback/prev", post(playback::prev))
+        .route("/api/playback/stop", post(playback::stop))
+        .route("/api/playback/clear", post(playback::clear))
+        .route("/api/playback/toggle-pause", post(playback::toggle_pause))
+        .route("/api/state/{namespace}", get(state::get_state))
+        .route("/api/state/{namespace}", post(state::save_state))
+        .route("/api/actions/{name}", post(actions::execute_action))
         .route(
             "/api/internal/notify_force_update",
             post(system::notify_force_update),
@@ -30,18 +48,5 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(assets::trigger_cache_images),
         )
         .route("/api/images/{file}", get(assets::image))
-        .route("/api/album/{*id}", get(assets::album_metadata))
-        .route("/api/entity/{type}/{*id}", get(assets::entity_metadata))
-        .route("/api/play/{*id}", post(playback::play_album))
-        .route("/api/play-disc/{*id}", post(playback::play_disc))
-        .route("/api/queue/{*id}", post(playback::queue_album))
-        .route("/api/jump/{index}", post(playback::jump_to_index))
-        .route("/api/next", post(playback::next_track))
-        .route("/api/prev", post(playback::prev_track))
-        .route("/api/stop", post(playback::stop_playback))
-        .route("/api/clear", post(playback::clear_queue))
-        .route("/api/toggle-pause", post(playback::toggle_pause))
-        .route("/api/update-album/{*id}", post(system::force_update_album))
-        .route("/api/actions/{name}", any(actions::execute_action))
         .with_state(state)
 }

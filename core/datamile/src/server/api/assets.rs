@@ -541,39 +541,3 @@ pub async fn trigger_cache_images(
 
     StatusCode::ACCEPTED.into_response()
 }
-
-pub async fn album_metadata(
-    Path(id): Path<String>,
-    State(state): State<Arc<AppState>>,
-) -> Response {
-    let json_opt = {
-        let logic = state.logic.read().await;
-        logic.album_json(&id)
-    };
-    if let Some(data) = json_opt {
-        return (
-            [(header::CONTENT_TYPE, "application/json")],
-            data.to_string(),
-        )
-            .into_response();
-    }
-    StatusCode::NOT_FOUND.into_response()
-}
-
-pub async fn entity_metadata(
-    Path((root_type, id)): Path<(String, String)>,
-    State(state): State<Arc<AppState>>,
-) -> Response {
-    let json_opt = {
-        let logic = state.logic.read().await;
-        logic.entity_json(&root_type, &id)
-    };
-    if let Some(data) = json_opt {
-        return (
-            [(header::CONTENT_TYPE, "application/json")],
-            data.to_string(),
-        )
-            .into_response();
-    }
-    StatusCode::NOT_FOUND.into_response()
-}

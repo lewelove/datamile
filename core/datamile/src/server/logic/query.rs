@@ -3,85 +3,73 @@ use serde_json::Value;
 
 use super::{LogicEngine, SortOrder};
 
+/// One browse request, always scoped to a single root type.
+pub struct ViewQuery<'a> {
+    pub root_type: &'a str,
+    pub library: &'a str,
+    pub library_filter: Option<&'a str>,
+    pub group: Option<(&'a str, &'a str)>,
+    pub sort: Option<&'a str>,
+    pub order: SortOrder,
+}
+
 impl LogicEngine {
-    pub fn request_view(
-        &self,
-        library: &str,
-        library_filter: Option<&str>,
-        sort: &str,
-        filter_key: Option<&str>,
-        filter_val: Option<&str>,
-        order: SortOrder,
-    ) -> Vec<String> {
-        let empty_bitmap = RoaringBitmap::new();
-        let library_mask = self.libraries_cache.get(library).unwrap_or(&empty_bitmap);
-        let mut final_mask = library_mask.clone();
+    pub fn request_view(&self, query: &ViewQuery<'_>) -> Vec<String> {
+        let mut mask = self.resolve_view_mask(query.library, query.library_filter);
 
-        if let Some(lf) = library_filter
-            && let Some(f_mask) = self.filters_cache.get(lf)
-        {
-            final_mask &= f_mask;
-        }
-
-        if let (Some(fk), Some(fv)) = (filter_key, filter_val) {
-            if fk == "search" {
-                let needle = fv.to_lowercase();
-                let mut searched = RoaringBitmap::new();
-                for uid in &final_mask {
-                    if let Some(record) = self.albums.get(&uid) {
-                        let title = record.title.to_lowercase();
-                        let artist = record.artist.to_lowercase();
-                        if title.contains(&needle) || artist.contains(&needle) {
-                            searched.insert(uid);
-                        }
-                    }
+        if let Some((grouper, value)) = query.group {
+            match self
+                .groupers_cache
+                .get(grouper)
+                .and_then(|vals| vals.get(value))
+            {
+                Some(group_mask) => {
+                    mask &= group_mask;
                 }
-                final_mask = searched;
-            } else if let Some(grouper_vals) = self.groupers_cache.get(fk) {
-                if let Some(grouper_mask) = grouper_vals.get(fv) {
-                    final_mask &= grouper_mask;
-                } else {
-                    final_mask.clear();
+                None => {
+                    mask.clear();
                 }
             }
         }
 
-        let fallback_storage = self.albums.keys().copied().collect::<Vec<_>>();
-        let sorted_uids = self.orders_cache.get(sort).unwrap_or(&fallback_storage);
+        let sorted_uids = query
+            .sort
+            .and_then(|sort| self.orders_cache.get(sort))
+            .cloned()
+            .unwrap_or_else(|| self.uids_for_type(query.root_type));
 
-        let mut res: Vec<String> = sorted_uids
+        let mut ids: Vec<String> = sorted_uids
             .iter()
-            .filter(|uid| final_mask.contains(**uid))
-            .filter_map(|uid| self.albums.get(uid).map(|a| a.id.clone()))
+            .filter(|uid| mask.contains(**uid))
+            .filter_map(|uid| self.ids_for_uid(query.root_type, *uid))
             .collect();
 
-        if order == SortOrder::Reverse {
-            res.reverse();
+        if query.order == SortOrder::Reverse {
+            ids.reverse();
         }
-        res
+
+        ids
     }
 
     pub fn request_shelf_view(
         &self,
+        root_type: &str,
         shelf_key: &str,
         order_key: Option<&str>,
         order: SortOrder,
     ) -> Vec<String> {
-        let empty_vec = Vec::new();
-        let native_uids = self.shelves_cache.get(shelf_key).unwrap_or(&empty_vec);
+        let empty = Vec::new();
+        let native_uids = self.shelves_cache.get(shelf_key).unwrap_or(&empty);
 
         let mut uids = order_key.map_or_else(
             || native_uids.clone(),
-            |ok| {
-                if ok != "original" && self.orders_cache.contains_key(ok) {
-                    let sorted_uids = &self.orders_cache[ok];
-                    let mut set = roaring::RoaringBitmap::new();
-                    for &uid in native_uids {
-                        set.insert(uid);
-                    }
-                    sorted_uids
+            |key| {
+                if key != "original" && self.orders_cache.contains_key(key) {
+                    let sorted = &self.orders_cache[key];
+                    let native: RoaringBitmap = native_uids.iter().copied().collect();
+                    sorted
                         .iter()
-                        .filter(|uid| set.contains(**uid))
+                        .filter(|uid| native.contains(**uid))
                         .copied()
                         .collect()
                 } else {
@@ -95,17 +83,19 @@ impl LogicEngine {
         }
 
         uids.iter()
-            .filter_map(|uid| self.albums.get(uid).map(|a| a.id.clone()))
+            .filter_map(|uid| self.ids_for_uid(root_type, *uid))
             .collect()
     }
 
     pub fn request_group(
         &self,
+        root_type: &str,
         library: &str,
         library_filter: Option<&str>,
         grouper: &str,
     ) -> Vec<Value> {
-        let view_mask = self.resolve_view_mask(library, library_filter);
+        let view_mask = self.resolve_view_mask(library, library_filter)
+            & self.uid_mask_for_type(root_type);
         if view_mask.is_empty() {
             return Vec::new();
         }
@@ -120,43 +110,95 @@ impl LogicEngine {
         self.build_grouper_items(lua_engine.as_ref(), grouper, &view_mask)
     }
 
-    pub fn find_ids(&self, query_str: &str) -> Vec<String> {
-        let q = query_str.trim();
-        if q.is_empty() {
-            return self.albums.values().map(|a| a.id.clone()).collect();
-        }
-
-        if let Some(uids) = self.libraries_cache.get(q) {
-            return uids
-                .iter()
-                .filter_map(|uid| self.albums.get(&uid).map(|a| a.id.clone()))
-                .collect();
-        }
-        if let Some(uids) = self.filters_cache.get(q) {
-            return uids
-                .iter()
-                .filter_map(|uid| self.albums.get(&uid).map(|a| a.id.clone()))
-                .collect();
-        }
-        if let Some(uids) = self.shelves_cache.get(q) {
-            return uids
-                .iter()
-                .filter_map(|uid| self.albums.get(uid).map(|a| a.id.clone()))
-                .collect();
-        }
-
-        let needle = q.to_lowercase();
+    /// Exact id match across every root type.
+    pub fn targets_for_id(&self, id: &str) -> Vec<(String, String)> {
         self.albums
             .values()
-            .filter_map(|record| {
-                if record.id.to_lowercase().contains(&needle)
+            .filter(|record| record.id == id)
+            .map(|record| (record.root_type.clone(), record.id.clone()))
+            .collect()
+    }
+
+    /// Library/filter/shelf keys first, then a case-insensitive text match.
+    pub fn find_targets(&self, query_str: &str) -> Vec<(String, String)> {
+        let query = query_str.trim();
+        if query.is_empty() {
+            return self.all_targets();
+        }
+
+        if let Some(uids) = self.libraries_cache.get(query) {
+            return self.targets_for_uids(uids);
+        }
+        if let Some(uids) = self.filters_cache.get(query) {
+            return self.targets_for_uids(uids);
+        }
+        if let Some(uids) = self.shelves_cache.get(query) {
+            return self.targets_for_slice(uids);
+        }
+
+        let needle = query.to_lowercase();
+        let mut targets: Vec<(String, String)> = self
+            .albums
+            .values()
+            .filter(|record| {
+                record.id.to_lowercase().contains(&needle)
                     || record.title.to_lowercase().contains(&needle)
                     || record.artist.to_lowercase().contains(&needle)
-                {
-                    return Some(record.id.clone());
-                }
-                None
             })
+            .map(|record| (record.root_type.clone(), record.id.clone()))
+            .collect();
+        targets.sort();
+
+        targets
+    }
+
+    fn all_targets(&self) -> Vec<(String, String)> {
+        let mut targets: Vec<(String, String)> = self
+            .albums
+            .values()
+            .map(|record| (record.root_type.clone(), record.id.clone()))
+            .collect();
+        targets.sort();
+
+        targets
+    }
+
+    fn targets_for_uids(&self, uids: &RoaringBitmap) -> Vec<(String, String)> {
+        uids.iter()
+            .filter_map(|uid| self.albums.get(&uid))
+            .map(|record| (record.root_type.clone(), record.id.clone()))
+            .collect()
+    }
+
+    fn targets_for_slice(&self, uids: &[u32]) -> Vec<(String, String)> {
+        uids.iter()
+            .filter_map(|uid| self.albums.get(uid))
+            .map(|record| (record.root_type.clone(), record.id.clone()))
+            .collect()
+    }
+
+    fn ids_for_uid(&self, root_type: &str, uid: u32) -> Option<String> {
+        let record = self.albums.get(&uid)?;
+        (record.root_type == root_type).then(|| record.id.clone())
+    }
+
+    fn uids_for_type(&self, root_type: &str) -> Vec<u32> {
+        let mut uids: Vec<(String, u32)> = self
+            .albums
+            .iter()
+            .filter(|(_, record)| record.root_type == root_type)
+            .map(|(uid, record)| (record.id.clone(), *uid))
+            .collect();
+        uids.sort();
+
+        uids.into_iter().map(|(_, uid)| uid).collect()
+    }
+
+    fn uid_mask_for_type(&self, root_type: &str) -> RoaringBitmap {
+        self.albums
+            .iter()
+            .filter(|(_, record)| record.root_type == root_type)
+            .map(|(uid, _)| *uid)
             .collect()
     }
 }

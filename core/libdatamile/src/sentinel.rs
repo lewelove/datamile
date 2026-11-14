@@ -51,10 +51,6 @@ pub fn verify_trust(
         }
     }
 
-    if check_manifest_mtimes(entity_root, entity) == TrustState::BrokenIntent {
-        return Ok(TrustState::BrokenIntent);
-    }
-
     if check_files(entity_root, entity) == TrustState::BrokenIntent {
         return Ok(TrustState::BrokenIntent);
     }
@@ -81,40 +77,6 @@ fn is_virtual(entity: &serde_json::Value) -> bool {
         .pointer("/objects/info/virtual")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
-}
-
-fn check_manifest_mtimes(entity_root: &Path, entity: &serde_json::Value) -> TrustState {
-    if let Some(manifests) = entity
-        .pointer("/objects/manifests")
-        .and_then(serde_json::Value::as_object)
-    {
-        for m in manifests.values() {
-            if let Some(file) = m.get("file") {
-                let rel_path = file
-                    .get("path")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("");
-                let lock_mtime = file
-                    .get("mtime")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0);
-                let abs_path = resolve(entity_root, rel_path);
-
-                let current_mtime = fs::metadata(&abs_path)
-                    .and_then(|meta| meta.modified())
-                    .map_or(0, |t| {
-                        t.duration_since(SystemTime::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs()
-                    });
-
-                if current_mtime != lock_mtime && lock_mtime != 0 {
-                    return TrustState::BrokenIntent;
-                }
-            }
-        }
-    }
-    TrustState::Valid
 }
 
 /// Attached files live under `files.<name>` as one entry or a list.
@@ -242,7 +204,10 @@ fn check_physics(
             }
 
             for (key, value) in map {
-                if matches!(key.as_str(), "location" | "images" | "tags" | "objects") {
+                if matches!(
+                    key.as_str(),
+                    "location" | "images" | "tags" | "objects" | "files"
+                ) {
                     continue;
                 }
                 if check_physics(value, entity_root, LocationCheck::Optional)

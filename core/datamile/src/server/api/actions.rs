@@ -1,32 +1,44 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 use serde_json::json;
 
+use crate::server::logic::LogicEngine;
 use crate::server::state::AppState;
 
-struct TargetAlbumEntry {
-    path: PathBuf,
-    lock_path: PathBuf,
-    lock: serde_json::Value,
+#[derive(Deserialize, Default)]
+pub struct ActionBody {
+    #[serde(rename = "type")]
+    root_type: Option<String>,
+    id: Option<String>,
+    ids: Option<Vec<String>>,
+    playing: Option<bool>,
+    query: Option<String>,
+    options: Option<String>,
 }
 
-async fn resolve_playing_target(state: &AppState) -> Option<String> {
-    let playing_path = crate::x::playing_track_url().await.ok()?;
-    let clean_playing = playing_path.trim_start_matches('/');
-    let logic = state.logic.read().await;
+impl ActionBody {
+    fn requested_ids(&self) -> Vec<String> {
+        let mut ids = self.ids.clone().unwrap_or_default();
+        if let Some(id) = self.id.clone()
+            && !ids.contains(&id)
+        {
+            ids.push(id);
+        }
 
-    if let Some(item) = logic
-        .track_lookup
-        .get(clean_playing)
-        .or_else(|| logic.track_lookup.get(&playing_path))
+        ids
+    }
+}
+
+async fn playing_target(state: &Arc<AppState>) -> Option<(String, String)> {
+    if let Ok(uri) = crate::x::playing_track_url().await
+        && let Some(target) = state.logic.read().await.track_target(&uri)
     {
-        return Some(item.album_id.clone());
+        return Some(target);
     }
 
     let media_root = state.config.read().await.media_roots.first().cloned()?;
@@ -34,137 +46,103 @@ async fn resolve_playing_target(state: &AppState) -> Option<String> {
         .await
         .ok()?;
     let canon = dir.canonicalize().unwrap_or(dir);
-    logic.album_id_by_target(&canon).map(ToString::to_string)
+
+    state.logic.read().await.entity_by_target(&canon)
 }
 
-async fn resolve_param_target(
-    params: &HashMap<String, String>,
-    state: &AppState,
-) -> Vec<String> {
-    let logic = state.logic.read().await;
-    if let Some(q) = params.get("query") {
-        return logic.find_ids(q);
-    }
-    if let Some(id) = params.get("id").filter(|s| !s.is_empty()) {
-        return vec![id.clone()];
-    }
-    if params.get("library").is_some_and(|v| v == "true")
-        || params.contains_key("recursive")
-    {
-        let roots = if let Some(dir) = params.get("recursive") {
-            vec![libdatamile::utils::expand_path(dir)]
-        } else {
-            state.config.read().await.media_roots.clone()
-        };
-        let roots: Vec<_> = roots
-            .into_iter()
-            .map(|root| root.canonicalize().unwrap_or(root))
-            .collect();
+fn targets_for_ids(
+    logic: &LogicEngine,
+    root_type: Option<&str>,
+    ids: &[String],
+) -> Vec<(String, String)> {
+    let mut targets = Vec::new();
 
-        return logic
-            .albums
-            .values()
-            .filter(|a| roots.iter().any(|root| a.path.starts_with(root)))
-            .map(|a| a.id.clone())
-            .collect();
-    }
-    if let Some(dir) = params.get("directory") {
-        let p = libdatamile::utils::expand_path(dir);
-        let p_canon = p.canonicalize().unwrap_or(p);
-        if let Some(id) = logic.album_id_by_target(&p_canon) {
-            return vec![id.to_string()];
+    for id in ids {
+        if let Some(root_type) = root_type {
+            if logic.entity(root_type, id).is_some() {
+                targets.push((root_type.to_string(), id.clone()));
+            }
+            continue;
         }
+
+        targets.extend(logic.targets_for_id(id));
     }
-    Vec::new()
+
+    targets
 }
 
-async fn resolve_target_entries(
-    params: &HashMap<String, String>,
+async fn resolve_targets(
+    body: &ActionBody,
     state: &Arc<AppState>,
-) -> Vec<TargetAlbumEntry> {
-    let is_playing = params.get("playing").is_some_and(|v| v == "true");
-    let target_ids = if is_playing {
-        resolve_playing_target(state).await.into_iter().collect()
-    } else {
-        resolve_param_target(params, state).await
-    };
+) -> Vec<(String, String)> {
+    if body.playing == Some(true) {
+        return playing_target(state).await.into_iter().collect();
+    }
 
     let logic = state.logic.read().await;
-    let mut list = Vec::new();
-    for target_id in target_ids {
-        if let Some(record) = logic.album_record(&target_id)
-            && let Ok(lock_json) =
-                serde_json::from_str::<serde_json::Value>(&record.raw_json)
-        {
-            list.push(TargetAlbumEntry {
-                path: record.path.clone(),
-                lock_path: record.lock_path.clone(),
-                lock: lock_json,
-            });
-        }
+
+    if let Some(query) = body.query.as_deref().filter(|q| !q.trim().is_empty()) {
+        return logic.find_targets(query);
     }
-    list
+
+    targets_for_ids(&logic, body.root_type.as_deref(), &body.requested_ids())
+}
+
+async fn entity_payload(
+    state: &Arc<AppState>,
+    targets: Vec<(String, String)>,
+) -> Vec<serde_json::Value> {
+    let logic = state.logic.read().await;
+
+    targets
+        .into_iter()
+        .filter_map(|(root_type, id)| {
+            let record = logic.entity(&root_type, &id)?;
+            let lock: serde_json::Value = serde_json::from_str(&record.raw_json).ok()?;
+
+            Some(json!({
+                "type": root_type,
+                "id": id,
+                "path": record.path.to_string_lossy(),
+                "lock_path": record.lock_path.to_string_lossy(),
+                "lock": lock
+            }))
+        })
+        .collect()
 }
 
 pub async fn execute_action(
-    axum::extract::Path(name): axum::extract::Path<String>,
-    Query(params): Query<HashMap<String, String>>,
+    Path(name): Path<String>,
     State(state): State<Arc<AppState>>,
+    Json(body): Json<ActionBody>,
 ) -> Response {
     let name_key = name.replace('-', "_");
 
-    let config_guard = state.config.read().await;
-    if !config_guard.actions.contains_key(&name_key) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Action '{name}' is not registered.")})),
-        )
-            .into_response();
-    }
-    let config_path = config_guard.config_path.clone();
-    drop(config_guard);
-
-    let target_entries = resolve_target_entries(&params, &state).await;
-
-    let album_entries: Vec<serde_json::Value> = target_entries
-        .into_iter()
-        .map(|e| {
-            json!({
-                "path": e.path.to_string_lossy(),
-                "lock_path": e.lock_path.to_string_lossy(),
-                "lock": e.lock
-            })
-        })
-        .collect();
-
-    let mut options_vec = Vec::new();
-    for (k, v) in &params {
-        if k != "playing"
-            && k != "id"
-            && k != "query"
-            && k != "directory"
-            && k != "recursive"
-            && k != "library"
-        {
-            if v.is_empty() {
-                options_vec.push(k.clone());
-            } else {
-                options_vec.push(format!("{k}={v}"));
-            }
+    let config_path = {
+        let config_guard = state.config.read().await;
+        if !config_guard.actions.contains_key(&name_key) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Action '{name}' is not registered.")})),
+            )
+                .into_response();
         }
-    }
-    let options_str = options_vec.join(" ");
+        config_guard.config_path.clone()
+    };
 
-    let combined_json = json!({
-        "albums": album_entries,
-        "options": options_str,
+    let targets = resolve_targets(&body, &state).await;
+    let entities = entity_payload(&state, targets).await;
+
+    let payload = json!({
+        "entities": entities,
+        "options": body.options.unwrap_or_default(),
         "isatty": false
     });
 
     let res = tokio::task::spawn_blocking(move || {
         let engine = libdatamile::lua::LuaEngine::new()?;
         engine.evaluate_config(&config_path)?;
-        engine.execute_action(&name_key, &combined_json)
+        engine.execute_action(&name_key, &payload)
     })
     .await;
 

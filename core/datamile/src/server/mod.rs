@@ -25,37 +25,7 @@ fn create_directories(cache_root: &Path, state_root: &Path) {
     std::fs::create_dir_all(cache_root.join("harvest")).ok();
     std::fs::create_dir_all(cache_root.join("libraries")).ok();
     std::fs::create_dir_all(cache_root.join("objects")).ok();
-    std::fs::create_dir_all(state_root).ok();
-}
-
-fn load_state(state_root: &Path) -> serde_json::Value {
-    let state_file = state_root.join("state.json");
-    if state_file.exists() {
-        let data = std::fs::read_to_string(&state_file).unwrap_or_default();
-        serde_json::from_str(&data).unwrap_or_else(|_| default_state())
-    } else {
-        default_state()
-    }
-}
-
-fn default_state() -> serde_json::Value {
-    serde_json::json!({
-        "activeTab": "home",
-        "homeSubView": "libraries",
-        "activeLibrary": "library",
-        "activeCabinet": "default",
-        "sortKey": "default",
-        "sortOrder": "default",
-        "groupKey": "genre",
-        "filter": {
-            "key": null,
-            "val": null
-        },
-        "activeShelf": null,
-        "activeShelfOrder": "original",
-        "activeShelfOrderReverse": false,
-        "sidebarWidth": 280
-    })
+    std::fs::create_dir_all(state_root.join("state")).ok();
 }
 
 pub async fn run(port: u16) -> Result<()> {
@@ -101,17 +71,17 @@ pub async fn run(port: u16) -> Result<()> {
         app: config.app.clone(),
     };
 
-    let ui_state_val = load_state(&state_root);
-
     let lib_scanner = library::scanner::Library::new(media_roots.clone());
     lib_scanner.scan(&mut logic_engine);
 
     let logic_arc = Arc::new(RwLock::new(logic_engine));
     let (tx, _) = broadcast::channel(1024);
 
+    let playback = Arc::new(RwLock::new(None));
     let mpd_engine = mpd::start_actor(
         tx.clone(),
         Arc::clone(&logic_arc),
+        Arc::clone(&playback),
         Arc::new(server_config.clone()),
     );
 
@@ -120,8 +90,8 @@ pub async fn run(port: u16) -> Result<()> {
 
     let app_state = Arc::new(AppState {
         logic: Arc::clone(&logic_arc),
-        ui_state: RwLock::new(ui_state_val),
         tx,
+        playback,
         config: RwLock::new(server_config),
         mpd_engine,
         tracked_roots: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),

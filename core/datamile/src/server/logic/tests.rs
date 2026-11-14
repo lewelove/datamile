@@ -56,6 +56,17 @@ fn logic_scopes_ids_by_root_type() {
     ingest(&mut engine, "audiobook", &audiobook, json!({}));
     assert_eq!(engine.albums.len(), 2);
 
+    let film_record = engine.entity("film", "Dune").expect("film");
+    assert_eq!(film_record.path, film.canonicalize().expect("canon"));
+    assert!(engine.entity("album", "Dune").is_none());
+
+    let ids = vec!["Dune".to_string()];
+    let sections = vec!["tags".to_string()];
+    let items = engine.view_entries("film", &ids, Some(&sections));
+    assert_eq!(items[0]["film"]["id"], "Dune");
+    assert!(items[0]["film"].get("objects").is_none());
+    assert!(engine.view_entries("album", &ids, None).is_empty());
+
     let lock_path = other_film.join("entity.lock.json");
     fs::write(&lock_path, b"{}").expect("lock");
     let lock_json = json!({
@@ -97,6 +108,6 @@ fn logic_replaces_reingested_entity() {
 
     engine.build_cache();
 
-    let ids = engine.request_shelf_view("recent", None, SortOrder::Forward);
+    let ids = engine.request_shelf_view("album", "recent", None, SortOrder::Forward);
     assert_eq!(ids, vec!["Dune".to_string()]);
 }

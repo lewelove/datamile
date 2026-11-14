@@ -7,6 +7,8 @@ use tokio::sync::{RwLock, broadcast};
 
 use crate::server::logic::{LogicEngine, TrackLookupItem};
 
+type Snapshot = Arc<RwLock<Option<serde_json::Value>>>;
+
 fn format_queue_item(
     idx: usize,
     s: &SongInQueue,
@@ -58,6 +60,7 @@ pub async fn broadcast_status(
     client: &Client,
     tx: &broadcast::Sender<String>,
     logic: &Arc<RwLock<LogicEngine>>,
+    snapshot: &Snapshot,
 ) -> Result<()> {
     let (status, current_song, queue) = client
         .command_list((commands::Status, commands::CurrentSong, commands::Queue))
@@ -113,7 +116,7 @@ pub async fn broadcast_status(
     };
 
     let payload = serde_json::json!({
-        "type": "MPD_STATUS",
+        "event": "playback.updated",
         "state": state_str,
         "file": file_path,
         "album_id": album_id,
@@ -125,6 +128,7 @@ pub async fn broadcast_status(
         "queue": queue_json
     });
 
+    *snapshot.write().await = Some(payload.clone());
     let _ = tx.send(payload.to_string());
     Ok(())
 }

@@ -596,3 +596,34 @@ fn compiler_allows_same_lock_duplicate_id() {
     super::super::stream::register_id(&mut seen, "film", "Dune", lock).expect("first");
     super::super::stream::register_id(&mut seen, "film", "Dune", lock).expect("second");
 }
+
+/// Shallow discovery anchors at the target even when the selector recurses.
+#[test]
+fn shallow_discovery_ignores_nested_roots() {
+    let tmp = tempdir().expect("tempdir");
+    let music = tmp.path().join("music");
+    let outer = music.join("Outer");
+    let inner = outer.join("Inner");
+    fs::create_dir_all(&inner).expect("dirs");
+    fs::write(outer.join("album.toml"), b"[album]").expect("outer marker");
+    fs::write(inner.join("album.toml"), b"[album]").expect("inner marker");
+
+    let engine = LuaEngine::new().expect("engine");
+    let code = format!(
+        r#"
+        d.media("album", {{
+            kind = "root",
+            dir = "{music}",
+            select = function(dir)
+                return d.fs.roots(dir, {{ marker = "album.toml", prune = false }})
+            end,
+        }})
+    "#,
+        music = music.to_string_lossy()
+    );
+    engine.lua.load(&code).exec().expect("register");
+
+    let roots = super::discover_targets_shallow(&engine, &outer).expect("shallow");
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].target, outer.canonicalize().expect("canon"));
+}

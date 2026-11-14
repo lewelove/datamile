@@ -1,53 +1,53 @@
-use std::collections::HashMap;
-
-use serde_json::json;
-
 use super::handler::filter_reingested_ids;
 
-/// Verify that an album ID present in both removal and update sets is purged from removals.
-///
-/// Moving or renaming a directory generates an inotify removal for the old path and an
-/// addition for the new path in the same batch. Since metadata IDs are identical, the ID
-/// must not be broadcast as removed.
-#[test]
-fn test_filter_purges_reingested_id() {
-    let album_id = "Artist - 2024 - Album".to_string();
-
-    // Stale removal and fresh re-ingestion for the same album ID.
-    let mut removed_ids = vec![album_id.clone()];
-    let updated_entries = HashMap::from([(album_id.clone(), json!({ "id": album_id }))]);
-
-    filter_reingested_ids(&mut removed_ids, &updated_entries);
-
-    // The re-ingested ID must be filtered out of the removal list.
-    assert!(removed_ids.is_empty());
+fn target(root_type: &str, id: &str) -> (String, String) {
+    (root_type.to_string(), id.to_string())
 }
 
-/// Verify that genuinely removed album IDs absent from the update set are retained.
+/// Verify that an id present in both removal and update sets is purged from
+/// removals. Renaming generates a stale removal and a fresh re-ingestion.
+#[test]
+fn test_filter_purges_reingested_id() {
+    let album = target("album", "Artist - 2024 - Album");
+    let mut removed = vec![album.clone()];
+
+    filter_reingested_ids(&mut removed, std::slice::from_ref(&album));
+
+    assert!(removed.is_empty());
+}
+
+/// Verify that genuinely removed targets absent from the update set remain.
 #[test]
 fn test_filter_retains_unmatched_id() {
-    let removed_id = "Artist - 2020 - Deleted".to_string();
-    let reingested_id = "Artist - 2024 - Renamed".to_string();
+    let removed_target = target("album", "Artist - 2020 - Deleted");
+    let reingested = target("album", "Artist - 2024 - Renamed");
+    let mut removed = vec![removed_target.clone(), reingested.clone()];
 
-    let mut removed_ids = vec![removed_id.clone(), reingested_id.clone()];
-    let updated_entries =
-        HashMap::from([(reingested_id.clone(), json!({ "id": reingested_id }))]);
+    filter_reingested_ids(&mut removed, std::slice::from_ref(&reingested));
 
-    filter_reingested_ids(&mut removed_ids, &updated_entries);
+    assert_eq!(removed, vec![removed_target]);
+}
 
-    // Only the genuinely removed ID must remain.
-    assert_eq!(removed_ids, vec![removed_id]);
+/// Ids colliding across root types must not cancel each other's removal.
+#[test]
+fn test_filter_scopes_targets_by_root_type() {
+    let album = target("album", "Dune");
+    let film = target("film", "Dune");
+    let mut removed = vec![album.clone(), film];
+
+    filter_reingested_ids(&mut removed, std::slice::from_ref(&album));
+
+    assert_eq!(removed, vec![target("film", "Dune")]);
 }
 
 /// Verify that empty input sets return early without modification.
 #[test]
 fn test_filter_noop_on_empty_inputs() {
-    let mut removed_ids = Vec::new();
-    let updated_entries: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut removed = Vec::new();
 
-    filter_reingested_ids(&mut removed_ids, &updated_entries);
+    filter_reingested_ids(&mut removed, &[]);
 
-    assert!(removed_ids.is_empty());
+    assert!(removed.is_empty());
 }
 
 use std::fs;

@@ -11,9 +11,9 @@ _G.datamile.action("open_folder", {
     description = "Open album directory in file manager",
     run = function(ctx)
         local launcher = get_launcher()
-        for _, album in ipairs(ctx.albums) do
-            if album.path and album.path ~= "" then
-                d.system({ launcher, album.path }, { detach = true })
+        for _, entity in ipairs(ctx.entities) do
+            if entity.path and entity.path ~= "" then
+                d.system({ launcher, entity.path }, { detach = true })
             end
         end
     end
@@ -24,8 +24,8 @@ _G.datamile.action("open_lock", {
     description = "Open the entity lockfile in the default viewer",
     run = function(ctx)
         local launcher = get_launcher()
-        for _, album in ipairs(ctx.albums) do
-            local p = album.lock_path
+        for _, entity in ipairs(ctx.entities) do
+            local p = entity.lock_path
             if type(p) == "string" and p ~= "" and d.fs.exists(p) then
                 d.system({ launcher, p }, { detach = true })
             end
@@ -73,9 +73,9 @@ _G.datamile.action("open_terminal", {
     description = "Open terminal inside album directory",
     run = function(ctx)
         local term = find_terminal()
-        local targets = (ctx.albums and #ctx.albums > 0) and ctx.albums or { { path = "." } }
-        for _, album in ipairs(targets) do
-            d.system({ term }, { cwd = album.path or ".", detach = true })
+        local targets = (ctx.entities and #ctx.entities > 0) and ctx.entities or { { path = "." } }
+        for _, entity in ipairs(targets) do
+            d.system({ term }, { cwd = entity.path or ".", detach = true })
         end
     end
 })

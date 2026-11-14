@@ -24,6 +24,8 @@ pub struct TargetFlags {
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ResolvedAlbumTarget {
+    #[serde(rename = "type")]
+    pub root_type: String,
     pub id: String,
     pub path: PathBuf,
     pub lock_path: PathBuf,
@@ -90,6 +92,7 @@ fn resolve_discovered(
                 .to_string();
 
             Some(ResolvedAlbumTarget {
+                root_type: root.root_type,
                 id,
                 path: root.target,
                 lock_path: root.lock_path,
@@ -192,11 +195,14 @@ pub async fn execute(
     let resolved_targets =
         resolve_target_albums(&media_roots, &target, &config.path).await?;
 
-    let albums_payload: Vec<serde_json::Value> = resolved_targets
+    let entities_payload: Vec<serde_json::Value> = resolved_targets
         .iter()
         .map(|t| {
             serde_json::json!({
+                "type": t.root_type,
+                "id": t.id,
                 "path": t.path.to_string_lossy(),
+                "lock_path": t.lock_path.to_string_lossy(),
                 "lock": t.lock
             })
         })
@@ -205,7 +211,7 @@ pub async fn execute(
     let is_atty = std::io::stdin().is_terminal();
 
     let combined_json = serde_json::json!({
-        "albums": albums_payload,
+        "entities": entities_payload,
         "options": trailing_args.join(" "),
         "isatty": is_atty
     });

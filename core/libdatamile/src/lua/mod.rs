@@ -294,6 +294,14 @@ impl MediaKind {
     }
 }
 
+/// Declared shape of a root media type, as exposed to the server.
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub struct MediaSchema {
+    pub dir: PathBuf,
+    #[serde(default)]
+    pub children: HashMap<String, String>,
+}
+
 /// Child targets emitted by `__DATAMILE_MEDIA_PREPARE`.
 pub struct PreparedChildren {
     pub field: String,
@@ -424,8 +432,6 @@ impl LuaEngine {
             self.apply_media_override(media_directory)?;
         }
 
-        self.resolve_media_directory(config_dir)?;
-
         let app_config: AppConfig = call_getter(&self.lua, "__DATAMILE_GET_CONFIG")?;
 
         let resolved_cache = if app_config.storage.cache.is_empty() {
@@ -477,8 +483,8 @@ impl LuaEngine {
         })
     }
 
-    /// Point both the legacy storage field and every root declaration at the
-    /// CLI override so Lua path math matches Rust discovery.
+    /// Point every root declaration at the CLI override so Lua path math
+    /// matches Rust discovery.
     fn apply_media_override(&self, media_directory: &Path) -> Result<()> {
         let registry: Table = self
             .lua
@@ -486,14 +492,6 @@ impl LuaEngine {
             .get("REGISTRY")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let override_path = media_directory.to_string_lossy();
-
-        if let Ok(config) = registry.get::<Table>("config")
-            && let Ok(storage) = config.get::<Table>("storage")
-        {
-            storage
-                .set("media_directory", override_path.as_ref())
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-        }
 
         let media: Table = registry.get("media").map_err(|e| anyhow::anyhow!("{e}"))?;
         for entry in media.pairs::<String, Table>() {
@@ -505,39 +503,6 @@ impl LuaEngine {
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
         }
-
-        Ok(())
-    }
-
-    /// Resolve `storage.media_directory` inside the Lua registry so Lua-side
-    /// path math (relative ids, source matching) sees absolute paths, matching
-    /// what `discover_roots` hands to the compiler.
-    fn resolve_media_directory(&self, config_dir: &Path) -> Result<()> {
-        let registry: Table = self
-            .lua
-            .globals()
-            .get("REGISTRY")
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let Ok(config) = registry.get::<Table>("config") else {
-            return Ok(());
-        };
-        let Ok(storage) = config.get::<Table>("storage") else {
-            return Ok(());
-        };
-
-        let Ok(media_directory) = storage.get::<Option<String>>("media_directory") else {
-            return Ok(());
-        };
-        let Some(raw) = media_directory.filter(|value| !value.is_empty()) else {
-            return Ok(());
-        };
-
-        let resolved = crate::utils::resolve_path(&raw, config_dir);
-        let resolved = resolved.canonicalize().unwrap_or(resolved);
-
-        storage
-            .set("media_directory", resolved.to_string_lossy().as_ref())
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
 
         Ok(())
     }
@@ -644,6 +609,18 @@ impl LuaEngine {
             roots.push(value.map_err(|e| anyhow::anyhow!("{e}"))?);
         }
         Ok(roots)
+    }
+
+    pub fn media_schema(&self) -> Result<HashMap<String, MediaSchema>> {
+        let func: mlua::Function = self
+            .lua
+            .globals()
+            .get("__DATAMILE_MEDIA_SCHEMA")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let table: Table = func.call(()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        self.lua
+            .from_value(mlua::Value::Table(table))
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     pub fn media_validate(&self) -> Result<()> {
@@ -1032,19 +1009,10 @@ pub struct ResolvedConfig {
 impl ResolvedConfig {
     #[must_use]
     pub fn root_dirs(&self) -> Vec<PathBuf> {
-        if !self.media_roots.is_empty() {
-            return self
-                .media_roots
-                .iter()
-                .map(|(_, dir)| dir.clone())
-                .collect();
-        }
-
-        if self.app.storage.media_directory.is_empty() {
-            return Vec::new();
-        }
-
-        vec![PathBuf::from(&self.app.storage.media_directory)]
+        self.media_roots
+            .iter()
+            .map(|(_, dir)| dir.clone())
+            .collect()
     }
 
     pub fn load() -> Result<Self> {
@@ -1076,18 +1044,6 @@ impl ResolvedConfig {
             });
         }
 
-        if !evaluated.app.storage.media_directory.is_empty() {
-            evaluated.app.storage.media_directory = crate::utils::resolve_path(
-                &evaluated.app.storage.media_directory,
-                config_dir,
-            )
-            .to_string_lossy()
-            .to_string();
-        }
-        if let Some(media_directory) = MEDIA_DIRECTORY_OVERRIDE.get() {
-            evaluated.app.storage.media_directory =
-                media_directory.to_string_lossy().to_string();
-        }
         if !evaluated.app.storage.cache.is_empty() {
             evaluated.app.storage.cache =
                 crate::utils::resolve_path(&evaluated.app.storage.cache, config_dir)

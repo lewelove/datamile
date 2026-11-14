@@ -9,11 +9,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use libdatamile::error::DatamileError;
 use libdatamile::images::{FilterType, FitMode, parse_filter, parse_fit_mode};
-use libdatamile::lua::{LogicManifest, with_evaluated_lua_vm};
+use libdatamile::lua::{LogicManifest, MediaSchema, with_evaluated_lua_vm};
+pub use query::ViewQuery;
 use roaring::RoaringBitmap;
 use serde::Serialize;
-use serde_json::value::RawValue;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 pub use sort::{SortKey, SortOrder, value_to_sort_key};
 
 #[derive(Clone, Debug)]
@@ -36,17 +36,20 @@ pub struct AlbumRecord {
     pub title: String,
     pub artist: String,
     pub raw_json: Arc<str>,
-    pub dict_raw: Box<RawValue>,
     pub total_discs: u64,
     pub total_tracks: u64,
     pub duration_ms: u64,
+    /// Playable HTTP URIs and their child ids, in compiled order.
     pub track_uris: Vec<String>,
+    pub track_ids: Vec<String>,
     pub cover_namespaces: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TrackLookupItem {
     pub path: String,
+    #[serde(rename = "rootType")]
+    pub root_type: String,
     #[serde(rename = "trackIndex")]
     pub track_index: usize,
     #[serde(rename = "trackNo")]
@@ -76,6 +79,7 @@ pub struct EntityIngest<'a> {
 pub struct LogicEngine {
     pub config_path: PathBuf,
     pub manifest: LogicManifest,
+    pub media_types: HashMap<String, MediaSchema>,
     pub(crate) libraries_cache: HashMap<String, RoaringBitmap>,
     pub(crate) filters_cache: HashMap<String, RoaringBitmap>,
     pub(crate) groupers_cache: HashMap<String, HashMap<String, RoaringBitmap>>,
@@ -93,11 +97,15 @@ pub struct LogicEngine {
 impl LogicEngine {
     pub fn new() -> Result<Self> {
         let config_path = libdatamile::lua::resolve_config_path().unwrap_or_default();
-        let manifest = with_evaluated_lua_vm(&config_path, |_, eval| Ok(eval.manifest))?;
+        let (manifest, media_types) =
+            with_evaluated_lua_vm(&config_path, |engine, eval| {
+                Ok((eval.manifest, engine.media_schema()?))
+            })?;
 
         Ok(Self {
             config_path,
             manifest,
+            media_types,
             libraries_cache: HashMap::new(),
             filters_cache: HashMap::new(),
             groupers_cache: HashMap::new(),
@@ -114,21 +122,23 @@ impl LogicEngine {
     }
 
     pub fn reload_manifest(&mut self, config_path: &Path) -> Result<()> {
-        let manifest = with_evaluated_lua_vm(config_path, |engine, eval| {
-            let mut new_evaluated = HashMap::new();
-            for (&uid, record) in &self.albums {
-                if let Ok(parsed) = serde_json::from_str::<Value>(&record.raw_json)
-                    && let Ok(res) =
-                        engine.evaluate_entity_logic(&record.root_type, &parsed)
-                {
-                    new_evaluated.insert(uid, res);
+        let (manifest, media_types) =
+            with_evaluated_lua_vm(config_path, |engine, eval| {
+                let mut new_evaluated = HashMap::new();
+                for (&uid, record) in &self.albums {
+                    if let Ok(parsed) = serde_json::from_str::<Value>(&record.raw_json)
+                        && let Ok(res) =
+                            engine.evaluate_entity_logic(&record.root_type, &parsed)
+                    {
+                        new_evaluated.insert(uid, res);
+                    }
                 }
-            }
-            self.evaluated_logic = new_evaluated;
-            Ok(eval.manifest)
-        })?;
+                self.evaluated_logic = new_evaluated;
+                Ok((eval.manifest, engine.media_schema()?))
+            })?;
         self.config_path = config_path.to_path_buf();
         self.manifest = manifest;
+        self.media_types = media_types;
         self.build_cache();
         Ok(())
     }
@@ -148,11 +158,14 @@ impl LogicEngine {
         self.evaluated_logic.clear();
     }
 
-    pub fn remove_by_lock(&mut self, lock_path: &Path) -> Option<String> {
+    pub fn remove_by_lock(&mut self, lock_path: &Path) -> Option<(String, String)> {
         let uid = self.lock_to_uid.remove(lock_path)?;
-        let id = self.albums.get(&uid)?.id.clone();
+        let target = {
+            let record = self.albums.get(&uid)?;
+            (record.root_type.clone(), record.id.clone())
+        };
         self.remove_uid(uid);
-        Some(id)
+        Some(target)
     }
 
     fn remove_uid(&mut self, uid: u32) {
@@ -218,10 +231,12 @@ impl LogicEngine {
         &mut self,
         tracks: &[Value],
         album_dir_canon: &Path,
+        root_type: &str,
         id: &str,
         media_roots: &[PathBuf],
-    ) -> Vec<String> {
+    ) -> (Vec<String>, Vec<String>) {
         let mut track_uris = Vec::new();
+        let mut track_ids = Vec::new();
 
         for (track_idx, track) in tracks.iter().enumerate() {
             let tags = track.get("tags");
@@ -286,6 +301,7 @@ impl LogicEngine {
 
             let track_item = TrackLookupItem {
                 path: mpd_uri.clone(),
+                root_type: root_type.to_string(),
                 track_index: track_idx,
                 track_no,
                 disc_no,
@@ -297,10 +313,17 @@ impl LogicEngine {
             };
 
             self.track_lookup.insert(mpd_uri.clone(), track_item);
+            track_ids.push(
+                track
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            );
             track_uris.push(mpd_uri);
         }
 
-        track_uris
+        (track_uris, track_ids)
     }
 
     fn ingest_images(
@@ -399,7 +422,6 @@ impl LogicEngine {
         let tags = album.get("tags").cloned().unwrap_or_else(|| json!({}));
         let objects = album.get("objects").cloned().unwrap_or_else(|| json!({}));
         let info = objects.get("info").cloned().unwrap_or_else(|| json!({}));
-        let images = album.get("images").cloned().unwrap_or_else(|| json!({}));
 
         let duration_ms = info
             .get("duration_milliseconds")
@@ -411,30 +433,21 @@ impl LogicEngine {
             .unwrap_or(0);
         let total_discs = info.get("total_discs").and_then(Value::as_u64).unwrap_or(1);
 
-        let track_uris = child_with_locations(album).map_or_else(Vec::new, |tracks| {
-            self.ingest_tracks_and_lookup(
-                tracks,
-                &album_dir_canon,
-                &entity_id,
-                media_roots,
-            )
-        });
+        let (track_uris, track_ids) =
+            child_with_locations(album).map_or_else(Default::default, |tracks| {
+                self.ingest_tracks_and_lookup(
+                    tracks,
+                    &album_dir_canon,
+                    root_type,
+                    &entity_id,
+                    media_roots,
+                )
+            });
 
         let cover_namespaces = self.ingest_images(album, &album_dir_canon);
 
         let title = first_tag(&tags, &["album", "title", "name"]);
         let artist = first_tag(&tags, &["albumartist", "author", "artist"]);
-
-        let entry = json!({
-            "id": entity_id,
-            "tags": tags,
-            "objects": objects,
-            "images": images,
-            "location": album.get("location")
-        });
-
-        let dict_str = serde_json::to_string(&entry)?;
-        let dict_raw = RawValue::from_string(dict_str)?;
 
         let record = AlbumRecord {
             root_type: root_type.to_string(),
@@ -444,11 +457,11 @@ impl LogicEngine {
             title,
             artist,
             raw_json: Arc::from(metadata_json),
-            dict_raw,
             total_discs,
             total_tracks,
             duration_ms,
             track_uris,
+            track_ids,
             cover_namespaces,
         };
 
@@ -462,8 +475,11 @@ impl LogicEngine {
     }
 
     #[must_use]
-    pub fn album_record(&self, id: &str) -> Option<&AlbumRecord> {
-        self.albums.values().find(|record| record.id == id)
+    pub fn entity_count(&self, root_type: &str) -> usize {
+        self.albums
+            .values()
+            .filter(|record| record.root_type == root_type)
+            .count()
     }
 
     #[must_use]
@@ -473,35 +489,11 @@ impl LogicEngine {
     }
 
     #[must_use]
-    pub fn album_path(&self, id: &str) -> Option<&Path> {
-        self.album_record(id).map(|r| r.path.as_path())
-    }
-
-    #[must_use]
-    pub fn album_id_by_target(&self, target: &Path) -> Option<&str> {
+    pub fn entity_by_target(&self, target: &Path) -> Option<(String, String)> {
         self.albums
             .values()
             .find(|record| record.path == target)
-            .map(|record| record.id.as_str())
-    }
-
-    #[must_use]
-    pub fn album_dict(&self, id: &str) -> Option<&RawValue> {
-        self.album_record(id).map(|r| &*r.dict_raw)
-    }
-
-    #[must_use]
-    pub fn dict_snapshot(&self) -> HashMap<String, Box<RawValue>> {
-        self.albums
-            .values()
-            .map(|a| (a.id.clone(), a.dict_raw.clone()))
-            .collect()
-    }
-
-    #[must_use]
-    pub fn album_json(&self, id: &str) -> Option<Arc<str>> {
-        let record = self.album_record(id)?;
-        Some(Arc::clone(&record.raw_json))
+            .map(|record| (record.root_type.clone(), record.id.clone()))
     }
 
     #[must_use]
@@ -510,32 +502,92 @@ impl LogicEngine {
         Some(Arc::clone(&record.raw_json))
     }
 
-    /// Playback URIs in compiled order, optionally limited to one disc.
+    /// Playback URIs in compiled order, optionally narrowed to child ids.
     #[must_use]
-    pub fn track_uris_for(&self, id: &str, disc: Option<u32>) -> Vec<String> {
-        let Some(record) = self.album_record(id) else {
+    pub fn track_uris_for(
+        &self,
+        root_type: &str,
+        id: &str,
+        track_ids: Option<&[String]>,
+    ) -> Vec<String> {
+        let Some(record) = self.entity(root_type, id) else {
             return Vec::new();
         };
 
-        record
-            .track_uris
+        let Some(wanted) = track_ids else {
+            return record.track_uris.clone();
+        };
+
+        wanted
             .iter()
-            .filter(|uri| {
-                disc.is_none_or(|wanted| {
-                    self.track_lookup
-                        .get(*uri)
-                        .is_some_and(|track| track.disc_no == wanted)
-                })
+            .filter_map(|wanted_id| {
+                record
+                    .track_ids
+                    .iter()
+                    .position(|track_id| track_id == wanted_id)
+                    .map(|index| record.track_uris[index].clone())
             })
-            .cloned()
             .collect()
     }
+
+    /// Resolve an MPD URI back to its owning root type and entity id.
+    #[must_use]
+    pub fn track_target(&self, uri: &str) -> Option<(String, String)> {
+        let clean = uri.trim_start_matches('/');
+        let track = self
+            .track_lookup
+            .get(clean)
+            .or_else(|| self.track_lookup.get(uri))?;
+
+        Some((track.root_type.clone(), track.album_id.clone()))
+    }
+
+    /// Filtered lock entries shaped as `{ "<type>": { ... } }`.
+    #[must_use]
+    pub fn view_entries(
+        &self,
+        root_type: &str,
+        ids: &[String],
+        view: Option<&[String]>,
+    ) -> Vec<Value> {
+        ids.iter()
+            .filter_map(|id| {
+                let lock: Value =
+                    serde_json::from_str(&self.entity(root_type, id)?.raw_json).ok()?;
+                let entity = lock.get(root_type)?;
+                let filtered = view.map_or_else(
+                    || entity.clone(),
+                    |sections| filter_sections(entity, sections),
+                );
+
+                Some(json!({ root_type: filtered }))
+            })
+            .collect()
+    }
+}
+
+fn filter_sections(entity: &Value, sections: &[String]) -> Value {
+    let mut out = Map::new();
+    if let Some(id) = entity.get("id") {
+        out.insert("id".to_string(), id.clone());
+    }
+
+    for section in sections {
+        if let Some(value) = entity.get(section) {
+            out.insert(section.clone(), value.clone());
+        }
+    }
+
+    Value::Object(out)
 }
 
 /// First child array whose elements carry their own provenance.
 fn child_with_locations(entity: &Value) -> Option<&Vec<Value>> {
     entity.as_object()?.iter().find_map(|(key, value)| {
-        if matches!(key.as_str(), "tags" | "objects" | "images" | "location") {
+        if matches!(
+            key.as_str(),
+            "tags" | "objects" | "images" | "location" | "files"
+        ) {
             return None;
         }
         let items = value.as_array()?;

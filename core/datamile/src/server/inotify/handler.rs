@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -6,7 +6,6 @@ use rayon::prelude::*;
 use serde_json::json;
 
 use crate::server::inotify::classifier::ChangeFlags;
-use crate::server::logic::SortOrder;
 use crate::server::state::{AppState, RootMeta};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,20 +43,20 @@ impl From<crate::server::api::system::EntityIngestPayload> for RecompiledAlbumIt
 
 #[derive(Default)]
 struct IngestOutcome {
-    removed_ids: Vec<String>,
-    updated_dict_entries: HashMap<String, Box<serde_json::value::RawValue>>,
+    removed: Vec<(String, String)>,
+    updated: Vec<(String, String)>,
     deps_modified: bool,
 }
 
-pub(super) fn filter_reingested_ids<V, S: std::hash::BuildHasher>(
-    removed_ids: &mut Vec<String>,
-    updated_entries: &HashMap<String, V, S>,
+pub(super) fn filter_reingested_ids(
+    removed: &mut Vec<(String, String)>,
+    updated: &[(String, String)],
 ) {
-    if removed_ids.is_empty() || updated_entries.is_empty() {
+    if removed.is_empty() || updated.is_empty() {
         return;
     }
 
-    removed_ids.retain(|id| !updated_entries.contains_key(id));
+    removed.retain(|target| !updated.contains(target));
 }
 
 pub(super) async fn process_events(flags: ChangeFlags, state: &Arc<AppState>) {
@@ -338,8 +337,8 @@ fn remove_vanished_locks(
     outcome: &mut IngestOutcome,
 ) {
     for lock in vanished_locks {
-        if let Some(dead_id) = logic.remove_by_lock(lock) {
-            outcome.removed_ids.push(dead_id);
+        if let Some(target) = logic.remove_by_lock(lock) {
+            outcome.removed.push(target);
         }
         deps_graph.remove_lock(lock);
         outcome.deps_modified = true;
@@ -373,6 +372,8 @@ fn ingest_recompiled_items(
             continue;
         }
 
+        let root_type = item.root_type.clone();
+
         deps_graph.update_lock(
             item.lock_path,
             RootMeta {
@@ -384,11 +385,7 @@ fn ingest_recompiled_items(
         );
         outcome.deps_modified = true;
 
-        if let Some(entry) = logic.album_dict(&item.id) {
-            outcome
-                .updated_dict_entries
-                .insert(item.id, entry.to_owned());
-        }
+        outcome.updated.push((root_type, item.id));
     }
 }
 
@@ -406,7 +403,7 @@ pub async fn ingest_and_broadcast_albums(
     let logic_arc = Arc::clone(&state.logic);
     let deps_graph_arc = Arc::clone(&state.deps_graph);
 
-    let (outcome, shelves) = tokio::task::spawn_blocking(move || {
+    let outcome = tokio::task::spawn_blocking(move || {
         let mut logic = logic_arc.blocking_write();
         let mut deps_graph = deps_graph_arc.blocking_write();
         let mut outcome = IngestOutcome::default();
@@ -421,7 +418,7 @@ pub async fn ingest_and_broadcast_albums(
             &mut outcome,
         );
 
-        filter_reingested_ids(&mut outcome.removed_ids, &outcome.updated_dict_entries);
+        filter_reingested_ids(&mut outcome.removed, &outcome.updated);
 
         let graph_pruned = deps_graph.prune();
         if outcome.deps_modified || graph_pruned {
@@ -434,34 +431,43 @@ pub async fn ingest_and_broadcast_albums(
 
         drop(deps_graph);
         logic.build_cache();
-
-        let mut s = HashMap::new();
-        for key in logic.manifest.shelves.keys() {
-            s.insert(
-                key.clone(),
-                logic.request_shelf_view(key, None, SortOrder::Forward),
-            );
-        }
         drop(logic);
 
-        (outcome, s)
+        outcome
     })
     .await
-    .unwrap_or_else(|_| (IngestOutcome::default(), HashMap::new()));
+    .unwrap_or_default();
 
     if origin == IngestOrigin::External {
-        for id in &outcome.removed_ids {
-            log::info!("Removed entity: {id}");
+        for (root_type, id) in &outcome.removed {
+            log::info!("Removed {root_type}: {id}");
         }
     }
 
-    if !outcome.updated_dict_entries.is_empty() || !outcome.removed_ids.is_empty() {
+    broadcast_media_updates(&outcome, state);
+}
+
+/// Thin invalidation: group changed ids per root type, never payloads.
+fn broadcast_media_updates(outcome: &IngestOutcome, state: &Arc<AppState>) {
+    if outcome.updated.is_empty() && outcome.removed.is_empty() {
+        return;
+    }
+
+    let mut groups: BTreeMap<&str, (Vec<&str>, Vec<&str>)> = BTreeMap::new();
+    for (root_type, id) in &outcome.updated {
+        groups.entry(root_type).or_default().0.push(id);
+    }
+    for (root_type, id) in &outcome.removed {
+        groups.entry(root_type).or_default().1.push(id);
+    }
+
+    for (root_type, (updated, removed)) in groups {
         let _ = state.tx.send(
             json!({
-                "type": "ALBUMS_UPDATED",
-                "updated": outcome.updated_dict_entries,
-                "removed": outcome.removed_ids,
-                "shelves": shelves
+                "event": "media.updated",
+                "type": root_type,
+                "updated": updated,
+                "removed": removed
             })
             .to_string(),
         );
@@ -488,17 +494,16 @@ async fn handle_config_change(state: &Arc<AppState>) {
                 config_guard.config_path.clone_from(&config_path);
             }
 
-            let manifest = {
+            {
                 let mut logic = state.logic.write().await;
                 if let Err(e) = logic.reload_manifest(&config_path) {
                     log::error!("Failed to reload logic manifest: {e}");
                 }
-                logic.manifest.clone()
-            };
+            }
 
             let _ = state.tx.send(
                 json!({
-                    "type": "CONFIG_UPDATE",
+                    "event": "config.updated",
                     "config": {
                         "covers": covers
                     }
@@ -506,13 +511,9 @@ async fn handle_config_change(state: &Arc<AppState>) {
                 .to_string(),
             );
 
-            let _ = state.tx.send(
-                json!({
-                    "type": "LOGIC_UPDATE",
-                    "manifest": manifest
-                })
-                .to_string(),
-            );
+            let _ = state
+                .tx
+                .send(json!({ "event": "logic.updated" }).to_string());
         }
         Err(e) => {
             log::error!("Failed to reload config: {e:?}");

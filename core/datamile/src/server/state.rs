@@ -204,8 +204,9 @@ pub struct PendingUpdateParams {
 
 pub struct AppState {
     pub logic: Arc<RwLock<LogicEngine>>,
-    pub ui_state: RwLock<serde_json::Value>,
     pub tx: broadcast::Sender<String>,
+    /// Latest MPD snapshot, replayed to fresh WebSocket clients.
+    pub playback: Arc<RwLock<Option<serde_json::Value>>>,
     pub config: RwLock<AppConfig>,
     pub mpd_engine: MpdEngine,
     /// Lock paths of roots the inotify classifier saw change.

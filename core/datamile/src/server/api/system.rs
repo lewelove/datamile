@@ -1,8 +1,8 @@
-use std::path::{Path as StdPath, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
@@ -102,33 +102,6 @@ pub async fn tracked_albums(State(state): State<Arc<AppState>>) -> Response {
     .into_response()
 }
 
-pub async fn update_state(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Response {
-    let content = {
-        let mut ui = state.ui_state.write().await;
-        if let Some(obj) = payload.as_object()
-            && let Some(ui_obj) = ui.as_object_mut()
-        {
-            for (k, v) in obj {
-                ui_obj.insert(k.clone(), v.clone());
-            }
-        }
-        serde_json::to_string_pretty(&*ui).ok()
-    };
-
-    if let Some(data) = content {
-        let state_file = {
-            let guard = state.config.read().await;
-            guard.state_root.join("state.json")
-        };
-        let _ = tokio::fs::write(state_file, data).await;
-    }
-
-    Json(json!({"status": "saved"})).into_response()
-}
-
 pub async fn notify_force_update() -> Response {
     log::info!("Force updating library...");
     Json(json!({"status": "ok"})).into_response()
@@ -141,26 +114,22 @@ pub async fn trigger_full_reset(State(state): State<Arc<AppState>>) -> Response 
     let media_roots = state.config.read().await.media_roots.clone();
     let logic_arc = Arc::clone(&state.logic);
 
-    let (album_count, manifest) = tokio::task::spawn_blocking(move || {
+    let album_count = tokio::task::spawn_blocking(move || {
         let scanner = crate::server::library::scanner::Library::new(media_roots);
         let mut logic = logic_arc.blocking_write();
         scanner.scan(&mut logic);
-        (logic.albums.len(), logic.manifest.clone())
+        logic.albums.len()
     })
     .await
-    .unwrap_or_else(|_| (0, libdatamile::lua::LogicManifest::default()));
+    .unwrap_or(0);
 
     let elapsed = start_time.elapsed().as_millis();
     log::info!("Updated {album_count} albums.");
     log::info!("Rebuilt Logic Engine in {elapsed}ms.");
 
-    let _ = state.tx.send(
-        json!({
-            "type": "LOGIC_UPDATE",
-            "manifest": manifest
-        })
-        .to_string(),
-    );
+    let _ = state
+        .tx
+        .send(json!({ "event": "logic.updated" }).to_string());
     Json(json!({"status": "ok"})).into_response()
 }
 
@@ -208,35 +177,6 @@ pub async fn ingest_reload_payloads(
     StatusCode::OK.into_response()
 }
 
-pub async fn force_update_album(
-    Path(id): Path<String>,
-    State(state): State<Arc<AppState>>,
-) -> Response {
-    let path_opt = {
-        let logic = state.logic.read().await;
-        logic.album_path(&id).map(StdPath::to_path_buf)
-    };
-
-    if let Some(path) = path_opt {
-        tokio::spawn(async move {
-            if let Err(e) = crate::update::run_server_update(
-                state,
-                Some(path),
-                ForceMode::Force,
-                None,
-                LogVerbosity::Silent,
-                None,
-            )
-            .await
-            {
-                log::error!("Failed to force update album: {e}");
-            }
-        });
-        return Json(json!({"status": "ok"})).into_response();
-    }
-    StatusCode::NOT_FOUND.into_response()
-}
-
 pub async fn run_query(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<serde_json::Value>,
@@ -246,21 +186,25 @@ pub async fn run_query(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim();
+
     let logic = state.logic.read().await;
-    let ids = logic.find_ids(q_str);
-    let mut results = Vec::new();
-    for id in ids {
-        if let Some(record) = logic.album_record(&id)
-            && let Ok(lock_json) =
-                serde_json::from_str::<serde_json::Value>(&record.raw_json)
-        {
-            results.push(json!({
+    let results: Vec<serde_json::Value> = logic
+        .find_targets(q_str)
+        .into_iter()
+        .filter_map(|(root_type, id)| {
+            let record = logic.entity(&root_type, &id)?;
+            let lock_json =
+                serde_json::from_str::<serde_json::Value>(&record.raw_json).ok()?;
+
+            Some(json!({
+                "type": root_type,
                 "id": id,
                 "path": record.path,
                 "lock_path": record.lock_path,
                 "lock": lock_json,
-            }));
-        }
-    }
+            }))
+        })
+        .collect();
+
     Json(results).into_response()
 }

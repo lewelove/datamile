@@ -226,10 +226,7 @@ fn test_album_select_finds_nested_albums() {
     let engine = LuaEngine::new().expect("engine");
     register_fixture(&engine);
     let mut sources = engine
-        .media_select(
-            "album",
-            &json!({ "path": root.to_string_lossy(), "recursive": true }),
-        )
+        .media_select("album", &json!(root.to_string_lossy()))
         .expect("select");
     sources.sort_by_key(|s| source_path(s).to_string());
 
@@ -259,20 +256,14 @@ fn test_album_select_specific_directory() {
     let engine = LuaEngine::new().expect("engine");
     register_fixture(&engine);
     let same = engine
-        .media_select(
-            "album",
-            &json!({ "path": album.to_string_lossy(), "recursive": false }),
-        )
+        .media_select("album", &json!(album.to_string_lossy()))
         .expect("select");
     assert_eq!(same.len(), 1);
 
     let plain = root.join("plain");
     fs::create_dir_all(&plain).expect("dir");
     let none = engine
-        .media_select(
-            "album",
-            &json!({ "path": plain.to_string_lossy(), "recursive": false }),
-        )
+        .media_select("album", &json!(plain.to_string_lossy()))
         .expect("select");
     assert!(none.is_empty());
 }

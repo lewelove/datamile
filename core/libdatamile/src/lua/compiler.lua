@@ -424,15 +424,10 @@ function _G.datamile.media(name, spec)
     return api
 end
 
-local function select_targets(name, dir_or_scope)
+local function select_targets(name, scope)
     local t = require_type(name)
     if type(t.select) ~= "function" then
         error(string.format("media type '%s' has no select function", name))
-    end
-
-    local scope = dir_or_scope
-    if t.is_root and type(scope) == "table" and type(scope.path) == "string" then
-        scope = scope.path
     end
 
     local label = string.format("media type '%s' select", name)
@@ -472,6 +467,17 @@ end
 
 function __DATAMILE_MEDIA_VALIDATE()
     return validate_registry()
+end
+
+function __DATAMILE_MEDIA_SCHEMA()
+    local out = {}
+    for name, t in pairs(REGISTRY.media) do
+        if t.is_root then
+            out[name] = { dir = t.dir, children = t.children or {} }
+        end
+    end
+
+    return out
 end
 
 function __DATAMILE_MEDIA_SELECT(name, scope)

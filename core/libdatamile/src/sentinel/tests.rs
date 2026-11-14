@@ -32,40 +32,6 @@ fn album_root() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
 }
 
-/// Manifest mtimes live under `/album/objects/manifests` and a divergence in
-/// seconds must be reported as `BrokenIntent`.
-#[test]
-fn test_manifest_mtime_compiled_under_objects() {
-    let tmp = album_root();
-    let root = tmp.path();
-    let manifest = root.join("album.toml");
-    fs::write(&manifest, "[album]\nalbum = \"A\"\n").expect("manifest");
-
-    write_lock(
-        root,
-        &json!({
-            "album": {
-                "id": "A",
-                "objects": {
-                    "manifests": {
-                        "album": {
-                            "file": {
-                                "path": "album.toml",
-                                "mtime": mtime_secs(&manifest) + 10,
-                            }
-                        }
-                    }
-                }
-            }
-        }),
-    );
-
-    assert_eq!(
-        verify_trust(&root.join("album.lock.json"), "album", Some("A")).expect("trust"),
-        TrustState::BrokenIntent
-    );
-}
-
 /// Track provenance lives under `location`; a matching record is trusted.
 #[test]
 fn test_tracks_integrity_reads_location() {
@@ -330,6 +296,38 @@ fn test_files_integrity() {
     assert_eq!(
         verify_trust(&lock, "album", Some("A")).expect("trust"),
         TrustState::BrokenIntent
+    );
+}
+
+/// `files` entries are validated by mtime/size, so physics must skip them.
+#[test]
+fn test_physics_skips_files_section() {
+    let tmp = album_root();
+    let root = tmp.path();
+    let cover = root.join("cover.jpg");
+    fs::write(&cover, b"cover").expect("cover");
+
+    write_lock(
+        root,
+        &json!({
+            "album": {
+                "id": "A",
+                "files": {
+                    "cover": {
+                        "path": "cover.jpg",
+                        "mtime": mtime_secs(&cover),
+                        "byte_size": byte_size(&cover),
+                        "location": { "kind": "file", "path": "missing.jpg" }
+                    }
+                },
+                "objects": { "info": { "virtual": true } }
+            }
+        }),
+    );
+
+    assert_eq!(
+        verify_trust(&root.join("album.lock.json"), "album", Some("A")).expect("trust"),
+        TrustState::Valid
     );
 }
 

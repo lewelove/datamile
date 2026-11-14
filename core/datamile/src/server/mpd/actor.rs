@@ -24,6 +24,7 @@ impl MpdEngine {
 pub fn start_actor(
     broadcast_tx: broadcast::Sender<String>,
     logic: Arc<RwLock<LogicEngine>>,
+    playback: Arc<RwLock<Option<serde_json::Value>>>,
     _app_config: Arc<AppConfig>,
 ) -> MpdEngine {
     let (tx, mut rx) = mpsc::channel::<MpdCommand>(32);
@@ -43,7 +44,9 @@ pub fn start_actor(
                         let _ = client
                             .command(mpd_client::commands::SetBinaryLimit(131_072))
                             .await;
-                        let _ = broadcast_status(&client, &broadcast_tx, &logic).await;
+                        let _ =
+                            broadcast_status(&client, &broadcast_tx, &logic, &playback)
+                                .await;
 
                         loop {
                             tokio::select! {
@@ -56,7 +59,13 @@ pub fn start_actor(
                                                 Subsystem::Queue |
                                                 Subsystem::Options
                                             ) {
-                                                let _ = broadcast_status(&client, &broadcast_tx, &logic).await;
+                                                let _ = broadcast_status(
+                                                    &client,
+                                                    &broadcast_tx,
+                                                    &logic,
+                                                    &playback,
+                                                )
+                                                .await;
                                             }
                                         }
                                         ConnectionEvent::ConnectionClosed(e) => {
@@ -66,14 +75,18 @@ pub fn start_actor(
                                     }
                                 }
                                 Some(cmd) = rx.recv() => {
-                                    if matches!(cmd, MpdCommand::Refresh) {
-                                        let _ = broadcast_status(&client, &broadcast_tx, &logic).await;
-                                    } else {
-                                        if let Err(e) = handle_command(&client, cmd).await {
-                                            log::error!("MPD Execution Error: {e}");
-                                        }
-                                        let _ = broadcast_status(&client, &broadcast_tx, &logic).await;
+                                    if !matches!(cmd, MpdCommand::Refresh)
+                                        && let Err(e) = handle_command(&client, cmd).await
+                                    {
+                                        log::error!("MPD Execution Error: {e}");
                                     }
+                                    let _ = broadcast_status(
+                                        &client,
+                                        &broadcast_tx,
+                                        &logic,
+                                        &playback,
+                                    )
+                                    .await;
                                 }
                             }
                         }

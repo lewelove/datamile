@@ -950,6 +950,11 @@ pub fn set_media_directory_override(path: PathBuf) {
 }
 
 #[must_use]
+pub fn media_directory_override() -> Option<PathBuf> {
+    MEDIA_DIRECTORY_OVERRIDE.get().cloned()
+}
+
+#[must_use]
 pub fn resolve_config_path() -> Option<PathBuf> {
     if let Some(override_path) = CONFIG_PATH_OVERRIDE.get()
         && override_path.exists()

@@ -1,6 +1,4 @@
 import { collection } from "./collection.svelte.ts";
-import { sync } from "./sync.svelte.ts";
-import type { WsMessage } from "../types.ts";
 
 class Prewarmer {
   pinnedTextures: Map<string, ImageBitmap> = $state(new Map());
@@ -10,19 +8,6 @@ class Prewarmer {
   private pendingUpdates = false;
   private lastFlush = Date.now();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
-
-  constructor() {
-    sync.addEventListener("message", (e: Event) => {
-      const json = (e as CustomEvent<WsMessage>).detail;
-      if (
-        json.event === "media.updated" ||
-        json.event === "logic.updated" ||
-        json.event === "config.updated"
-      ) {
-        this.refresh();
-      }
-    });
-  }
 
   /// Dict changed, so rebuild the valid set before warming new covers.
   refresh() {

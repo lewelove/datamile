@@ -1,3 +1,4 @@
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -5,7 +6,8 @@ use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
+use tokio::sync::Mutex;
 
 use crate::server::state::AppState;
 
@@ -20,8 +22,9 @@ fn namespace_file(state_root: &Path, namespace: &str) -> Option<PathBuf> {
     valid.then(|| state_root.join(STATE_DIR).join(format!("{namespace}.json")))
 }
 
-fn read_namespace(path: &Path) -> Value {
-    std::fs::read_to_string(path)
+async fn read_namespace(path: &Path) -> Value {
+    tokio::fs::read_to_string(path)
+        .await
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_else(|| json!({}))
@@ -46,6 +49,24 @@ fn merge(current: &mut Value, patch: Value) {
     }
 }
 
+/// Read-merge-write under one lock so overlapping patches cannot drop keys.
+async fn persist_patch(lock: &Mutex<()>, path: &Path, payload: Value) -> io::Result<()> {
+    let _guard = lock.lock().await;
+
+    let mut current = read_namespace(path).await;
+    merge(&mut current, payload);
+
+    let saved = serde_json::to_string_pretty(&current)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let owned = path.to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        libdatamile::utils::write_atomic_cache_file(&owned, &saved)
+    })
+    .await
+    .map_err(|e| io::Error::other(e.to_string()))?
+}
+
 pub async fn read_state(
     AxumPath(namespace): AxumPath<String>,
     State(state): State<Arc<AppState>>,
@@ -56,7 +77,7 @@ pub async fn read_state(
         return bad_namespace();
     };
 
-    Json(read_namespace(&path)).into_response()
+    Json(read_namespace(&path).await).into_response()
 }
 
 pub async fn save_state(
@@ -78,20 +99,8 @@ pub async fn save_state(
         return bad_namespace();
     };
 
-    let mut current = read_namespace(&path);
-    merge(&mut current, payload);
-
-    let Ok(saved) = serde_json::to_string_pretty(&current) else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-
-    if let Some(parent) = path.parent()
-        && std::fs::create_dir_all(parent).is_err()
-    {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-
-    if libdatamile::utils::write_atomic_cache_file(&path, &saved).is_err() {
+    if let Err(e) = persist_patch(&state.state_lock, &path, payload).await {
+        log::error!("Failed to save state namespace '{namespace}': {e}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 

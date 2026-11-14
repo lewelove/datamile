@@ -216,6 +216,8 @@ pub struct AppState {
     pub cover_tasks: Arc<CoverTaskRegistry>,
     pub update_lock: Arc<Mutex<UpdateState>>,
     pub deps_graph: Arc<RwLock<DependencyGraph>>,
+    /// Serializes read-merge-write cycles for `/api/state/{namespace}`.
+    pub state_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone)]

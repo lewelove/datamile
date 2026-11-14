@@ -100,6 +100,7 @@ pub async fn run(port: u16) -> Result<()> {
         cover_tasks: Arc::new(state::CoverTaskRegistry::default()),
         update_lock: Arc::new(std::sync::Mutex::new(state::UpdateState::default())),
         deps_graph: Arc::new(RwLock::new(initial_deps_graph)),
+        state_lock: tokio::sync::Mutex::new(()),
     });
 
     inotify::start(Arc::clone(&app_state));

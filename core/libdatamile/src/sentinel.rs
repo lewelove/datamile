@@ -67,7 +67,9 @@ pub fn verify_trust(
         return Ok(TrustState::Valid);
     }
 
-    if check_physics(entity, entity_root) == TrustState::BrokenPhysics {
+    if check_physics(entity, entity_root, LocationCheck::Required)
+        == TrustState::BrokenPhysics
+    {
         return Ok(TrustState::BrokenPhysics);
     }
 
@@ -214,14 +216,28 @@ fn check_image_integrity(entity_root: &Path, entity: &serde_json::Value) -> Trus
     TrustState::Valid
 }
 
-/// Walk every compiled entity: a parent location plus any child arrays whose
-/// elements carry their own provenance.
-fn check_physics(entity: &serde_json::Value, entity_root: &Path) -> TrustState {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LocationCheck {
+    Required,
+    Optional,
+}
+
+/// Walk every compiled entity. Present locations must match disk; child
+/// entities may be virtual, so an omitted location is not itself an error.
+fn check_physics(
+    entity: &serde_json::Value,
+    entity_root: &Path,
+    location_check: LocationCheck,
+) -> TrustState {
     match entity {
         serde_json::Value::Object(map) => {
-            if let Some(location) = map.get("location")
+            let location = map.get("location");
+            if let Some(location) = location
                 && !location_matches(location, entity_root)
             {
+                return TrustState::BrokenPhysics;
+            }
+            if location_check == LocationCheck::Required && location.is_none() {
                 return TrustState::BrokenPhysics;
             }
 
@@ -229,7 +245,9 @@ fn check_physics(entity: &serde_json::Value, entity_root: &Path) -> TrustState {
                 if matches!(key.as_str(), "location" | "images" | "tags" | "objects") {
                     continue;
                 }
-                if check_physics(value, entity_root) == TrustState::BrokenPhysics {
+                if check_physics(value, entity_root, LocationCheck::Optional)
+                    == TrustState::BrokenPhysics
+                {
                     return TrustState::BrokenPhysics;
                 }
             }
@@ -237,12 +255,8 @@ fn check_physics(entity: &serde_json::Value, entity_root: &Path) -> TrustState {
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                // Leaf entities are physical; containers delegate to their children.
-                let missing_location = item.get("id").is_some()
-                    && item.get("location").is_none()
-                    && !has_child_entities(item);
-                if missing_location
-                    || check_physics(item, entity_root) == TrustState::BrokenPhysics
+                if check_physics(item, entity_root, LocationCheck::Optional)
+                    == TrustState::BrokenPhysics
                 {
                     return TrustState::BrokenPhysics;
                 }
@@ -251,17 +265,6 @@ fn check_physics(entity: &serde_json::Value, entity_root: &Path) -> TrustState {
         }
         _ => TrustState::Valid,
     }
-}
-
-fn has_child_entities(item: &serde_json::Value) -> bool {
-    item.as_object().is_some_and(|map| {
-        map.iter().any(|(key, value)| {
-            !matches!(key.as_str(), "location" | "images" | "tags" | "objects")
-                && value
-                    .as_array()
-                    .is_some_and(|items| items.iter().any(serde_json::Value::is_object))
-        })
-    })
 }
 
 fn location_matches(location: &serde_json::Value, entity_root: &Path) -> bool {

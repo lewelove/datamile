@@ -79,6 +79,11 @@ fn test_tracks_integrity_reads_location() {
         &json!({
             "album": {
                 "id": "A",
+                "location": {
+                    "kind": "dir",
+                    "path": ".",
+                    "mtime": mtime_secs(root),
+                },
                 "tracks": [
                     {
                         "id": "A - 1",
@@ -134,9 +139,9 @@ fn test_tracks_integrity_detects_size_change() {
     );
 }
 
-/// Tracks without compiled provenance cannot be trusted.
+/// Virtual children have no location and must not be treated as broken.
 #[test]
-fn test_tracks_integrity_requires_location() {
+fn test_virtual_child_without_location() {
     let tmp = album_root();
     let root = tmp.path();
 
@@ -145,6 +150,11 @@ fn test_tracks_integrity_requires_location() {
         &json!({
             "album": {
                 "id": "A",
+                "location": {
+                    "kind": "dir",
+                    "path": ".",
+                    "mtime": mtime_secs(root),
+                },
                 "tracks": [{ "id": "A - 1" }]
             }
         }),
@@ -152,7 +162,7 @@ fn test_tracks_integrity_requires_location() {
 
     assert_eq!(
         verify_trust(&root.join("album.lock.json"), "album", Some("A")).expect("trust"),
-        TrustState::BrokenPhysics
+        TrustState::Valid
     );
 }
 
@@ -247,6 +257,11 @@ fn test_nested_children_physics() {
         &json!({
             "show": {
                 "id": "Show",
+                "location": {
+                    "kind": "dir",
+                    "path": ".",
+                    "mtime": mtime_secs(root),
+                },
                 "seasons": [
                     {
                         "id": "Season 1",

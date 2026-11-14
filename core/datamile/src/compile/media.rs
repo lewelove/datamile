@@ -652,19 +652,22 @@ fn process_file_entry(
         ctx.record_dir(parent);
     }
 
-    let meta = std::fs::metadata(&canon).ok()?;
-    let mtime = meta
-        .modified()
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    // Lua already statted the file for its hooks; reuse those values so the
+    // file is not statted a second time here.
+    let mtime = value
+        .get("mtime")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let byte_size = value
+        .get("byte_size")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
     let rel = relpath_string(&canon, root_dir);
 
     Some(json!({
         "path": rel,
         "mtime": mtime,
-        "byte_size": meta.len()
+        "byte_size": byte_size
     }))
 }
 

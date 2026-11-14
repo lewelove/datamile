@@ -4,7 +4,9 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use libdatamile::lua::LogicManifest;
+use libdatamile::lua::{
+    CabinetDef, FilterDef, GrouperDef, LibraryDef, LogicManifest, OrderDef, ShelfDef,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -94,7 +96,7 @@ fn reverse_order(raw: Option<&str>) -> SortOrder {
 
 fn scoped_map<T>(map: &indexmap::IndexMap<String, T>, root_type: Option<&str>) -> Value
 where
-    T: serde::Serialize,
+    T: serde::Serialize + ScopedDef,
 {
     let mut out = Map::new();
 
@@ -110,21 +112,35 @@ where
     Value::Object(out)
 }
 
+trait ScopedDef {
+    fn declared_type(&self) -> Option<&str>;
+}
+
+macro_rules! impl_scoped_def {
+    ($($def:ty),+ $(,)?) => {
+        $(
+            impl ScopedDef for $def {
+                fn declared_type(&self) -> Option<&str> {
+                    self.r#type.as_deref()
+                }
+            }
+        )+
+    };
+}
+
+impl_scoped_def!(
+    FilterDef, GrouperDef, OrderDef, LibraryDef, ShelfDef, CabinetDef
+);
+
 fn defined_for<T>(def: &T, root_type: Option<&str>) -> bool
 where
-    T: serde::Serialize,
+    T: ScopedDef,
 {
     let Some(root_type) = root_type else {
         return true;
     };
 
-    let Ok(Value::Object(object)) = serde_json::to_value(def) else {
-        return true;
-    };
-
-    object
-        .get("type")
-        .and_then(Value::as_str)
+    def.declared_type()
         .is_none_or(|declared| declared == root_type)
 }
 
@@ -134,7 +150,7 @@ fn ordered_keys<T>(
     root_type: Option<&str>,
 ) -> Vec<String>
 where
-    T: serde::Serialize,
+    T: serde::Serialize + ScopedDef,
 {
     let declared: Vec<String> = if order.is_empty() {
         map.keys().cloned().collect()

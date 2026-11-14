@@ -1,4 +1,4 @@
-import { SvelteMap } from "svelte/reactivity";
+import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import { sync } from "./sync.svelte.ts";
 import { player, updatePlayerState } from "../modules/player.svelte.ts";
 import { config as globalConfig, updateConfig } from "../config.svelte.ts";
@@ -63,6 +63,7 @@ class CollectionStore {
   types: Record<string, { dir: string; count: number; children: Record<string, string> }> =
     $state({});
   actions: Record<string, { label?: string; description?: string }> = $state({});
+  private pendingEntries = new SvelteSet<string>();
 
   constructor() {
     sync.addEventListener("message", (e: Event) =>
@@ -104,8 +105,20 @@ class CollectionStore {
       }
     } else if (json.event === "playback.updated") {
       updatePlayerState(json);
-      if (json.album_id && !this.dict[json.album_id]) {
-        this.ensureAlbumEntry(json.album_id);
+      const albumIds: string[] = [];
+      const addAlbumId = (id: string | null | undefined) => {
+        if (id && !albumIds.includes(id)) {
+          albumIds.push(id);
+        }
+      };
+      addAlbumId(json.album_id);
+      for (const item of json.queue ?? []) {
+        addAlbumId(item.album_id);
+      }
+      for (const id of albumIds) {
+        if (!this.dict[id]) {
+          this.ensureAlbumEntry(id);
+        }
       }
     }
   }
@@ -155,12 +168,24 @@ class CollectionStore {
   }
 
   async ensureAlbumEntry(id: string): Promise<AlbumDictEntry | null> {
-    const full = await this.ensureFullAlbum(id);
-    if (!full) {
+    if (this.dict[id]) {
+      return this.dict[id];
+    }
+    if (this.pendingEntries.has(id)) {
       return null;
     }
-    this.dict[id] = full.album;
-    return full.album;
+
+    this.pendingEntries.add(id);
+    try {
+      const full = await this.ensureFullAlbum(id);
+      if (!full) {
+        return null;
+      }
+      this.dict[id] = full.album;
+      return full.album;
+    } finally {
+      this.pendingEntries.delete(id);
+    }
   }
 
   async ensureFullAlbum(id: string): Promise<FullAlbum | null> {

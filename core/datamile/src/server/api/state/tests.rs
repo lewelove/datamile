@@ -27,8 +27,25 @@ fn namespace_rejects_unsafe_names() {
 #[tokio::test]
 async fn missing_namespace_reads_empty() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let value = read_namespace(&tmp.path().join("missing.json")).await;
+    let value = read_namespace(&tmp.path().join("missing.json"))
+        .await
+        .expect("missing file is an empty namespace");
     assert_eq!(value, json!({}));
+}
+
+/// Corrupt state must error, never read as `{}` and get overwritten.
+#[tokio::test]
+async fn corrupt_namespace_is_an_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("web-app.json");
+    std::fs::write(&path, "{not json").expect("write");
+
+    assert!(read_namespace(&path).await.is_err());
+    assert!(
+        persist_patch(&Mutex::new(()), &path, json!({ "a": true }))
+            .await
+            .is_err()
+    );
 }
 
 /// Overlapping patches must not overwrite each other's keys.
@@ -44,7 +61,7 @@ async fn concurrent_patches_keep_all_keys() {
     first.expect("first patch");
     second.expect("second patch");
 
-    let value = read_namespace(&path).await;
+    let value = read_namespace(&path).await.expect("read");
     assert_eq!(value["a"], json!(true));
     assert_eq!(value["b"], json!(true));
 }

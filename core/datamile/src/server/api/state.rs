@@ -22,12 +22,16 @@ fn namespace_file(state_root: &Path, namespace: &str) -> Option<PathBuf> {
     valid.then(|| state_root.join(STATE_DIR).join(format!("{namespace}.json")))
 }
 
-async fn read_namespace(path: &Path) -> Value {
-    tokio::fs::read_to_string(path)
-        .await
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_else(|| json!({}))
+/// Missing file is an empty namespace; corrupt or unreadable state must surface
+/// as an error so a later patch cannot overwrite it with `{}`.
+async fn read_namespace(path: &Path) -> io::Result<Value> {
+    match tokio::fs::read_to_string(path).await {
+        Ok(raw) => {
+            serde_json::from_str(&raw).map_err(|e| io::Error::other(e.to_string()))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(json!({})),
+        Err(e) => Err(e),
+    }
 }
 
 /// Merge object keys from `patch` into `current`; non-objects replace.
@@ -53,7 +57,7 @@ fn merge(current: &mut Value, patch: Value) {
 async fn persist_patch(lock: &Mutex<()>, path: &Path, payload: Value) -> io::Result<()> {
     let _guard = lock.lock().await;
 
-    let mut current = read_namespace(path).await;
+    let mut current = read_namespace(path).await?;
     merge(&mut current, payload);
 
     let saved = serde_json::to_string_pretty(&current)
@@ -77,7 +81,13 @@ pub async fn read_state(
         return bad_namespace();
     };
 
-    Json(read_namespace(&path).await).into_response()
+    match read_namespace(&path).await {
+        Ok(value) => Json(value).into_response(),
+        Err(e) => {
+            log::error!("Failed to read state namespace '{namespace}': {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 pub async fn save_state(
@@ -108,7 +118,7 @@ pub async fn save_state(
         .tx
         .send(json!({ "event": "state.updated", "namespace": namespace }).to_string());
 
-    Json(json!({ "status": "ok" })).into_response()
+    StatusCode::NO_CONTENT.into_response()
 }
 
 fn bad_namespace() -> Response {

@@ -46,11 +46,16 @@ async fn playing_target(state: &Arc<AppState>) -> Option<(String, String)> {
         return Some(target);
     }
 
+    let root_type = snapshot
+        .get("root_type")
+        .and_then(serde_json::Value::as_str)?;
     let album_id = snapshot
         .get("album_id")
         .and_then(serde_json::Value::as_str)?;
 
-    logic.targets_for_id(album_id).into_iter().next()
+    logic
+        .entity(root_type, album_id)
+        .map(|_| (root_type.to_string(), album_id.to_string()))
 }
 
 fn targets_for_ids(
@@ -155,8 +160,7 @@ pub async fn execute_action(
     let payload = json!({
         "entities": entities,
         "options": body.options.unwrap_or_default(),
-        "isatty": false,
-        "config_path": config_path.to_string_lossy()
+        "isatty": false
     });
 
     let res = tokio::task::spawn_blocking(move || {
@@ -167,7 +171,7 @@ pub async fn execute_action(
     .await;
 
     match res {
-        Ok(Ok(())) => Json(json!({"status": "ok"})).into_response(),
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(e)) => {
             log::error!("Action '{name}' execution failed: {e}");
             (

@@ -78,13 +78,14 @@ pub async fn broadcast_status(
         },
     );
 
-    let (queue_json, album_id, track_index) = {
+    let (queue_json, root_type, album_id, track_index) = {
         let l = logic.read().await;
         let clean_file_path = file_path.trim_start_matches('/');
         let current_track = l
             .track_lookup
             .get(clean_file_path)
             .or_else(|| l.track_lookup.get(&file_path));
+        let root_type = current_track.map(|t| t.root_type.clone());
         let album_id = current_track.map(|t| t.album_id.clone());
         let track_index = current_track.map(|t| t.track_index as u64);
         let track_metas: Vec<Option<TrackLookupItem>> = queue
@@ -106,7 +107,7 @@ pub async fn broadcast_status(
             .map(|((idx, s), meta)| format_queue_item(idx, s, meta))
             .collect();
 
-        (q_json, album_id, track_index)
+        (q_json, root_type, album_id, track_index)
     };
 
     let state_str = match status.state {
@@ -119,6 +120,7 @@ pub async fn broadcast_status(
         "event": "playback.updated",
         "state": state_str,
         "file": file_path,
+        "root_type": root_type,
         "album_id": album_id,
         "track_index": track_index,
         "elapsed": status.elapsed.map_or(0.0, |t| t.as_secs_f64()),

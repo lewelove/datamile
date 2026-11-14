@@ -62,7 +62,11 @@ pub async fn play(
 ) -> Response {
     let tracks = resolve_tracks(&body, &state).await;
     if tracks.is_empty() {
-        return Json(json!({ "status": "empty" })).into_response();
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "No tracks matched the playback target" })),
+        )
+            .into_response();
     }
 
     if !offset_within(body.offset, tracks.len()) {
@@ -81,7 +85,7 @@ pub async fn play(
         })
         .await;
 
-    Json(json!({ "status": "ok" })).into_response()
+    StatusCode::NO_CONTENT.into_response()
 }
 
 pub async fn queue(
@@ -91,7 +95,7 @@ pub async fn queue(
     let tracks = resolve_tracks(&body, &state).await;
     state.mpd_engine.send(MpdCommand::Queue { tracks }).await;
 
-    Json(json!({ "status": "ok" })).into_response()
+    StatusCode::NO_CONTENT.into_response()
 }
 
 pub async fn jump(
@@ -102,32 +106,32 @@ pub async fn jump(
         .mpd_engine
         .send(MpdCommand::Jump { index: body.index })
         .await;
-    Json(json!({ "status": "ok" })).into_response()
+    StatusCode::NO_CONTENT.into_response()
 }
 
 pub async fn next(State(state): State<Arc<AppState>>) -> Response {
     state.mpd_engine.send(MpdCommand::Next).await;
-    Json(json!({ "status": "ok" })).into_response()
+    StatusCode::NO_CONTENT.into_response()
 }
 
 pub async fn prev(State(state): State<Arc<AppState>>) -> Response {
     state.mpd_engine.send(MpdCommand::Prev).await;
-    Json(json!({ "status": "ok" })).into_response()
+    StatusCode::NO_CONTENT.into_response()
 }
 
 pub async fn stop(State(state): State<Arc<AppState>>) -> Response {
     state.mpd_engine.send(MpdCommand::Stop).await;
-    Json(json!({ "status": "ok" })).into_response()
+    StatusCode::NO_CONTENT.into_response()
 }
 
 pub async fn clear(State(state): State<Arc<AppState>>) -> Response {
     state.mpd_engine.send(MpdCommand::Clear).await;
-    Json(json!({ "status": "ok" })).into_response()
+    StatusCode::NO_CONTENT.into_response()
 }
 
 pub async fn toggle_pause(State(state): State<Arc<AppState>>) -> Response {
     state.mpd_engine.send(MpdCommand::TogglePause).await;
-    Json(json!({ "status": "ok" })).into_response()
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[cfg(test)]

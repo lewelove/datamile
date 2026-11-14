@@ -213,7 +213,8 @@ pub async fn execute(
     let combined_json = serde_json::json!({
         "entities": entities_payload,
         "options": trailing_args.join(" "),
-        "isatty": is_atty
+        "isatty": is_atty,
+        "config_path": config.path.to_string_lossy()
     });
 
     if name == "intermediary" {

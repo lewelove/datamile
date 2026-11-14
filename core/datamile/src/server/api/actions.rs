@@ -144,7 +144,8 @@ pub async fn execute_action(
     let payload = json!({
         "entities": entities,
         "options": body.options.unwrap_or_default(),
-        "isatty": false
+        "isatty": false,
+        "config_path": config_path.to_string_lossy()
     });
 
     let res = tokio::task::spawn_blocking(move || {

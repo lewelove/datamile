@@ -420,17 +420,8 @@ impl LuaEngine {
 
         let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
 
-        if let Some(media_directory) = MEDIA_DIRECTORY_OVERRIDE.get()
-            && let Ok(registry) = self.lua.globals().get::<Table>("REGISTRY")
-            && let Ok(config) = registry.get::<Table>("config")
-            && let Ok(storage) = config.get::<Table>("storage")
-        {
-            storage
-                .set(
-                    "media_directory",
-                    media_directory.to_string_lossy().as_ref(),
-                )
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if let Some(media_directory) = MEDIA_DIRECTORY_OVERRIDE.get() {
+            self.apply_media_override(media_directory)?;
         }
 
         self.resolve_media_directory(config_dir)?;
@@ -484,6 +475,38 @@ impl LuaEngine {
             media_roots,
             manifest,
         })
+    }
+
+    /// Point both the legacy storage field and every root declaration at the
+    /// CLI override so Lua path math matches Rust discovery.
+    fn apply_media_override(&self, media_directory: &Path) -> Result<()> {
+        let registry: Table = self
+            .lua
+            .globals()
+            .get("REGISTRY")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let override_path = media_directory.to_string_lossy();
+
+        if let Ok(config) = registry.get::<Table>("config")
+            && let Ok(storage) = config.get::<Table>("storage")
+        {
+            storage
+                .set("media_directory", override_path.as_ref())
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+
+        let media: Table = registry.get("media").map_err(|e| anyhow::anyhow!("{e}"))?;
+        for entry in media.pairs::<String, Table>() {
+            let (_, media_type) = entry.map_err(|e| anyhow::anyhow!("{e}"))?;
+            let is_root: bool = media_type.get("is_root").unwrap_or(false);
+            if is_root {
+                media_type
+                    .set("dir", override_path.as_ref())
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Resolve `storage.media_directory` inside the Lua registry so Lua-side

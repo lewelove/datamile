@@ -145,7 +145,7 @@ main {
   position-anchor: auto;
   position-area: bottom span-right;
   width: anchor-size(width);
-  margin: 6px 0 0 0;
+  margin: 6px 0 0;
   inset: auto;
   border: none;
   border-radius: 12px;
@@ -234,9 +234,11 @@ main {
 
 .v-btn-icon:hover {
   background-color: var(--bg-button-hover);
+  opacity: 1;
 }
 .v-btn-icon.active {
   background-color: var(--bg-button-active);
+  opacity: 1;
 }
 
 .v-btn-icon img,
@@ -267,14 +269,6 @@ main {
 
 .v-sidebar-button .icon {
   font-size: 18px;
-}
-
-.v-btn-icon:hover {
-  opacity: 1;
-}
-
-.v-btn-icon.active {
-  opacity: 1;
 }
 
 .v-btn-icon:hover img,
@@ -404,6 +398,36 @@ main {
   box-sizing: border-box;
 }
 
+.v-sidebar-item {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  background-color: var(--bg-item-inactive);
+  border: none;
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-family: var(--font-stack);
+  text-align: left;
+  border-radius: 12px;
+  box-sizing: border-box;
+  user-select: none;
+  transition: none;
+}
+
+.v-sidebar-item:hover {
+  background-color: var(--bg-item-hover);
+  color: var(--text-main);
+}
+.v-sidebar-item.active {
+  background-color: var(--bg-item-active);
+  color: var(--text-main);
+}
+
 .v-tree-row .v-sidebar-item {
   flex: 1;
   min-width: 0;
@@ -458,36 +482,6 @@ main {
   position: relative;
   z-index: 1;
   font-size: 18px;
-}
-
-.v-sidebar-item {
-  position: relative;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  width: 100%;
-  background-color: var(--bg-item-inactive);
-  border: none;
-  padding: 6px 10px;
-  margin-bottom: 4px;
-  cursor: pointer;
-  color: var(--text-muted);
-  font-size: 14px;
-  font-family: var(--font-stack);
-  text-align: left;
-  border-radius: 12px;
-  box-sizing: border-box;
-  user-select: none;
-  transition: none;
-}
-
-.v-sidebar-item:hover {
-  background-color: var(--bg-item-hover);
-  color: var(--text-main);
-}
-.v-sidebar-item.active {
-  background-color: var(--bg-item-active);
-  color: var(--text-main);
 }
 
 .v-sidebar-item .label {

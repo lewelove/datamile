@@ -72,7 +72,7 @@ let {
   justify-content: space-between;
   align-items: center;
   width: 100%;
-  margin: 6px 0 10px 0
+  margin: 6px 0 10px;
 }
 
 .header-title {

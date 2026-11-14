@@ -145,7 +145,7 @@ function handleFocusIn(e: FocusEvent) {
 }
 
 onMount(() => {
-  initApp();
+  initApp().catch((err) => console.error(err));
   window.addEventListener("keydown", handleKeydown, { capture: true });
   window.addEventListener("focusin", handleFocusIn, { capture: true });
   return () => {

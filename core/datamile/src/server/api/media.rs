@@ -4,9 +4,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use libdatamile::lua::{
-    CabinetDef, FilterDef, GrouperDef, LibraryDef, LogicManifest, OrderDef, ShelfDef,
-};
+use libdatamile::lua::LogicManifest;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -94,14 +92,29 @@ fn reverse_order(raw: Option<&str>) -> SortOrder {
     }
 }
 
-fn scoped_map<T>(map: &indexmap::IndexMap<String, T>, root_type: Option<&str>) -> Value
-where
-    T: serde::Serialize + ScopedDef,
-{
+/// A definition is scoped when its declared `type` matches the requested root
+/// type; absent `type` means valid for every root type.
+fn defined_for<T>(
+    def: &T,
+    root_type: Option<&str>,
+    type_of: fn(&T) -> Option<&str>,
+) -> bool {
+    let Some(root_type) = root_type else {
+        return true;
+    };
+
+    type_of(def).is_none_or(|declared| declared == root_type)
+}
+
+fn scoped_map<T: serde::Serialize>(
+    map: &indexmap::IndexMap<String, T>,
+    root_type: Option<&str>,
+    type_of: fn(&T) -> Option<&str>,
+) -> Value {
     let mut out = Map::new();
 
     for (key, def) in map {
-        if !defined_for(def, root_type) {
+        if !defined_for(def, root_type, type_of) {
             continue;
         }
         if let Ok(value) = serde_json::to_value(def) {
@@ -112,46 +125,12 @@ where
     Value::Object(out)
 }
 
-trait ScopedDef {
-    fn declared_type(&self) -> Option<&str>;
-}
-
-macro_rules! impl_scoped_def {
-    ($($def:ty),+ $(,)?) => {
-        $(
-            impl ScopedDef for $def {
-                fn declared_type(&self) -> Option<&str> {
-                    self.r#type.as_deref()
-                }
-            }
-        )+
-    };
-}
-
-impl_scoped_def!(
-    FilterDef, GrouperDef, OrderDef, LibraryDef, ShelfDef, CabinetDef
-);
-
-fn defined_for<T>(def: &T, root_type: Option<&str>) -> bool
-where
-    T: ScopedDef,
-{
-    let Some(root_type) = root_type else {
-        return true;
-    };
-
-    def.declared_type()
-        .is_none_or(|declared| declared == root_type)
-}
-
 fn ordered_keys<T>(
     map: &indexmap::IndexMap<String, T>,
     order: &[String],
     root_type: Option<&str>,
-) -> Vec<String>
-where
-    T: serde::Serialize + ScopedDef,
-{
+    type_of: fn(&T) -> Option<&str>,
+) -> Vec<String> {
     let declared: Vec<String> = if order.is_empty() {
         map.keys().cloned().collect()
     } else {
@@ -160,24 +139,71 @@ where
 
     declared
         .into_iter()
-        .filter(|key| map.get(key).is_some_and(|def| defined_for(def, root_type)))
+        .filter(|key| {
+            map.get(key)
+                .is_some_and(|def| defined_for(def, root_type, type_of))
+        })
         .collect()
 }
 
+/// Build `<name>` and `<name>_order` in one call.
+fn scoped_field<T: serde::Serialize>(
+    map: &indexmap::IndexMap<String, T>,
+    order: &[String],
+    root_type: Option<&str>,
+    type_of: fn(&T) -> Option<&str>,
+) -> (Value, Vec<String>) {
+    (
+        scoped_map(map, root_type, type_of),
+        ordered_keys(map, order, root_type, type_of),
+    )
+}
+
 fn logic_payload(manifest: &LogicManifest, root_type: Option<&str>) -> Value {
+    let (libraries, libraries_order) = scoped_field(
+        &manifest.libraries,
+        &manifest.libraries_order,
+        root_type,
+        |d| d.r#type.as_deref(),
+    );
+    let (filters, filters_order) =
+        scoped_field(&manifest.filters, &manifest.filters_order, root_type, |d| {
+            d.r#type.as_deref()
+        });
+    let (groupers, groupers_order) = scoped_field(
+        &manifest.groupers,
+        &manifest.groupers_order,
+        root_type,
+        |d| d.r#type.as_deref(),
+    );
+    let (orders, orders_order) =
+        scoped_field(&manifest.orders, &manifest.orders_order, root_type, |d| {
+            d.r#type.as_deref()
+        });
+    let (shelves, shelves_order) =
+        scoped_field(&manifest.shelves, &manifest.shelves_order, root_type, |d| {
+            d.r#type.as_deref()
+        });
+    let (cabinets, cabinets_order) = scoped_field(
+        &manifest.cabinets,
+        &manifest.cabinets_order,
+        root_type,
+        |d| d.r#type.as_deref(),
+    );
+
     json!({
-        "libraries": scoped_map(&manifest.libraries, root_type),
-        "libraries_order": ordered_keys(&manifest.libraries, &manifest.libraries_order, root_type),
-        "filters": scoped_map(&manifest.filters, root_type),
-        "filters_order": ordered_keys(&manifest.filters, &manifest.filters_order, root_type),
-        "groupers": scoped_map(&manifest.groupers, root_type),
-        "groupers_order": ordered_keys(&manifest.groupers, &manifest.groupers_order, root_type),
-        "orders": scoped_map(&manifest.orders, root_type),
-        "orders_order": ordered_keys(&manifest.orders, &manifest.orders_order, root_type),
-        "shelves": scoped_map(&manifest.shelves, root_type),
-        "shelves_order": ordered_keys(&manifest.shelves, &manifest.shelves_order, root_type),
-        "cabinets": scoped_map(&manifest.cabinets, root_type),
-        "cabinets_order": ordered_keys(&manifest.cabinets, &manifest.cabinets_order, root_type),
+        "libraries": libraries,
+        "libraries_order": libraries_order,
+        "filters": filters,
+        "filters_order": filters_order,
+        "groupers": groupers,
+        "groupers_order": groupers_order,
+        "orders": orders,
+        "orders_order": orders_order,
+        "shelves": shelves,
+        "shelves_order": shelves_order,
+        "cabinets": cabinets,
+        "cabinets_order": cabinets_order,
     })
 }
 
@@ -339,14 +365,22 @@ pub async fn media_item(
         if !logic.media_types.contains_key(&root_type) {
             return not_found_type();
         }
-        logic.lock(&root_type, &query.id).map(ToString::to_string)
+        logic
+            .entity(&root_type, &query.id)
+            .map(|record| Arc::clone(&record.lock))
     };
 
     let Some(lock) = lock else {
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    ([(header::CONTENT_TYPE, "application/json")], lock).into_response()
+    match serde_json::to_string(&*lock) {
+        Ok(body) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
+        Err(e) => {
+            log::error!("Failed to serialize entity '{}': {e}", query.id);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 pub async fn media_groups(

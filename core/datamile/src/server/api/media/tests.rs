@@ -37,13 +37,17 @@ fn default_library_falls_back_to_first() {
 /// Untyped definitions stay visible; foreign typed ones are hidden.
 #[test]
 fn definitions_scope_by_type() {
+    fn type_of(def: &OrderDef) -> Option<&str> {
+        def.r#type.as_deref()
+    }
+
     let mut def = OrderDef::default();
-    assert!(defined_for(&def, Some("album")));
+    assert!(defined_for(&def, Some("album"), type_of));
 
     def.r#type = Some("film".to_string());
-    assert!(!defined_for(&def, Some("album")));
-    assert!(defined_for(&def, Some("film")));
-    assert!(defined_for(&def, None));
+    assert!(!defined_for(&def, Some("album"), type_of));
+    assert!(defined_for(&def, Some("film"), type_of));
+    assert!(defined_for(&def, None, type_of));
 }
 
 /// Ordering drops keys that the type scope filtered out.
@@ -51,7 +55,9 @@ fn definitions_scope_by_type() {
 fn order_keeps_declared_sequence() {
     let manifest = manifest(&[], &["az", "year"]);
     let declared = vec!["year".to_string(), "az".to_string()];
-    let order = ordered_keys(&manifest.orders, &declared, Some("album"));
+    let order = ordered_keys(&manifest.orders, &declared, Some("album"), |def| {
+        def.r#type.as_deref()
+    });
     assert_eq!(order, vec!["year".to_string(), "az".to_string()]);
 }
 

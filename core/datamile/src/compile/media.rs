@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -328,6 +328,7 @@ fn compile_entity(
     let parent_is_virtual = parent_path.is_none_or(Path::is_file);
 
     let mut children = Map::new();
+    let mut sibling_ids: HashMap<String, HashSet<String>> = HashMap::new();
     for child in prepared.children {
         let child_kind = engine.media_kind(&child.type_name)?;
         if parent_is_virtual && !child_kind.kinds.iter().all(|kind| kind == "virtual") {
@@ -339,14 +340,17 @@ fn compile_entity(
         for target in child.targets {
             let child_source =
                 validate_child_target(&child.type_name, &child_kind, &target, source)?;
-            compiled.push(compile_entity(
+            let entity = compile_entity(
                 engine,
                 &child.type_name,
                 &child_source,
                 scope,
                 Some(prepared.ctx_id),
                 dependencies,
-            )?);
+            )?;
+            let id = entity.get("id").and_then(Value::as_str).unwrap_or_default();
+            check_sibling_id(&mut sibling_ids, type_name, &child.type_name, id)?;
+            compiled.push(entity);
         }
         children.insert(child.field, Value::Array(compiled));
     }
@@ -403,6 +407,25 @@ fn compile_entity(
     }
 
     Ok(Value::Object(out))
+}
+
+fn check_sibling_id(
+    sibling_ids: &mut HashMap<String, HashSet<String>>,
+    parent_type: &str,
+    child_type: &str,
+    id: &str,
+) -> Result<()> {
+    if sibling_ids
+        .entry(child_type.to_string())
+        .or_default()
+        .insert(id.to_string())
+    {
+        return Ok(());
+    }
+
+    bail!(
+        "media type '{parent_type}' produced duplicate sibling child id '{id}' for type '{child_type}'"
+    )
 }
 
 fn resolve_id(

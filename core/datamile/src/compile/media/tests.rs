@@ -627,3 +627,33 @@ fn shallow_discovery_ignores_nested_roots() {
     assert_eq!(roots.len(), 1);
     assert_eq!(roots[0].target, outer.canonicalize().expect("canon"));
 }
+
+/// Two siblings of one type cannot share an id (Rule 7).
+#[test]
+fn compile_rejects_duplicate_sibling_ids() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path().join("root");
+    fs::create_dir_all(&root).expect("dir");
+
+    let engine = LuaEngine::new().expect("engine");
+    let code = r#"
+        d.media("chapter", {
+            kind = "virtual",
+            select = function() return { {}, {} } end,
+        })
+        d.compile.chapter.id(function() return "chapter:1" end)
+
+        d.media("root", {
+            kind = "root",
+            dir = "/",
+            select = function() return {} end,
+            children = { chapters = "chapter" },
+        })
+    "#;
+    engine.lua.load(code).exec().expect("register");
+
+    let err = compile_root(&engine, &root_target(&root, "root", &root), tmp.path())
+        .expect_err("duplicate sibling ids");
+
+    assert!(err.to_string().contains("duplicate sibling child id"));
+}

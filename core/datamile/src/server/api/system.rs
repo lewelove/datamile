@@ -194,8 +194,7 @@ pub async fn run_query(
             .into_iter()
             .filter_map(|(root_type, id)| {
                 let record = logic.entity(&root_type, &id)?;
-                let lock_json =
-                    serde_json::from_str::<serde_json::Value>(&record.raw_json).ok()?;
+                let lock_json = logic.lock(&root_type, &id)?.clone();
 
                 Some(json!({
                     "type": root_type,

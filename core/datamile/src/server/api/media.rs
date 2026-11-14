@@ -323,18 +323,14 @@ pub async fn media_item(
         if !logic.media_types.contains_key(&root_type) {
             return not_found_type();
         }
-        logic.entity_json(&root_type, &query.id)
+        logic.lock(&root_type, &query.id).map(ToString::to_string)
     };
 
-    let Some(json) = lock else {
+    let Some(lock) = lock else {
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    (
-        [(header::CONTENT_TYPE, "application/json")],
-        json.to_string(),
-    )
-        .into_response()
+    ([(header::CONTENT_TYPE, "application/json")], lock).into_response()
 }
 
 pub async fn media_groups(

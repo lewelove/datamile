@@ -35,7 +35,8 @@ pub struct AlbumRecord {
     pub lock_path: PathBuf,
     pub title: String,
     pub artist: String,
-    pub raw_json: Arc<str>,
+    /// Parsed lockfile, cached so views never re-parse raw JSON.
+    pub lock: Arc<Value>,
     pub total_discs: u64,
     pub total_tracks: u64,
     pub duration_ms: u64,
@@ -126,9 +127,11 @@ impl LogicEngine {
             with_evaluated_lua_vm(config_path, |engine, eval| {
                 let mut new_evaluated = HashMap::new();
                 for (&uid, record) in &self.albums {
-                    if let Ok(parsed) = serde_json::from_str::<Value>(&record.raw_json)
-                        && let Ok(res) =
-                            engine.evaluate_entity_logic(&record.root_type, &parsed)
+                    let Some(parsed) = record.lock.get(&record.root_type) else {
+                        continue;
+                    };
+                    if let Ok(res) =
+                        engine.evaluate_entity_logic(&record.root_type, parsed)
                     {
                         new_evaluated.insert(uid, res);
                     }
@@ -456,7 +459,7 @@ impl LogicEngine {
             lock_path: lock_path.clone(),
             title,
             artist,
-            raw_json: Arc::from(metadata_json),
+            lock: Arc::new(parsed),
             total_discs,
             total_tracks,
             duration_ms,
@@ -496,10 +499,11 @@ impl LogicEngine {
             .map(|record| (record.root_type.clone(), record.id.clone()))
     }
 
+    /// Parsed lockfile `{ "<type>": { ... } }` for one entity.
     #[must_use]
-    pub fn entity_json(&self, root_type: &str, id: &str) -> Option<Arc<str>> {
+    pub fn lock(&self, root_type: &str, id: &str) -> Option<&Value> {
         let record = self.entity(root_type, id)?;
-        Some(Arc::clone(&record.raw_json))
+        Some(record.lock.as_ref())
     }
 
     /// Playback URIs in compiled order, optionally narrowed to child ids.
@@ -552,9 +556,8 @@ impl LogicEngine {
     ) -> Vec<Value> {
         ids.iter()
             .filter_map(|id| {
-                let lock: Value =
-                    serde_json::from_str(&self.entity(root_type, id)?.raw_json).ok()?;
-                let entity = lock.get(root_type)?;
+                let record = self.entity(root_type, id)?;
+                let entity = record.lock.get(root_type)?;
                 let filtered = view.map_or_else(
                     || entity.clone(),
                     |sections| filter_sections(entity, sections),

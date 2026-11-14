@@ -106,7 +106,7 @@ async fn entity_payload(
         .into_iter()
         .filter_map(|(root_type, id)| {
             let record = logic.entity(&root_type, &id)?;
-            let lock: serde_json::Value = serde_json::from_str(&record.raw_json).ok()?;
+            let lock = logic.lock(&root_type, &id)?.clone();
 
             Some(json!({
                 "type": root_type,

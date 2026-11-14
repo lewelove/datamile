@@ -25,7 +25,7 @@ pub struct JumpBody {
 }
 
 pub async fn get(State(state): State<Arc<AppState>>) -> Response {
-    let snapshot = state.playback.read().await.clone().unwrap_or_else(|| {
+    let mut snapshot = state.playback.read().await.clone().unwrap_or_else(|| {
         json!({
             "state": "stop",
             "file": "",
@@ -38,6 +38,10 @@ pub async fn get(State(state): State<Arc<AppState>>) -> Response {
             "queue": []
         })
     });
+
+    if let Some(object) = snapshot.as_object_mut() {
+        object.remove("event");
+    }
 
     Json(snapshot).into_response()
 }

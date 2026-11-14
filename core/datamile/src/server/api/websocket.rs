@@ -18,6 +18,14 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     log::info!("Client connected");
 
     let mut rx = state.tx.subscribe();
+    if let Some(snapshot) = state.playback.read().await.clone()
+        && socket
+            .send(ax_ws::Message::Text(snapshot.to_string().into()))
+            .await
+            .is_err()
+    {
+        return;
+    }
     state.mpd_engine.send(MpdCommand::Refresh).await;
 
     loop {

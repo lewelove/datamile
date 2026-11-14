@@ -491,14 +491,6 @@ impl LogicEngine {
         self.albums.get(&uid)
     }
 
-    #[must_use]
-    pub fn entity_by_target(&self, target: &Path) -> Option<(String, String)> {
-        self.albums
-            .values()
-            .find(|record| record.path == target)
-            .map(|record| (record.root_type.clone(), record.id.clone()))
-    }
-
     /// Parsed lockfile `{ "<type>": { ... } }` for one entity.
     #[must_use]
     pub fn lock(&self, root_type: &str, id: &str) -> Option<&Value> {

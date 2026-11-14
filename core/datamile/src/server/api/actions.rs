@@ -35,19 +35,22 @@ impl ActionBody {
 }
 
 async fn playing_target(state: &Arc<AppState>) -> Option<(String, String)> {
-    if let Ok(uri) = crate::x::playing_track_url().await
-        && let Some(target) = state.logic.read().await.track_target(&uri)
+    let snapshot = state.playback.read().await.clone()?;
+
+    let logic = state.logic.read().await;
+    if let Some(target) = snapshot
+        .get("file")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|file| logic.track_target(file))
     {
         return Some(target);
     }
 
-    let media_root = state.config.read().await.media_roots.first().cloned()?;
-    let dir = crate::x::playing_album(&media_root.to_string_lossy())
-        .await
-        .ok()?;
-    let canon = dir.canonicalize().unwrap_or(dir);
+    let album_id = snapshot
+        .get("album_id")
+        .and_then(serde_json::Value::as_str)?;
 
-    state.logic.read().await.entity_by_target(&canon)
+    logic.targets_for_id(album_id).into_iter().next()
 }
 
 fn targets_for_ids(

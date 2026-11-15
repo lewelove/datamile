@@ -35,5 +35,9 @@ export async function initApp() {
   view.validateAndNormalizeLibrary();
   await view.refreshView(true);
   await view.refreshSidebar();
-  prewarmer.refresh();
+
+  void collection
+    .loadLibrary()
+    .then(() => prewarmer.refresh())
+    .catch((err) => console.error(err));
 }

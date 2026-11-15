@@ -66,6 +66,7 @@ class CollectionStore {
   types: Record<string, { dir: string; count: number; children: Record<string, string> }> =
     $state({});
   actions: Record<string, { label?: string; description?: string }> = $state({});
+  private hasLoadedLibrary = false;
   private pendingFullAlbums = new Map<string, Promise<FullAlbum | null>>();
 
   constructor() {
@@ -127,7 +128,7 @@ class CollectionStore {
   }
 
   async loadItems(query: ItemsQuery): Promise<string[]> {
-    const warm = Object.keys(this.dict).length > 0;
+    const warm = this.hasLoadedLibrary;
     const response = await fetchItems<AlbumDictEntry>(ROOT_TYPE, {
       ...query,
       view: query.view ?? (warm ? VIEW_NONE : CARD_VIEW)
@@ -141,6 +142,17 @@ class CollectionStore {
     );
 
     return response.ids;
+  }
+
+  /// Whole library, so dict holds every cover address beyond the active view.
+  async loadLibrary() {
+    if (this.hasLoadedLibrary) {
+      return;
+    }
+
+    const response = await fetchItems<AlbumDictEntry>(ROOT_TYPE, { view: CARD_VIEW });
+    this.hasLoadedLibrary = true;
+    this.storeEntries(response.items);
   }
 
   private storeEntries(items: Record<string, AlbumDictEntry>[]) {

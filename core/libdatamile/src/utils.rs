@@ -98,7 +98,10 @@ pub fn calculate_blake3_address(content: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(raw).chars().take(16).collect()
 }
 
-pub fn write_atomic_cache_file(cache_file: &Path, content: &str) -> std::io::Result<()> {
+pub fn write_atomic_cache_file(
+    cache_file: &Path,
+    content: impl AsRef<[u8]>,
+) -> std::io::Result<()> {
     let parent = cache_file.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -109,8 +112,11 @@ pub fn write_atomic_cache_file(cache_file: &Path, content: &str) -> std::io::Res
     std::fs::create_dir_all(parent)?;
 
     let mut temp = NamedTempFile::new_in(parent)?;
-    temp.write_all(content.as_bytes())?;
+    temp.write_all(content.as_ref())?;
     temp.persist(cache_file).map_err(|e| e.error)?;
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

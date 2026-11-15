@@ -381,7 +381,6 @@ fn collect_matching_addresses(
 
 async fn process_cache_candidate(
     state: &Arc<AppState>,
-    master_dir: PathBuf,
     master_path: PathBuf,
     target_path: PathBuf,
     params: (u32, FilterType, u8, ImageWireFormat),
@@ -391,7 +390,6 @@ async fn process_cache_candidate(
     };
 
     let (size, filter, quality, wire_format) = params;
-    let target_path_clone = target_path.clone();
 
     let _ = tokio::task::spawn_blocking(move || {
         let _guard = guard;
@@ -405,8 +403,8 @@ async fn process_cache_candidate(
         }
 
         let encoded = encode_rgb_image(&img, wire_format, quality)?;
-        let _ = std::fs::create_dir_all(&master_dir);
-        let _ = std::fs::write(&target_path_clone, encoded);
+        // Atomic: `image()` may read this file mid-write and serve a truncated image.
+        let _ = libdatamile::utils::write_atomic_cache_file(&target_path, encoded);
         Some(())
     })
     .await;
@@ -472,7 +470,6 @@ async fn run_cache_images_batch(
             };
             process_cache_candidate(
                 &state_clone,
-                master_dir,
                 master_path,
                 target_path,
                 (size, filter, quality, wire_format),

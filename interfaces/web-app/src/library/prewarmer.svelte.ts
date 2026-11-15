@@ -1,16 +1,21 @@
 import { collection } from "./collection.svelte.ts";
 
+const CONCURRENCY_LIMIT = 6;
+
 class Prewarmer {
   pinnedTextures: Map<string, ImageBitmap> = $state(new Map());
   private validUrls = new Set<string>();
   private inFlight = new Set<string>();
   private failedUrls = new Set<string>();
+  private generation = 0;
   private pendingUpdates = false;
   private lastFlush = Date.now();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   /// Dict changed, so rebuild the valid set before warming new covers.
   refresh() {
+    this.generation++;
+    this.failedUrls.clear();
     this.pruneTextures();
     this.orchestrate();
   }
@@ -64,7 +69,32 @@ class Prewarmer {
   }
 
   async loadNow(url: string) {
-    if (!url || this.pinnedTextures.has(url) || this.inFlight.has(url) || this.failedUrls.has(url)) {
+    await this.warm(url);
+  }
+
+  async orchestrate() {
+    const generation = this.generation;
+    const queue = Object.values(collection.dict);
+
+    const processor = async () => {
+      while (queue.length > 0 && generation === this.generation) {
+        const album = queue.shift();
+        await this.warm(collection.getThumbnailUrl(album));
+      }
+    };
+
+    const workers = Array.from({ length: CONCURRENCY_LIMIT }, () => processor());
+    await Promise.all(workers);
+    this.flush();
+  }
+
+  private async warm(url: string) {
+    if (
+      !url ||
+      this.pinnedTextures.has(url) ||
+      this.inFlight.has(url) ||
+      this.failedUrls.has(url)
+    ) {
       return;
     }
 
@@ -79,66 +109,18 @@ class Prewarmer {
         premultiplyAlpha: "none",
         colorSpaceConversion: "default"
       });
-      if (!this.validUrls.has(url)) {
+      if (this.validUrls.has(url)) {
+        this.pinnedTextures.set(url, bitmap);
+        this.scheduleFlush();
+      } else {
         if (bitmap && typeof bitmap.close === "function") {
           bitmap.close();
         }
-      } else {
-        this.pinnedTextures.set(url, bitmap);
-        this.scheduleFlush();
       }
     } catch {
       this.failedUrls.add(url);
     }
     this.inFlight.delete(url);
-  }
-
-  async orchestrate() {
-    const concurrencyLimit = 6;
-    const queue = Object.values(collection.dict);
-
-    const processor = async () => {
-      while (queue.length > 0) {
-        const album = queue.shift();
-        const url = collection.getThumbnailUrl(album);
-        if (
-          !url ||
-          this.pinnedTextures.has(url) ||
-          this.inFlight.has(url) ||
-          this.failedUrls.has(url)
-        ) {
-          continue;
-        }
-
-        this.inFlight.add(url);
-        try {
-          const res = await fetch(url);
-          if (!res.ok) {
-            throw new Error("Failed to load");
-          }
-          const blob = await res.blob();
-          const bitmap = await createImageBitmap(blob, {
-            premultiplyAlpha: "none",
-            colorSpaceConversion: "default"
-          });
-          if (!this.validUrls.has(url)) {
-            if (bitmap && typeof bitmap.close === "function") {
-              bitmap.close();
-            }
-          } else {
-            this.pinnedTextures.set(url, bitmap);
-            this.scheduleFlush();
-          }
-        } catch {
-          this.failedUrls.add(url);
-        }
-        this.inFlight.delete(url);
-      }
-    };
-
-    const workers = Array.from({ length: concurrencyLimit }, () => processor());
-    await Promise.all(workers);
-    this.flush();
   }
 }
 

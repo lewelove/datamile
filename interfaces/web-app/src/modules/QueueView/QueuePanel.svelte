@@ -37,7 +37,9 @@ let groupedQueue = $derived.by(() => {
   const groups: QueueGroup[] = [];
   mappedTracks.forEach((track) => {
     if (groups.length === 0 || groups[groups.length - 1].albumId !== track.albumId) {
-      const albumMeta = track.albumId ? collection.dict[track.albumId] ?? null : null;
+      const albumMeta = track.albumId
+        ? (collection.fullAlbumCache[track.albumId]?.album ?? null)
+        : null;
       groups.push({
         albumId: track.albumId,
         albumMeta,

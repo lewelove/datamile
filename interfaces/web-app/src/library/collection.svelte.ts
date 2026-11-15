@@ -29,7 +29,7 @@ import type {
   WsMessage
 } from "../types.ts";
 
-const CARD_VIEW = "tags,objects,images,location";
+const CARD_VIEW = "tags,images";
 const VIEW_NONE = "none";
 // Above this fraction of unknown ids a single card request beats N item requests.
 const BULK_HYDRATE_RATIO = 0.25;

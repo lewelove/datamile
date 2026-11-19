@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
-use libactions::lock::{resolve_album_image_from_lock, resolve_cover_candidate};
+use libactions::lock::resolve_album_image;
 use models::{CoverFileInfo, CoverMetricsDoc};
 use tempfile::NamedTempFile;
 
@@ -49,8 +49,7 @@ fn main() -> Result<()> {
 
     let cover_path = args
         .cover
-        .or_else(|| resolve_album_image_from_lock(&album_dir))
-        .or_else(|| resolve_cover_candidate(&album_dir))
+        .or_else(|| resolve_album_image(&album_dir))
         .context("No cover image found for album")?;
 
     let cover_meta = fs::metadata(&cover_path)?;

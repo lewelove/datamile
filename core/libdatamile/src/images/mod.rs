@@ -44,29 +44,11 @@ pub fn master_path(cache_root: &Path, address: &str) -> PathBuf {
     master_dir(cache_root, address).join("master.qoi")
 }
 
-/// Writes bytes through a temp file in the same directory, then renames.
-///
-/// A reader must never observe a half-written cache file: `path.exists()` only
-/// becomes true once the whole content is on disk.
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing parent dir")
-    })?;
-
-    std::fs::create_dir_all(parent)?;
-
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    std::io::Write::write_all(&mut tmp, bytes)?;
-    tmp.persist(path).map_err(|e| e.error)?;
-
-    Ok(())
-}
-
 /// Encodes the image as QOI and stores it atomically at `path`.
 pub fn save_qoi_atomic(path: &Path, img: &image::RgbImage) -> std::io::Result<()> {
     let encoded = qoi::encode_to_vec(img.as_raw(), img.width(), img.height())
         .map_err(std::io::Error::other)?;
-    write_atomic(path, &encoded)
+    crate::utils::write_atomic(path, &encoded)
 }
 
 #[must_use]

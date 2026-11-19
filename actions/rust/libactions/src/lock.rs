@@ -1,21 +1,29 @@
 use std::path::{Path, PathBuf};
 
-/// Filenames the engine itself probes when no lock information is available.
+/// Probe order used when the lock carries no image: the names the compiler
+/// probes, then the legacy front-cover names.
 const COVER_CANDIDATES: &[&str] = &[
-    "cover.jpg",
     "cover.png",
-    "folder.jpg",
-    "front.jpg",
+    "cover.jpg",
     "cover.jpeg",
+    "folder.png",
+    "folder.jpg",
+    "folder.jpeg",
+    "front.jpg",
     "front.png",
 ];
+
+/// Best-effort album artwork: the compiled lock first, filenames second.
+#[must_use]
+pub fn resolve_album_image(album_dir: &Path) -> Option<PathBuf> {
+    resolve_from_lock(album_dir).or_else(|| resolve_cover_candidate(album_dir))
+}
 
 /// Resolves `album.images.main[0].source.file.path` from `album.lock.json`.
 ///
 /// This is the single place that knows where the lock keeps album artwork, so a
 /// lock schema change only has to touch this function.
-#[must_use]
-pub fn resolve_album_image_from_lock(album_dir: &Path) -> Option<PathBuf> {
+fn resolve_from_lock(album_dir: &Path) -> Option<PathBuf> {
     let lock_path = album_dir.join("album.lock.json");
     let content = std::fs::read_to_string(lock_path).ok()?;
     let val: serde_json::Value = serde_json::from_str(&content).ok()?;
@@ -32,9 +40,7 @@ pub fn resolve_album_image_from_lock(album_dir: &Path) -> Option<PathBuf> {
     target.is_file().then_some(target)
 }
 
-/// Falls back to the well-known artwork filenames in the album directory.
-#[must_use]
-pub fn resolve_cover_candidate(album_dir: &Path) -> Option<PathBuf> {
+fn resolve_cover_candidate(album_dir: &Path) -> Option<PathBuf> {
     COVER_CANDIDATES
         .iter()
         .map(|name| album_dir.join(name))

@@ -98,8 +98,12 @@ pub fn calculate_blake3_address(content: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(raw).chars().take(16).collect()
 }
 
-pub fn write_atomic_cache_file(cache_file: &Path, content: &str) -> std::io::Result<()> {
-    let parent = cache_file.parent().ok_or_else(|| {
+/// Writes bytes through a temp file in the same directory, then renames.
+///
+/// A reader must never observe a half-written cache file: `path.exists()` only
+/// becomes true once the whole content is on disk.
+pub fn write_atomic(path: &Path, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "Invalid cache file path: no parent directory",
@@ -109,8 +113,8 @@ pub fn write_atomic_cache_file(cache_file: &Path, content: &str) -> std::io::Res
     std::fs::create_dir_all(parent)?;
 
     let mut temp = NamedTempFile::new_in(parent)?;
-    temp.write_all(content.as_bytes())?;
-    temp.persist(cache_file).map_err(|e| e.error)?;
+    temp.write_all(bytes.as_ref())?;
+    temp.persist(path).map_err(|e| e.error)?;
 
     Ok(())
 }

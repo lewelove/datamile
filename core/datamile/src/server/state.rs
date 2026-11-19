@@ -5,43 +5,59 @@ use std::sync::{Arc, Mutex};
 
 use libdatamile::config::{ActionDef, InterfaceDef};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{RwLock, broadcast, watch};
 
 use crate::server::logic::LogicEngine;
 use crate::server::mpd::MpdEngine;
 
+pub enum ImageClaim {
+    Claimed(ImageTaskGuard),
+    /// Fires `true` when the current owner finishes, successfully or not.
+    InFlight(watch::Receiver<bool>),
+}
+
+/// One in-flight image task per path, plus a signal for whoever waits on it.
 #[derive(Default)]
 pub struct ImageTaskRegistry {
-    tasks: Mutex<HashSet<PathBuf>>,
+    tasks: Mutex<HashMap<PathBuf, watch::Sender<bool>>>,
 }
 
 pub struct ImageTaskGuard {
     path: PathBuf,
+    tx: watch::Sender<bool>,
     registry: Arc<ImageTaskRegistry>,
 }
 
 impl ImageTaskRegistry {
+    /// Returns `None` only if the task map is poisoned.
     #[must_use]
-    pub fn try_claim(self: &Arc<Self>, path: PathBuf) -> Option<ImageTaskGuard> {
-        let Ok(mut set) = self.tasks.lock() else {
+    pub fn claim(self: &Arc<Self>, path: PathBuf) -> Option<ImageClaim> {
+        let Ok(mut tasks) = self.tasks.lock() else {
             return None;
         };
-        if set.insert(path.clone()) {
-            Some(ImageTaskGuard {
-                path,
-                registry: Arc::clone(self),
-            })
-        } else {
-            None
+
+        if let Some(tx) = tasks.get(&path) {
+            return Some(ImageClaim::InFlight(tx.subscribe()));
         }
+
+        let (tx, _rx) = watch::channel(false);
+        tasks.insert(path.clone(), tx.clone());
+
+        Some(ImageClaim::Claimed(ImageTaskGuard {
+            path,
+            tx,
+            registry: Arc::clone(self),
+        }))
     }
 }
 
 impl Drop for ImageTaskGuard {
     fn drop(&mut self) {
-        if let Ok(mut set) = self.registry.tasks.lock() {
-            set.remove(&self.path);
+        if let Ok(mut tasks) = self.registry.tasks.lock() {
+            tasks.remove(&self.path);
         }
+        // Wake waiters even when the render failed: they re-check the file.
+        let _ = self.tx.send(true);
     }
 }
 
@@ -113,7 +129,7 @@ impl DependencyGraph {
 
     pub fn save_to_file(&self, path: &Path) -> anyhow::Result<()> {
         let content = serde_json::to_string_pretty(self)?;
-        libdatamile::utils::write_atomic_cache_file(path, &content)?;
+        libdatamile::utils::write_atomic(path, &content)?;
         Ok(())
     }
 }

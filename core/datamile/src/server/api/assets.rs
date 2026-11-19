@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -10,15 +9,16 @@ use axum::response::{IntoResponse, Response};
 use libdatamile::images::{
     FilterType, ImageWireFormat, decode_qoi_to_rgb, encode_rgb_image, filter_type_to_str,
     master_dir, master_path, parse_filter, parse_wire_format, read_qoi_dimensions,
-    resize_image_fit, resize_image_max_edge, save_qoi_atomic, write_atomic,
+    resize_image_fit, resize_image_max_edge, save_qoi_atomic,
 };
+use libdatamile::utils::write_atomic;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
 
-use crate::server::state::AppState;
+use crate::server::state::{AppState, ImageClaim};
 
 #[derive(Deserialize)]
 pub struct ImageQuery {
@@ -63,36 +63,34 @@ fn error_response(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
-/// How long a request waits for a master another task is already rendering.
-const MASTER_WAIT_ATTEMPTS: u8 = 50;
-const MASTER_WAIT_INTERVAL: Duration = Duration::from_millis(20);
-
-/// Masters are written atomically, so an existing file is always complete.
-async fn wait_for_master(master_path: PathBuf) -> Result<PathBuf, StatusCode> {
-    for _ in 0..MASTER_WAIT_ATTEMPTS {
-        if master_path.exists() {
-            return Ok(master_path);
-        }
-        tokio::time::sleep(MASTER_WAIT_INTERVAL).await;
-    }
-    Err(StatusCode::NOT_FOUND)
-}
-
 async fn ensure_master_image(
     state: &Arc<AppState>,
+    cache_root: &StdPath,
     address: &str,
 ) -> Result<PathBuf, StatusCode> {
-    let cache_root = state.config.read().await.cache_root.clone();
-    let master_path = master_path(&cache_root, address);
+    let master_path = master_path(cache_root, address);
 
     if master_path.exists() {
         return Ok(master_path);
     }
 
     // A prewarm worker or a parallel request may already render this address.
-    let Some(_guard) = state.image_tasks.try_claim(master_path.clone()) else {
-        return wait_for_master(master_path).await;
+    let guard = match state.image_tasks.claim(master_path.clone()) {
+        Some(ImageClaim::Claimed(guard)) => guard,
+        Some(ImageClaim::InFlight(mut rx)) => {
+            let _ = rx.wait_for(|done| *done).await;
+            return master_path
+                .exists()
+                .then_some(master_path)
+                .ok_or(StatusCode::NOT_FOUND);
+        }
+        None => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
+
+    // The owner may have finished between our `exists()` check and the claim.
+    if master_path.exists() {
+        return Ok(master_path);
+    }
 
     let lookup_item = {
         let logic = state.logic.read().await;
@@ -112,7 +110,10 @@ async fn ensure_master_image(
 
     let blob_path_clone = master_path.clone();
 
+    // The guard travels with the blocking work: a dropped request must not
+    // release the claim while the image is still being rendered.
     let gen_result = tokio::task::spawn_blocking(move || {
+        let _guard = guard;
         let img = image::open(&original_path).ok()?.into_rgb8();
         let resized = resize_image_fit(
             &img,
@@ -283,7 +284,7 @@ pub async fn image(
         guard.cache_root.clone()
     };
 
-    let master_path = match ensure_master_image(&state, address).await {
+    let master_path = match ensure_master_image(&state, &cache_root, address).await {
         Ok(path) => path,
         Err(status) => return error_response(status, "Image not found"),
     };
@@ -398,9 +399,11 @@ async fn process_cache_candidate(
     state: &Arc<AppState>,
     master_path: PathBuf,
     target_path: PathBuf,
+    m_dim: u32,
     params: (u32, FilterType, u8, ImageWireFormat),
 ) {
-    let Some(guard) = state.image_tasks.try_claim(target_path.clone()) else {
+    let Some(ImageClaim::Claimed(guard)) = state.image_tasks.claim(target_path.clone())
+    else {
         return;
     };
 
@@ -409,8 +412,6 @@ async fn process_cache_candidate(
     let _ = tokio::task::spawn_blocking(move || {
         let _guard = guard;
         let master_bytes = std::fs::read(&master_path).ok()?;
-        let (master_w, master_h) = read_qoi_dimensions(&master_bytes)?;
-        let m_dim = std::cmp::max(master_w, master_h);
 
         let mut img = decode_qoi_to_rgb(&master_bytes)?;
         if size != m_dim {
@@ -462,7 +463,8 @@ async fn run_cache_images_batch(
                 return;
             };
 
-            let Ok(master_path) = ensure_master_image(&state_clone, &address).await
+            let Ok(master_path) =
+                ensure_master_image(&state_clone, &cache_root, &address).await
             else {
                 return;
             };
@@ -483,6 +485,7 @@ async fn run_cache_images_batch(
                 &state_clone,
                 master_path,
                 target_path,
+                m_dimension,
                 (size, filter, quality, wire_format),
             )
             .await;

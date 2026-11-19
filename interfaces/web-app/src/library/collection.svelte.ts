@@ -43,12 +43,19 @@ function mainImageAddress(
   return album?.images?.main?.[0]?.address || "";
 }
 
-function triggerImagePrewarm() {
+/**
+ * Prewarms derived thumbnails. Without addresses the whole library is swept,
+ * so single-album updates pass only what they touched.
+ */
+function triggerImagePrewarm(addresses?: string[]) {
   const { size, filter } = thumbnailParams();
+  const target = addresses
+    ? { addresses }
+    : { names: ["main"] };
   fetch("/api/internal/cache_images", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ names: ["main"], format: "bmp", size, filter })
+    body: JSON.stringify({ ...target, format: "bmp", size, filter })
   }).catch(() => {});
 }
 
@@ -97,7 +104,6 @@ class CollectionStore {
       }
       delete this.dict[json.id];
       delete this.fullAlbumCache[json.id];
-      triggerImagePrewarm();
     } else if (json.type === "ALBUM_UPDATED") {
       if (json.shelves) {
         this.sidebarShelves = json.shelves;
@@ -112,7 +118,11 @@ class CollectionStore {
         delete this.dict[json.id];
       }
       delete this.fullAlbumCache[json.id];
-      triggerImagePrewarm();
+
+      const imageAddress = mainImageAddress(json.dictEntry);
+      if (imageAddress) {
+        triggerImagePrewarm([imageAddress]);
+      }
     } else if (json.type === "ALBUMS_UPDATED") {
       if (json.shelves) {
         this.sidebarShelves = json.shelves;
@@ -135,7 +145,13 @@ class CollectionStore {
           delete this.fullAlbumCache[id];
         }
       }
-      triggerImagePrewarm();
+
+      const addresses = Object.values(json.updated || {})
+        .map(mainImageAddress)
+        .filter((address): address is string => Boolean(address));
+      if (addresses.length > 0) {
+        triggerImagePrewarm(addresses);
+      }
     } else if (json.type === "LOGIC_UPDATE") {
       if (json.manifest) {
         this.manifest = json.manifest;

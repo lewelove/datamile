@@ -12,7 +12,7 @@ use clap::Parser;
 use image::DynamicImage;
 use image::imageops::FilterType;
 use libactions::color::{calculate_palette_ratios, sort_palette};
-use libactions::lock::{resolve_album_image_from_lock, resolve_cover_candidate};
+use libactions::lock::resolve_album_image;
 use palette::Srgb;
 
 #[derive(Parser)]
@@ -52,9 +52,7 @@ fn main() -> Result<()> {
     let cover_path = if let Some(cp) = args.cover {
         cp
     } else if let Some(ref p) = args.path {
-        resolve_album_image_from_lock(p)
-            .or_else(|| resolve_cover_candidate(p))
-            .context("Could not find cover image in album directory")?
+        resolve_album_image(p).context("Could not find cover image in album directory")?
     } else {
         anyhow::bail!("Must specify either --cover or --path");
     };

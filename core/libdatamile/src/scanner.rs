@@ -5,13 +5,13 @@ use walkdir::WalkDir;
 
 pub fn find_target_albums(path: &Path) -> Result<Vec<PathBuf>, DatamileError> {
     let mut results = std::collections::HashSet::new();
-    if path.join("metadata.toml").exists() {
+    if path.join("album.toml").exists() {
         results.insert(path.to_path_buf());
     } else {
         for entry in WalkDir::new(path).follow_links(true) {
             match entry {
                 Ok(e) => {
-                    if e.file_name() == "metadata.toml"
+                    if e.file_name() == "album.toml"
                         && let Some(parent) = e.path().parent()
                     {
                         results.insert(parent.to_path_buf());

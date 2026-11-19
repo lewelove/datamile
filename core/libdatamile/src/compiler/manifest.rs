@@ -46,7 +46,7 @@ pub fn load_manifests(
     manifest_names: Option<&[String]>,
     cache_root: &Path,
 ) -> Result<serde_json::Map<String, Value>, DatamileError> {
-    let metadata_path = album_root.join("metadata.toml");
+    let metadata_path = album_root.join("album.toml");
     if !metadata_path.exists() {
         return Err(DatamileError::MissingPrimaryManifest {
             path: album_root.to_path_buf(),

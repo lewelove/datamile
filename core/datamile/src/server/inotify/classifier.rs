@@ -122,7 +122,7 @@ fn find_enclosing_album_dir(path: &Path, music_directory: &Path) -> Option<PathB
     };
 
     while curr.starts_with(music_directory) && curr != music_directory {
-        if curr.join("metadata.toml").exists() {
+        if curr.join("album.toml").exists() {
             return Some(curr);
         }
         let Some(parent) = curr.parent() else {

@@ -3,7 +3,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum DatamileError {
-    #[error("Missing primary manifest: metadata.toml not found in {path}")]
+    #[error("Missing primary manifest: album.toml not found in {path}")]
     MissingPrimaryManifest { path: PathBuf },
 
     #[error("IO Error: {0}")]
@@ -38,11 +38,11 @@ pub enum DatamileError {
     #[error("Serialization Error: {0}")]
     JsonError(#[from] serde_json::Error),
 
-    #[error("Schema Error: [[tracks]] array not found in metadata.toml for {path}")]
+    #[error("Schema Error: [[tracks]] array not found in album.toml for {path}")]
     MissingTracksBlock { path: PathBuf },
 
     #[error(
-        "Manifest Structure Violation: Auxiliary manifest '{manifest}' in {path} defines {aux_count} tracks, but metadata.toml defines {primary_count} tracks. Every manifest must describe the exact same track count."
+        "Manifest Structure Violation: Auxiliary manifest '{manifest}' in {path} defines {aux_count} tracks, but album.toml defines {primary_count} tracks. Every manifest must describe the exact same track count."
     )]
     TrackCountMismatch {
         manifest: String,
@@ -52,7 +52,7 @@ pub enum DatamileError {
     },
 
     #[error(
-        "Inventory Mismatch in {path}: Found {files_count} audio files on disk but metadata.toml defines {tracks_count} tracks. Datamile requires an explicit 1:1 mapping between disk files and metadata entries."
+        "Inventory Mismatch in {path}: Found {files_count} audio files on disk but album.toml defines {tracks_count} tracks. Datamile requires an explicit 1:1 mapping between disk files and metadata entries."
     )]
     PhysicalInventoryMismatch {
         path: PathBuf,

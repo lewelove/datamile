@@ -20,7 +20,7 @@ pub fn create_album_directory(
 
     fs::create_dir_all(&album_path)?;
 
-    let meta_path = album_path.join("metadata.toml");
+    let meta_path = album_path.join("album.toml");
     write_metadata_toml(data, &meta_path)?;
 
     let history_path = album_path.join("history.toml");

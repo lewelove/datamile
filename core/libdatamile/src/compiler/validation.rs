@@ -12,7 +12,7 @@ pub fn validate_track_indices(
     for (idx, entry) in entries.iter().enumerate() {
         let t = extract_strict_u32(entry.get("tracknumber"), "tracknumber", None)
             .map_err(|_| DatamileError::MissingTrackIdentity {
-                manifest: "metadata.toml".to_string(),
+                manifest: "album.toml".to_string(),
                 path: root.to_path_buf(),
                 index: idx + 1,
             })?;
@@ -20,7 +20,7 @@ pub fn validate_track_indices(
 
         if !seen_ids.insert((d, t)) {
             return Err(DatamileError::DuplicateTrackIdentity {
-                manifest: "metadata.toml".to_string(),
+                manifest: "album.toml".to_string(),
                 path: root.to_path_buf(),
                 disc: d,
                 track: t,

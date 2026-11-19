@@ -21,11 +21,11 @@ _G.datamile.action("open_folder", {
 
 _G.datamile.action("open_manifest", {
     label = "Open Manifest",
-    description = "Open metadata.toml in default viewer",
+    description = "Open album.toml in default viewer",
     run = function(ctx)
         local launcher = get_launcher()
         for _, album in ipairs(ctx.albums) do
-            local p = d.fs.joinpath(album.path, "metadata.toml")
+            local p = d.fs.joinpath(album.path, "album.toml")
             if d.fs.exists(p) then
                 d.system({ launcher, p }, { detach = true })
             end

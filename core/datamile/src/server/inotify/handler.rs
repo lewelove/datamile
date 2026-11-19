@@ -243,8 +243,7 @@ fn remove_vanished_albums(
         .filter(|path| {
             vanished_paths.iter().any(|vanished| {
                 path.starts_with(vanished)
-                    || (vanished.starts_with(path)
-                        && !path.join("metadata.toml").exists())
+                    || (vanished.starts_with(path) && !path.join("album.toml").exists())
             })
         })
         .collect();

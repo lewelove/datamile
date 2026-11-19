@@ -241,9 +241,9 @@ For the config reference check out [my datamile dotfiles](https://github.com/lew
 
 ### 3. Configure Your Library
 
-You place a folder containing album's audio files in your library root. To make it visible to the compiler you create `metadata.toml` file in it or run `datamile manifest` to read embedded tags and generate manifest from them. In this TOML you have two sections: `[album]` header and multiple of `[[tracks]]` for each audio file. Write all keys in standard `keyname = "Value"` format. The `[album]` header contains metadata *common* across an album (album artist, album title, genre, date, etc.), and each of `[[tracks]]` contains metadata *unique* to each track (track number, disc number, title).
+You place a folder containing album's audio files in your library root. To make it visible to the compiler you create `album.toml` file in it or run `datamile manifest` to read embedded tags and generate manifest from them. In this TOML you have two sections: `[album]` header and multiple of `[[tracks]]` for each audio file. Write all keys in standard `keyname = "Value"` format. The `[album]` header contains metadata *common* across an album (album artist, album title, genre, date, etc.), and each of `[[tracks]]` contains metadata *unique* to each track (track number, disc number, title).
 
-Then you run `datamile update`. It automatically finds all new or changed `metadata.toml` files and compiles them with the source files into a `album.lock.json` artifacts.
+Then you run `datamile update`. It automatically finds all new or changed `album.toml` files and compiles them with the source files into a `album.lock.json` artifacts.
 
 ### 4. Run It
 
@@ -263,7 +263,7 @@ datamile interface
 
 The `datamile` CLI tool is the central driver for managing your library's state. 
 
-- `datamile manifest` — Scan your library root for unmanaged audio directories and generate the initial `metadata.toml` manifest.
+- `datamile manifest` — Scan your library root for unmanaged audio directories and generate the initial `album.toml` manifest.
 - `datamile update` — The core compiler command. Reads your TOML manifests and compiles the `album.lock.json` files.
 - `datamile server` — Start the Axum backend server.
 - `datamile interface` — Run interface defined with `datamile.interface()`.

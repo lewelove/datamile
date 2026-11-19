@@ -16,7 +16,7 @@ struct TargetAlbumEntry {
 }
 
 async fn resolve_playing_target(state: &AppState) -> Option<String> {
-    let playing_path = crate::x::get_playing_track_url().await.ok()?;
+    let playing_path = crate::x::playing_track_url().await.ok()?;
     let clean_playing = playing_path.trim_start_matches('/');
     let logic = state.logic.read().await;
 
@@ -29,11 +29,11 @@ async fn resolve_playing_target(state: &AppState) -> Option<String> {
     }
 
     let music_dir = state.config.read().await.music_directory.clone();
-    let dir = crate::x::get_playing_album(&music_dir.to_string_lossy())
+    let dir = crate::x::playing_album(&music_dir.to_string_lossy())
         .await
         .ok()?;
     let canon = dir.canonicalize().unwrap_or(dir);
-    logic.get_album_id_by_path(&canon).map(ToString::to_string)
+    logic.album_id_by_path(&canon).map(ToString::to_string)
 }
 
 async fn resolve_param_target(
@@ -65,7 +65,7 @@ async fn resolve_param_target(
     if let Some(dir) = params.get("directory") {
         let p = libdatamile::utils::expand_path(dir);
         let p_canon = p.canonicalize().unwrap_or(p);
-        if let Some(id) = logic.get_album_id_by_path(&p_canon) {
+        if let Some(id) = logic.album_id_by_path(&p_canon) {
             return vec![id.to_string()];
         }
     }
@@ -86,7 +86,7 @@ async fn resolve_target_entries(
     let logic = state.logic.read().await;
     let mut list = Vec::new();
     for target_id in target_ids {
-        if let Some(record) = logic.get_album_record(&target_id)
+        if let Some(record) = logic.album_record(&target_id)
             && let Ok(lock_json) =
                 serde_json::from_str::<serde_json::Value>(&record.raw_json)
         {

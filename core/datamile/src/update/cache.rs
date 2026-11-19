@@ -46,7 +46,7 @@ pub fn deps_graph_path(cache_root: &Path, music_directory: &Path) -> PathBuf {
     library_cache_dir(cache_root, music_directory).join("dependencies.json")
 }
 
-pub fn get_lua_config_hash(dependencies: &[PathBuf]) -> String {
+pub fn lua_config_hash(dependencies: &[PathBuf]) -> String {
     let mut sorted_deps = dependencies.to_vec();
     sorted_deps.sort();
     let mut hasher = blake3::Hasher::new();

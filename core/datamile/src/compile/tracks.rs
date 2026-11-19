@@ -46,7 +46,7 @@ pub fn build_ctx_tracks(
             )?;
             let rel_path = libdatamile::resolvers::rel_path(file_path, album_root);
             let file_info =
-                libdatamile::utils::get_file_info(file_path, &rel_path, HashMode::Skip)
+                libdatamile::utils::read_file_info(file_path, &rel_path, HashMode::Skip)
                     .unwrap_or_else(|_| json!({}));
 
             ctx_tracks.push(json!({

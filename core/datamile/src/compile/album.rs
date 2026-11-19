@@ -67,7 +67,7 @@ pub fn generate_lock_manifests(
         let file_name = format!("{name}.toml");
         let abs_p = album_root.join(&file_name);
         if let Ok(info) =
-            libdatamile::utils::get_file_info(&abs_p, &file_name, HashMode::Skip)
+            libdatamile::utils::read_file_info(&abs_p, &file_name, HashMode::Skip)
         {
             lock_manifests.insert(name.clone(), json!({ "file": info }));
         }

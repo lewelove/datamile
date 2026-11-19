@@ -23,7 +23,9 @@ pub struct CoverTaskGuard {
 impl CoverTaskRegistry {
     #[must_use]
     pub fn try_claim(self: &Arc<Self>, path: PathBuf) -> Option<CoverTaskGuard> {
-        let mut set = self.tasks.lock().unwrap();
+        let Ok(mut set) = self.tasks.lock() else {
+            return None;
+        };
         if set.insert(path.clone()) {
             Some(CoverTaskGuard {
                 path,

@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use crate::compile::LogVerbosity;
 use crate::server::state::{DependencyGraph, UpdateScope};
-use crate::update::cache::{FileStat, get_lua_config_hash};
+use crate::update::cache::{FileStat, lua_config_hash};
 use crate::update::client::ForceMode;
 use crate::update::verify::{find_missing_paths, verify_albums_parallel};
 
@@ -229,7 +229,7 @@ pub fn check_lua_config_changed(
     cache_root: &Path,
     verbosity: LogVerbosity,
 ) -> (bool, PathBuf, String) {
-    let lua_hash = get_lua_config_hash(dependencies);
+    let lua_hash = lua_config_hash(dependencies);
     let lua_hash_file = cache_root.join("config.blake3");
     let previous_lua_hash = fs::read_to_string(&lua_hash_file).unwrap_or_default();
     let config_changed = lua_hash != previous_lua_hash;

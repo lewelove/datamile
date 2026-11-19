@@ -54,7 +54,7 @@ pub fn resolve_path(path_str: &str, config_dir: &Path) -> PathBuf {
     direct
 }
 
-pub fn get_file_info(
+pub fn read_file_info(
     path: &std::path::Path,
     rel_path: &str,
     hash_mode: HashMode,

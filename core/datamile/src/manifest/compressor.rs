@@ -30,13 +30,16 @@ pub fn compress(
             .iter()
             .all(|t| t.get(&key) == first_track.get(&key));
 
-        if is_identical {
-            if forced_track_keys.contains(key.as_str()) {
-                continue;
-            }
-            keys_to_promote.push(key.clone());
-            album_pool.insert(key.clone(), first_track.get(&key).unwrap().clone());
+        if !is_identical || forced_track_keys.contains(key.as_str()) {
+            continue;
         }
+
+        // `candidate_keys` only keeps keys that every track, first included, carries.
+        let Some(first_value) = first_track.get(&key) else {
+            continue;
+        };
+        keys_to_promote.push(key.clone());
+        album_pool.insert(key, first_value.clone());
     }
 
     for track in &mut raw_tracks {

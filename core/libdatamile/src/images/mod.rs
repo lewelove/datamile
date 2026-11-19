@@ -111,7 +111,11 @@ pub fn read_qoi_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "scaled dimensions are finite and clamped to 1..=4096 right after the cast"
+)]
 pub fn calculate_rendered_dimensions(
     src_w: u32,
     src_h: u32,
@@ -198,7 +202,11 @@ pub fn resize_image_fit(
 }
 
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "scaled dimensions never exceed the source dimension and are clamped to 1..=4096"
+)]
 pub fn resize_image_max_edge(
     src: &image::RgbImage,
     max_edge: u32,

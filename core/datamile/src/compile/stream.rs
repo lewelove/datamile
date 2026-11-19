@@ -78,10 +78,11 @@ fn spawn_builders(
     tokio::task::spawn_blocking(move || {
         let default_jobs =
             std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        // `--jobs 0` would make the builder fail, so clamp to one worker.
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(jobs.unwrap_or(default_jobs))
+            .num_threads(jobs.unwrap_or(default_jobs).max(1))
             .build()
-            .unwrap();
+            .expect("rayon pool with at least one worker thread");
         pool.install(|| {
             albums.par_iter().for_each_init(
                 || match libdatamile::lua::LuaEngine::new() {

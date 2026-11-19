@@ -167,7 +167,7 @@ impl LogicEngine {
         album_dir_canon: &Path,
         id: &str,
     ) -> Result<()> {
-        if let Some(existing_record) = self.get_album_record(id)
+        if let Some(existing_record) = self.album_record(id)
             && existing_record.path != album_dir_canon
         {
             if existing_record.path.exists() {
@@ -461,26 +461,26 @@ impl LogicEngine {
     }
 
     #[must_use]
-    pub fn get_album_record(&self, id: &str) -> Option<&AlbumRecord> {
+    pub fn album_record(&self, id: &str) -> Option<&AlbumRecord> {
         let uid = self.id_to_uid.get(id)?;
         self.albums.get(uid)
     }
 
     #[must_use]
-    pub fn get_album_path(&self, id: &str) -> Option<&Path> {
-        self.get_album_record(id).map(|r| r.path.as_path())
+    pub fn album_path(&self, id: &str) -> Option<&Path> {
+        self.album_record(id).map(|r| r.path.as_path())
     }
 
     #[must_use]
-    pub fn get_album_id_by_path(&self, path: &Path) -> Option<&str> {
+    pub fn album_id_by_path(&self, path: &Path) -> Option<&str> {
         let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let uid = self.path_to_uid.get(&canon)?;
         self.albums.get(uid).map(|r| r.id.as_str())
     }
 
     #[must_use]
-    pub fn get_album_dict(&self, id: &str) -> Option<&RawValue> {
-        self.get_album_record(id).map(|r| &*r.dict_raw)
+    pub fn album_dict(&self, id: &str) -> Option<&RawValue> {
+        self.album_record(id).map(|r| &*r.dict_raw)
     }
 
     #[must_use]
@@ -492,8 +492,8 @@ impl LogicEngine {
     }
 
     #[must_use]
-    pub fn get_album_json(&self, id: &str) -> Option<Arc<str>> {
-        let record = self.get_album_record(id)?;
+    pub fn album_json(&self, id: &str) -> Option<Arc<str>> {
+        let record = self.album_record(id)?;
         Some(Arc::clone(&record.raw_json))
     }
 }

@@ -92,7 +92,7 @@ async fn log_detected_events(
             .iter()
             .filter_map(|p| {
                 logic
-                    .get_album_id_by_path(p)
+                    .album_id_by_path(p)
                     .map(ToString::to_string)
                     .or_else(|| {
                         let rel = libdatamile::resolvers::rel_path(p, &music_directory);
@@ -285,7 +285,7 @@ fn ingest_recompiled_items(
                 Ok(()) => {
                     deps_graph.update_album_deps(album_path, dependencies);
                     outcome.deps_modified = true;
-                    if let Some(entry) = logic.get_album_dict(&album_id) {
+                    if let Some(entry) = logic.album_dict(&album_id) {
                         outcome
                             .updated_dict_entries
                             .insert(album_id, entry.to_owned());

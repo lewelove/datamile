@@ -110,7 +110,7 @@ async fn ensure_master_cover(
     })
     .await;
 
-    if gen_result.is_err() || gen_result.unwrap().is_none() {
+    if !matches!(gen_result, Ok(Some(()))) {
         return Err(StatusCode::NOT_FOUND);
     }
 
@@ -250,7 +250,7 @@ async fn render_in_memory(
     .and_then(|opt| opt.ok_or(StatusCode::INTERNAL_SERVER_ERROR))
 }
 
-pub async fn get_cover(
+pub async fn cover(
     Path(target): Path<String>,
     Query(query): Query<CoverQuery>,
     State(state): State<Arc<AppState>>,
@@ -542,13 +542,13 @@ pub async fn trigger_cache_covers(
     StatusCode::ACCEPTED.into_response()
 }
 
-pub async fn get_album_metadata(
+pub async fn album_metadata(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let json_opt = {
         let logic = state.logic.read().await;
-        logic.get_album_json(&id)
+        logic.album_json(&id)
     };
     if let Some(data) = json_opt {
         return (
@@ -560,13 +560,13 @@ pub async fn get_album_metadata(
     StatusCode::NOT_FOUND.into_response()
 }
 
-pub async fn get_album_cover(
+pub async fn album_cover(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let path_opt = {
         let logic = state.logic.read().await;
-        logic.get_album_record(&id).map(|record| {
+        logic.album_record(&id).map(|record| {
             let cp = &record.cover_path;
             if std::path::Path::new(cp).is_absolute() {
                 PathBuf::from(cp)

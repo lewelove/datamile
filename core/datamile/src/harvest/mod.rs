@@ -47,7 +47,9 @@ pub fn run(roots: Vec<PathBuf>, format: FormatMode) {
         }
     });
 
-    printer_handle.join().unwrap();
+    // The printer only mirrors output to stdout, so a panic there must not
+    // abort the harvest that already finished.
+    printer_handle.join().ok();
 }
 
 fn scan_files(root: &Path, extensions: &[&str]) -> Vec<PathBuf> {

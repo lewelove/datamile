@@ -1,7 +1,13 @@
 use std::path::Path;
+use std::sync::LazyLock;
 
 use anyhow::Result;
 use discogs_rs::{ArtistCredit, Auth, DiscogsClient, Master, Release};
+
+/// Discogs disambiguates duplicate artist names with a numeric suffix, e.g. "Nirvana (2)".
+static ARTIST_DUPLICATE_SUFFIX: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r" \(\d+\)$").expect("ARTIST_DUPLICATE_SUFFIX is a valid regex")
+});
 
 pub enum TargetUrl {
     DiscogsMaster(u64),
@@ -92,8 +98,7 @@ pub fn format_artist_credits(artists: &[ArtistCredit]) -> String {
 }
 
 fn clean_artist_name(name: &str) -> String {
-    let re = regex::Regex::new(r" \(\d+\)$").unwrap();
-    re.replace(name, "").to_string()
+    ARTIST_DUPLICATE_SUFFIX.replace(name, "").to_string()
 }
 
 pub fn parse_discogs_position(

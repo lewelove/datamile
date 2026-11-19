@@ -94,7 +94,7 @@ async fn resolve_by_id(
 }
 
 async fn resolve_by_playing(music_directory: &Path) -> Result<Vec<ResolvedAlbumTarget>> {
-    let playing_album_dir = get_playing_album(&music_directory.to_string_lossy()).await?;
+    let playing_album_dir = playing_album(&music_directory.to_string_lossy()).await?;
     let lock_path = playing_album_dir.join("album.lock.json");
     if lock_path.exists()
         && let Ok(content) = std::fs::read_to_string(&lock_path)
@@ -239,7 +239,7 @@ pub async fn execute(
     Ok(())
 }
 
-pub async fn get_playing_track_url() -> Result<String> {
+pub async fn playing_track_url() -> Result<String> {
     let host = std::env::var("MPD_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = std::env::var("MPD_PORT").unwrap_or_else(|_| "6600".to_string());
     let addr = format!("{host}:{port}");
@@ -256,8 +256,8 @@ pub async fn get_playing_track_url() -> Result<String> {
     Ok(song.song.url)
 }
 
-pub async fn get_playing_album(lib_root: &str) -> Result<PathBuf> {
-    let rel_path = get_playing_track_url().await?;
+pub async fn playing_album(lib_root: &str) -> Result<PathBuf> {
+    let rel_path = playing_track_url().await?;
     let clean_rel = rel_path.trim_start_matches('/');
     let root = expand_path(lib_root)
         .canonicalize()

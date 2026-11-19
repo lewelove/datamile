@@ -376,13 +376,10 @@ async fn process_missing_and_compile(
 
     let scan_root = match ctx.scope {
         UpdateScope::All => ctx.music_directory.to_path_buf(),
-        UpdateScope::Paths(paths) => {
-            if paths.len() == 1 {
-                paths.iter().next().cloned().unwrap()
-            } else {
-                ctx.music_directory.to_path_buf()
-            }
-        }
+        UpdateScope::Paths(paths) => match paths.iter().next() {
+            Some(only) if paths.len() == 1 => only.clone(),
+            _ => ctx.music_directory.to_path_buf(),
+        },
     };
 
     let compile_options = compile::CompileOptions {

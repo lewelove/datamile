@@ -111,4 +111,20 @@ in
 
     cargo fmt --all "$@"
   '';
+
+  scripts.lint.exec = ''
+    set -euo pipefail
+
+    ROOT=$(git rev-parse --show-toplevel)
+    cd "$ROOT"
+
+    cargo fmt --all --check
+    cargo clippy --workspace --lib --bins -- --deny warnings
+
+    if grep -rnE --include='*.rs' '\bfn get_[a-z]' core actions; then
+      printf '\n' >&2
+      echo 'lint: drop the get_ prefix, name the getter after the value' >&2
+      exit 1
+    fi
+  '';
 }

@@ -27,6 +27,10 @@ missing_panics_doc = "allow"
 cognitive_complexity = "deny"
 fn_params_excessive_bools = "deny"
 
+# Restriction lints opted in one by one.
+unwrap_used = "deny"
+allow_attributes_without_reason = "deny"
+
 [workspace.dependencies]
 
 libdatamile = { path = "core/libdatamile" }

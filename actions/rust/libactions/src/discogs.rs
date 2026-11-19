@@ -1,6 +1,7 @@
+use std::path::Path;
+
 use anyhow::Result;
 use discogs_rs::{ArtistCredit, Auth, DiscogsClient, Master, Release};
-use std::path::Path;
 
 pub enum TargetUrl {
     DiscogsMaster(u64),

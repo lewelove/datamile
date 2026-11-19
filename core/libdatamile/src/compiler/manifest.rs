@@ -1,7 +1,9 @@
-use crate::error::DatamileError;
-use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::Path;
+
+use serde_json::{Value, json};
+
+use crate::error::DatamileError;
 
 pub const BUILTIN_MANIFESTS: &[&str] = &["metadata", "theme", "virtual"];
 

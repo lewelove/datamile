@@ -1,7 +1,8 @@
+use anyhow::Result;
+
 use crate::client::MusicBrainzClient;
 use crate::models::{FetchPlan, OverwriteMode, TargetKind};
 use crate::writer::write_output;
-use anyhow::Result;
 
 pub async fn execute(plan: FetchPlan) -> Result<()> {
     if let Some(ref path) = plan.output_path

@@ -1,6 +1,8 @@
-use crate::lua::LuaEngine;
-use mlua::Table;
 use std::path::PathBuf;
+
+use mlua::Table;
+
+use crate::lua::LuaEngine;
 
 struct TempFile(PathBuf);
 

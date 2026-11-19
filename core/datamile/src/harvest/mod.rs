@@ -1,11 +1,11 @@
-use libdatamile::harvest::{SUPPORTED_AUDIO_EXTENSIONS, is_audio_file};
-use rayon::prelude::*;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
+use libdatamile::harvest::{SUPPORTED_AUDIO_EXTENSIONS, is_audio_file};
 pub use libdatamile::harvest::{harvest_file, harvest_file_cached};
+use rayon::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatMode {

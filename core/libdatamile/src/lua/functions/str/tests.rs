@@ -1,5 +1,6 @@
-use crate::lua::LuaEngine;
 use mlua::Table;
+
+use crate::lua::LuaEngine;
 
 /// Verify that `d.str.startswith` and `d.str.endswith` detect prefixes and suffixes.
 #[test]

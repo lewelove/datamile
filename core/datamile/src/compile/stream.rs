@@ -1,11 +1,13 @@
-use crate::compile::{ExportTarget, LogVerbosity, build};
-use anyhow::Result;
-use rayon::prelude::*;
-use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+use anyhow::Result;
+use rayon::prelude::*;
+use serde_json::Value;
+
+use crate::compile::{ExportTarget, LogVerbosity, build};
 
 pub struct CompiledItem {
     pub album_dir: PathBuf,

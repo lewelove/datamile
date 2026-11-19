@@ -1,5 +1,6 @@
-use crate::lua::LuaEngine;
 use mlua::Table;
+
+use crate::lua::LuaEngine;
 
 /// Verify that `d.tbl.extend` merges tables shallowly and respects behavior modes.
 #[test]

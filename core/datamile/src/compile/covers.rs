@@ -1,3 +1,8 @@
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use libdatamile::error::DatamileError;
@@ -6,10 +11,6 @@ use libdatamile::images::{
     resize_image_fit,
 };
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashSet};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 struct CoverSpec {
     fit_mode: FitMode,

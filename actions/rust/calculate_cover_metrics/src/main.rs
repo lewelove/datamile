@@ -1,15 +1,16 @@
 mod metrics;
 mod models;
 
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
 use anyhow::{Context, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
 use models::{CoverFileInfo, CoverMetricsDoc};
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 use tempfile::NamedTempFile;
 
 const COVER_CANDIDATES: &[&str] = &[

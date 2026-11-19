@@ -1,5 +1,6 @@
-use image::{DynamicImage, GenericImageView};
 use std::io::Cursor;
+
+use image::{DynamicImage, GenericImageView};
 
 #[must_use]
 pub fn calculate_chroma(img: &DynamicImage) -> f64 {

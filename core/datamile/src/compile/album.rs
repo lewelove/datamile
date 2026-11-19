@@ -1,8 +1,9 @@
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use libdatamile::error::DatamileError;
 use libdatamile::utils::HashMode;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
-use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlbumKind {

@@ -1,13 +1,15 @@
-use crate::mapping::item_key_to_flag;
-use crate::models::{CoverDeleteMode, CoverDiffDisplay, TagDeleteMode, TrackTask};
-use crate::tag::{extract_tag_map, read_file_tag};
-use anyhow::{Context, Result};
-use lofty::picture::PictureType;
-use lofty::tag::ItemKey;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
+
+use anyhow::{Context, Result};
+use lofty::picture::PictureType;
+use lofty::tag::ItemKey;
+
+use crate::mapping::item_key_to_flag;
+use crate::models::{CoverDeleteMode, CoverDiffDisplay, TagDeleteMode, TrackTask};
+use crate::tag::{extract_tag_map, read_file_tag};
 
 const TTY_PATH: &str = "/dev/tty";
 

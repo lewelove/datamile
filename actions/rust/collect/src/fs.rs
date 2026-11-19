@@ -1,8 +1,10 @@
-use crate::models::{AlbumData, FormattingConfig};
-use anyhow::Result;
-use libactions::fs::{escape_toml_string, sanitize_filename};
 use std::fs;
 use std::path::Path;
+
+use anyhow::Result;
+use libactions::fs::{escape_toml_string, sanitize_filename};
+
+use crate::models::{AlbumData, FormattingConfig};
 
 // Creates album directory and populates canonical TOML manifests.
 pub fn create_album_directory(

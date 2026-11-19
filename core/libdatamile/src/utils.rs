@@ -1,9 +1,8 @@
-use base64::{
-    Engine as _,
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+use base64::Engine as _;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

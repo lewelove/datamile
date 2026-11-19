@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
 use lofty::config::ParseOptions;
 use lofty::file::AudioFile;
@@ -5,9 +9,6 @@ use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{ItemValue, TagType};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
 
 pub const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "flac", "wav", "wave", "aif", "aiff", "aifc", "afc", "alac", "mp3", "mp2", "mp1",

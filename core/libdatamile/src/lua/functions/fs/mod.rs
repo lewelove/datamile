@@ -1,13 +1,15 @@
 #[cfg(test)]
 mod tests;
 
-use crate::error::DatamileError;
-use crate::lua::EngineContext;
-use mlua::serde::SerializeOptions;
-use mlua::{Lua, LuaSerdeExt, Table};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+
+use mlua::serde::SerializeOptions;
+use mlua::{Lua, LuaSerdeExt, Table};
+
+use crate::error::DatamileError;
+use crate::lua::EngineContext;
 
 const LUA_FS: &str = include_str!("mod.lua");
 

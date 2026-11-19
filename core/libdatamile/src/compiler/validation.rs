@@ -1,8 +1,10 @@
-use crate::compiler::manifest::extract_strict_u32;
-use crate::error::DatamileError;
-use serde_json::Value;
 use std::collections::HashSet;
 use std::path::Path;
+
+use serde_json::Value;
+
+use crate::compiler::manifest::extract_strict_u32;
+use crate::error::DatamileError;
 
 pub fn validate_track_indices(
     entries: &[Value],

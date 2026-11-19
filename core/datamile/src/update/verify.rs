@@ -1,10 +1,12 @@
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+use rayon::prelude::*;
+
 use crate::server::state::DependencyGraph;
 use crate::update::cache::FileStat;
 use crate::update::client::ForceMode;
-use anyhow::Result;
-use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
 pub fn find_missing_paths(
     all_albums: &[PathBuf],

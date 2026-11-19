@@ -1,5 +1,6 @@
-use rayon::prelude::*;
 use std::path::PathBuf;
+
+use rayon::prelude::*;
 use walkdir::WalkDir;
 
 pub struct Library {

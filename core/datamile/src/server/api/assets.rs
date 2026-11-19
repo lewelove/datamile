@@ -1,4 +1,7 @@
-use crate::server::state::AppState;
+use std::collections::HashSet;
+use std::path::{Path as StdPath, PathBuf};
+use std::sync::Arc;
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -10,12 +13,11 @@ use libdatamile::images::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashSet;
-use std::path::{Path as StdPath, PathBuf};
-use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
+
+use crate::server::state::AppState;
 
 #[derive(Deserialize)]
 pub struct CoverQuery {

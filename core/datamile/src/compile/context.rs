@@ -1,6 +1,7 @@
+use std::path::{Path, PathBuf};
+
 use libdatamile::harvest::SUPPORTED_AUDIO_EXTENSIONS;
 use libdatamile::utils::expand_path;
-use std::path::{Path, PathBuf};
 
 pub struct PreparedContext {
     pub audio_files: Vec<PathBuf>,

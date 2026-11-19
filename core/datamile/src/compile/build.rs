@@ -1,10 +1,12 @@
-use crate::compile::{album, context, covers, tracks, utils};
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
+
 use libdatamile::compiler::manifest::load_manifests;
 use libdatamile::error::DatamileError;
 use serde::de::Error as _;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+
+use crate::compile::{album, context, covers, tracks, utils};
 
 struct PrimaryBuildData {
     parsed_manifests: serde_json::Map<String, Value>,

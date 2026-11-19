@@ -1,3 +1,10 @@
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use libdatamile::utils::expand_path;
+
 use crate::compile::{self, LogVerbosity};
 use crate::server::state::{DependencyGraph, UpdateScope};
 use crate::update::cache::{
@@ -7,11 +14,6 @@ use crate::update::cache::{
 use crate::update::queue::{
     WorkQueueContext, check_lua_config_changed, resolve_work_queue, update_cache_entries,
 };
-use anyhow::{Context, Result};
-use libdatamile::utils::expand_path;
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForceMode {

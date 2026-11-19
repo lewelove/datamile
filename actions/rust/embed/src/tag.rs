@@ -1,5 +1,7 @@
-use crate::mapping::canonical_key;
-use crate::models::{CoverDeleteMode, CoverStatus, DiskCover, TagDeleteMode, TrackTask};
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -8,10 +10,10 @@ use lofty::picture::{Picture, PictureType};
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, Tag, TagType};
-use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::path::Path;
 use xxhash_rust::xxh64::xxh64;
+
+use crate::mapping::canonical_key;
+use crate::models::{CoverDeleteMode, CoverStatus, DiskCover, TagDeleteMode, TrackTask};
 
 const HASH_SEED: u64 = 0;
 

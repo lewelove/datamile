@@ -1,5 +1,6 @@
-use crate::lua::LuaEngine;
 use mlua::Table;
+
+use crate::lua::LuaEngine;
 
 /// Verify that `d.fn.present` returns the input value when the value is not empty.
 #[test]

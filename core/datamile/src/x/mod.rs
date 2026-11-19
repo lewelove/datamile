@@ -1,9 +1,10 @@
+use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
 use libdatamile::utils::expand_path;
 use mpd_client::Client;
 use serde::{Deserialize, Serialize};
-use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
 use tokio::net::TcpStream;
 use walkdir::WalkDir;
 

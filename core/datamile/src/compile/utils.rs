@@ -1,6 +1,7 @@
+use std::path::Path;
+
 use libdatamile::error::DatamileError;
 use serde_json::{Value, json};
-use std::path::Path;
 
 pub fn strip_empty_values(value: &mut Value) {
     match value {

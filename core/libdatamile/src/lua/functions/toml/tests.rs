@@ -1,5 +1,6 @@
-use crate::lua::LuaEngine;
 use mlua::Table;
+
+use crate::lua::LuaEngine;
 
 /// Verify that `d.toml.decode` and `d.toml.encode` convert data between Lua and TOML.
 #[test]

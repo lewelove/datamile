@@ -1,5 +1,6 @@
-use serde_json::Value;
 use std::collections::HashSet;
+
+use serde_json::Value;
 
 pub fn compress(
     mut raw_tracks: Vec<serde_json::Map<String, Value>>,

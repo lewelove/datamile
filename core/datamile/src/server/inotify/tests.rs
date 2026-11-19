@@ -1,6 +1,8 @@
-use super::handler::filter_reingested_ids;
-use serde_json::json;
 use std::collections::HashMap;
+
+use serde_json::json;
+
+use super::handler::filter_reingested_ids;
 
 /// Verify that an album ID present in both removal and update sets is purged from removals.
 ///

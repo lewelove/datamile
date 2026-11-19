@@ -1,5 +1,6 @@
-use crate::lua::LuaEngine;
 use mlua::Table;
+
+use crate::lua::LuaEngine;
 
 /// Verify that `d.system` executes a command synchronously and captures standard output.
 #[test]

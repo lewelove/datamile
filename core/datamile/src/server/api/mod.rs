@@ -4,12 +4,12 @@ pub mod playback;
 pub mod system;
 pub mod websocket;
 
-use crate::server::state::AppState;
-use axum::{
-    Router,
-    routing::{any, get, post},
-};
 use std::sync::Arc;
+
+use axum::Router;
+use axum::routing::{any, get, post};
+
+use crate::server::state::AppState;
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()

@@ -1,7 +1,9 @@
+use std::path::{Path, PathBuf};
+
+use walkdir::WalkDir;
+
 use crate::error::DatamileError;
 use crate::harvest::is_audio_file;
-use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 pub fn find_target_albums(path: &Path) -> Result<Vec<PathBuf>, DatamileError> {
     let mut results = std::collections::HashSet::new();

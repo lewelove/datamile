@@ -1,8 +1,10 @@
-use super::{AlbumRecord, LogicEngine, SortKey, SortOrder, value_to_sort_key};
+use std::collections::{HashMap, HashSet};
+
 use libdatamile::lua::{FormattedGrouperResult, GrouperFormatContext};
 use roaring::RoaringBitmap;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+
+use super::{AlbumRecord, LogicEngine, SortKey, SortOrder, value_to_sort_key};
 
 fn value_to_display_string(val: &Value) -> String {
     val.as_str()

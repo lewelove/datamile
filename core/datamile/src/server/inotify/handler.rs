@@ -1,11 +1,13 @@
-use crate::server::inotify::classifier::ChangeFlags;
-use crate::server::logic::SortOrder;
-use crate::server::state::AppState;
-use rayon::prelude::*;
-use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+use rayon::prelude::*;
+use serde_json::json;
+
+use crate::server::inotify::classifier::ChangeFlags;
+use crate::server::logic::SortOrder;
+use crate::server::state::AppState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IngestOrigin {

@@ -1,6 +1,7 @@
-use super::{LogicEngine, SortOrder};
 use roaring::RoaringBitmap;
 use serde_json::Value;
+
+use super::{LogicEngine, SortOrder};
 
 impl LogicEngine {
     pub fn request_view(

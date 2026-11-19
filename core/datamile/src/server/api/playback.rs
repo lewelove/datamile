@@ -1,11 +1,13 @@
-use crate::server::mpd::MpdCommand;
-use crate::server::state::AppState;
+use std::path::Path as StdPath;
+use std::sync::Arc;
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use std::path::Path as StdPath;
-use std::sync::Arc;
+
+use crate::server::mpd::MpdCommand;
+use crate::server::state::AppState;
 
 pub async fn play_album(
     Path(id): Path<String>,

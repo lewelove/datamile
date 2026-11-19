@@ -1,3 +1,10 @@
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use anyhow::Result;
+
 use crate::compile::{self, LogVerbosity};
 use crate::server::inotify::handler::IngestOrigin;
 use crate::server::state::{AppState, PendingUpdateParams, UpdateScope};
@@ -10,11 +17,6 @@ use crate::update::queue::{
     WorkQueueContext, check_lua_config_changed, resolve_work_queue,
     try_get_server_tracked_albums, update_cache_entries,
 };
-use anyhow::Result;
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 pub struct CompilePassContext<'a> {
     pub scope: &'a UpdateScope,

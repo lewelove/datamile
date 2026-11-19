@@ -1,11 +1,11 @@
 pub mod fast_rgb_to_bmp;
 
-pub use fast_image_resize::FilterType;
-use fast_image_resize::PixelType;
-use fast_image_resize::images::Image;
-use fast_image_resize::{ResizeAlg, ResizeOptions, Resizer};
-use image::ImageEncoder;
 use std::io::Cursor;
+
+pub use fast_image_resize::FilterType;
+use fast_image_resize::images::Image;
+use fast_image_resize::{PixelType, ResizeAlg, ResizeOptions, Resizer};
+use image::ImageEncoder;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FitMode {

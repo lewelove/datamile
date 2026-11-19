@@ -1,12 +1,14 @@
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+
 use crate::compile::LogVerbosity;
 use crate::server::state::{DependencyGraph, UpdateScope};
 use crate::update::cache::{FileStat, get_lua_config_hash};
 use crate::update::client::ForceMode;
 use crate::update::verify::{find_missing_paths, verify_albums_parallel};
-use anyhow::Result;
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::{Path, PathBuf};
 
 pub struct WorkQueueContext<'a> {
     pub scope: &'a UpdateScope,

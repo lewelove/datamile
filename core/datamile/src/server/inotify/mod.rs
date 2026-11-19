@@ -4,8 +4,9 @@ pub mod handler;
 mod tests;
 mod watcher;
 
-use crate::server::state::AppState;
 use std::sync::Arc;
+
+use crate::server::state::AppState;
 
 pub fn start(state: Arc<AppState>) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();

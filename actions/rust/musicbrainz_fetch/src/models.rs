@@ -1,5 +1,6 @@
-use clap::ValueEnum;
 use std::path::PathBuf;
+
+use clap::ValueEnum;
 
 const UUID_LENGTH: usize = 36;
 const HYPHEN_INDICES: [usize; 4] = [8, 13, 18, 23];

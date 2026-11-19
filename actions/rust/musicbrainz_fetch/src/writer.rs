@@ -1,8 +1,9 @@
-use anyhow::{Context, Result};
-use serde_json::Value;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+
+use anyhow::{Context, Result};
+use serde_json::Value;
 use tempfile::NamedTempFile;
 
 pub fn write_output(dest_path: Option<&Path>, value: &Value) -> Result<()> {

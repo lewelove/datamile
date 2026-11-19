@@ -13,7 +13,7 @@ import Sidebar from "./Sidebar.svelte";
 
 let activeId = $derived(player.currentAlbumId);
 let activeAlbum = $derived(activeId ? collection.dict[activeId] : null);
-let coverHash = $derived(activeAlbum?.cover_hash || "");
+let coverHash = $derived(activeAlbum?.image_hash || "");
 let fullAlbum = $derived(activeId ? collection.fullAlbumCache[activeId] : null);
 
 let palette = $derived(

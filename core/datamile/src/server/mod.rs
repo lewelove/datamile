@@ -18,10 +18,6 @@ use self::state::{AppConfig as ServerConfig, AppState};
 
 fn create_directories(cache_root: &Path, state_root: &Path) {
     std::fs::create_dir_all(cache_root).ok();
-    std::fs::create_dir_all(cache_root.join("covers").join("master")).ok();
-    std::fs::create_dir_all(cache_root.join("covers").join("static")).ok();
-    std::fs::create_dir_all(cache_root.join("covers").join("dynamic")).ok();
-    std::fs::create_dir_all(cache_root.join("covers").join("metadata")).ok();
     std::fs::create_dir_all(cache_root.join("harvest")).ok();
     std::fs::create_dir_all(cache_root.join("libraries")).ok();
     std::fs::create_dir_all(cache_root.join("objects")).ok();
@@ -78,7 +74,6 @@ pub async fn run(port: u16) -> Result<()> {
 
     create_directories(&cache_root, &state_root);
 
-    let covers = config.covers.clone();
     let interfaces = config.interfaces.clone();
     let actions = config.actions.clone();
     let resolved_dependencies = config.dependencies.clone();
@@ -90,7 +85,6 @@ pub async fn run(port: u16) -> Result<()> {
         cache_root: cache_root.clone(),
         state_root: state_root.clone(),
         resolved_dependencies,
-        covers,
         interfaces,
         actions,
         config_dir: config_dir.clone(),
@@ -125,7 +119,7 @@ pub async fn run(port: u16) -> Result<()> {
         tracked_albums: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         full_rescan_needed: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         active_writes: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-        cover_tasks: Arc::new(state::CoverTaskRegistry::default()),
+        image_tasks: Arc::new(state::ImageTaskRegistry::default()),
         update_lock: Arc::new(std::sync::Mutex::new(state::UpdateState::default())),
         deps_graph: Arc::new(RwLock::new(initial_deps_graph)),
     });

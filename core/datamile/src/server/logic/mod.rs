@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 pub use sort::{SortKey, SortOrder, value_to_sort_key};
 
 #[derive(Clone, Debug)]
-pub struct CoverLookupItem {
+pub struct ImageLookupItem {
     pub album_dir: PathBuf,
     pub path: String,
     pub fit_mode: FitMode,
@@ -32,14 +32,14 @@ pub struct AlbumRecord {
     pub path: PathBuf,
     pub title: String,
     pub artist: String,
-    pub cover_path: String,
+    pub image_path: Option<String>,
     pub raw_json: Arc<str>,
     pub dict_raw: Box<RawValue>,
     pub total_discs: u64,
     pub total_tracks: u64,
     pub duration_ms: u64,
     pub track_uris: Vec<String>,
-    pub cover_namespaces: Vec<(String, String)>,
+    pub image_namespaces: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -72,7 +72,7 @@ pub struct LogicEngine {
     pub albums: HashMap<u32, AlbumRecord>,
     pub id_to_uid: HashMap<String, u32>,
     pub path_to_uid: HashMap<PathBuf, u32>,
-    pub cover_lookup: HashMap<String, CoverLookupItem>,
+    pub image_lookup: HashMap<String, ImageLookupItem>,
     pub track_lookup: HashMap<String, TrackLookupItem>,
     pub(crate) evaluated_logic: HashMap<u32, Value>,
 }
@@ -94,7 +94,7 @@ impl LogicEngine {
             albums: HashMap::new(),
             id_to_uid: HashMap::new(),
             path_to_uid: HashMap::new(),
-            cover_lookup: HashMap::new(),
+            image_lookup: HashMap::new(),
             track_lookup: HashMap::new(),
             evaluated_logic: HashMap::new(),
         })
@@ -128,7 +128,7 @@ impl LogicEngine {
         self.id_to_uid.clear();
         self.path_to_uid.clear();
         self.albums.clear();
-        self.cover_lookup.clear();
+        self.image_lookup.clear();
         self.next_uid = 1;
         self.track_lookup.clear();
         self.evaluated_logic.clear();
@@ -156,8 +156,8 @@ impl LogicEngine {
                 self.track_lookup.remove(uri);
             }
 
-            for (_, addr) in &record.cover_namespaces {
-                self.cover_lookup.remove(addr);
+            for (_, addr) in &record.image_namespaces {
+                self.image_lookup.remove(addr);
             }
         }
     }
@@ -278,28 +278,28 @@ impl LogicEngine {
         track_uris
     }
 
-    fn ingest_covers(
+    fn ingest_images(
         &mut self,
         album: &Value,
         album_dir_canon: &Path,
     ) -> (Option<Value>, Option<Value>, Vec<(String, String)>) {
-        let mut cover_namespaces = Vec::new();
-        let main_cover = album
-            .get("covers")
+        let mut image_namespaces = Vec::new();
+        let main_image = album
+            .get("images")
             .and_then(|c| c.get("main"))
             .and_then(Value::as_array)
             .and_then(|arr| arr.first());
 
-        let cover_path_val = main_cover
+        let image_path_val = main_image
             .and_then(|m| m.pointer("/source/file/path"))
             .cloned();
-        let cover_hash_val = main_cover.and_then(|m| m.get("address")).cloned();
+        let image_hash_val = main_image.and_then(|m| m.get("address")).cloned();
 
-        let Some(covers) = album.get("covers").and_then(Value::as_object) else {
-            return (cover_path_val, cover_hash_val, cover_namespaces);
+        let Some(images) = album.get("images").and_then(Value::as_object) else {
+            return (image_path_val, image_hash_val, image_namespaces);
         };
 
-        for (ns, entries) in covers {
+        for (ns, entries) in images {
             let Some(entries_arr) = entries.as_array() else {
                 continue;
             };
@@ -332,9 +332,9 @@ impl LogicEngine {
                 let fit_mode = parse_fit_mode(fit_str).unwrap_or(FitMode::Inside);
                 let filter = parse_filter(filter_str).unwrap_or(FilterType::CatmullRom);
 
-                self.cover_lookup.insert(
+                self.image_lookup.insert(
                     addr.to_string(),
-                    CoverLookupItem {
+                    ImageLookupItem {
                         album_dir: album_dir_canon.to_path_buf(),
                         path: p_str.to_string(),
                         fit_mode,
@@ -343,11 +343,11 @@ impl LogicEngine {
                         filter,
                     },
                 );
-                cover_namespaces.push((ns.clone(), addr.to_string()));
+                image_namespaces.push((ns.clone(), addr.to_string()));
             }
         }
 
-        (cover_path_val, cover_hash_val, cover_namespaces)
+        (image_path_val, image_hash_val, image_namespaces)
     }
 
     pub fn ingest_pre_evaluated(
@@ -397,14 +397,13 @@ impl LogicEngine {
             },
         );
 
-        let (cover_path_val, cover_hash_val, cover_namespaces) =
-            self.ingest_covers(album, &album_dir_canon);
+        let (image_path_val, image_hash_val, image_namespaces) =
+            self.ingest_images(album, &album_dir_canon);
 
-        let cover_path = cover_path_val
+        let image_path = image_path_val
             .as_ref()
             .and_then(Value::as_str)
-            .unwrap_or("cover.jpg")
-            .to_string();
+            .map(str::to_string);
 
         let title = album
             .get("album")
@@ -423,9 +422,9 @@ impl LogicEngine {
             "album": album.get("album"),
             "albumartist": album.get("albumartist"),
             "date": album.get("date"),
-            "cover_path": cover_path_val,
-            "cover_hash": cover_hash_val,
-            "covers": album.get("covers"),
+            "image_path": image_path_val,
+            "image_hash": image_hash_val,
+            "images": album.get("images"),
             "duration_formatted": info.get("duration_formatted"),
             "total_discs": info.get("total_discs"),
             "total_tracks": info.get("total_tracks"),
@@ -442,14 +441,14 @@ impl LogicEngine {
             path: album_dir_canon.clone(),
             title,
             artist,
-            cover_path,
+            image_path,
             raw_json: Arc::from(metadata_json),
             dict_raw,
             total_discs,
             total_tracks,
             duration_ms,
             track_uris,
-            cover_namespaces,
+            image_namespaces,
         };
 
         self.albums.insert(uid, record);

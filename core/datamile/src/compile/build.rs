@@ -6,7 +6,7 @@ use libdatamile::error::DatamileError;
 use serde::de::Error as _;
 use serde_json::{Value, json};
 
-use crate::compile::{album, context, covers, tracks, utils};
+use crate::compile::{album, context, images, tracks, utils};
 
 struct PrimaryBuildData {
     parsed_manifests: serde_json::Map<String, Value>,
@@ -42,7 +42,7 @@ struct AlbumAssemblyInput<'a> {
     keys: Value,
     info: Value,
     manifests: &'a BTreeMap<String, Value>,
-    covers: &'a BTreeMap<String, Value>,
+    images: &'a BTreeMap<String, Value>,
     parsed_manifests: &'a serde_json::Map<String, Value>,
     album_root: &'a Path,
 }
@@ -128,7 +128,7 @@ fn assemble_album_object(
     album_obj.insert("keys".to_string(), input.keys.clone());
     album_obj.insert("info".to_string(), input.info.clone());
     album_obj.insert("manifests".to_string(), json!(input.manifests));
-    album_obj.insert("covers".to_string(), json!(input.covers));
+    album_obj.insert("images".to_string(), json!(input.images));
 
     if let Some(theme) = input.parsed_manifests.get("theme")
         && let Some(colors) = theme.get("album").and_then(|a| a.get("colors"))
@@ -266,10 +266,10 @@ pub fn build(
         &ctx,
     )?;
 
-    let covers_map = covers::process_covers(
+    let images_map = images::process_images(
         &album_root_canon,
         &cache_root,
-        lua_res.get("covers"),
+        lua_res.get("images"),
         &mut dependencies,
     )?;
 
@@ -306,7 +306,7 @@ pub fn build(
         keys: album_keys,
         info: info_obj,
         manifests: &lock_manifests,
-        covers: &covers_map,
+        images: &images_map,
         parsed_manifests: &build_data.parsed_manifests,
         album_root: &album_root_canon,
     };

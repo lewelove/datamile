@@ -34,7 +34,6 @@ async fn build_init_payload(state: &AppState) -> String {
         )
     };
     let ui_data = state.ui_state.read().await.clone();
-    let covers = state.config.read().await.covers.clone();
 
     json!({
         "type": "INIT_DICT",
@@ -42,10 +41,7 @@ async fn build_init_payload(state: &AppState) -> String {
         "trackMap": track_map,
         "manifest": manifest,
         "shelves": shelves,
-        "ui_state": ui_data,
-        "config": {
-            "covers": covers
-        }
+        "ui_state": ui_data
     })
     .to_string()
 }

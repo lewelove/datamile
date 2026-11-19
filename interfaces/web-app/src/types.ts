@@ -39,7 +39,7 @@ export interface AlbumLockData {
   date?: string;
   keys?: Record<string, unknown>;
   colors?: AlbumColors | null;
-  covers?: Record<string, AlbumCoverEntry[]>;
+  images?: Record<string, AlbumCoverEntry[]>;
   info?: AlbumInfoData;
   manifests?: Record<string, unknown>;
 }
@@ -87,8 +87,8 @@ export interface AlbumCardItem {
   id: string;
   title?: string;
   artist?: string;
-  cover_hash?: string | null;
-  covers?: Record<string, AlbumCoverEntry[]>;
+  image_hash?: string | null;
+  images?: Record<string, AlbumCoverEntry[]>;
   total_discs?: number;
   total_tracks?: number;
   duration_formatted?: string;
@@ -102,9 +102,9 @@ export interface AlbumDictEntry {
   album?: string;
   albumartist?: string;
   date?: string;
-  cover_path?: string | null;
-  cover_hash?: string | null;
-  covers?: Record<string, AlbumCoverEntry[]>;
+  image_path?: string | null;
+  image_hash?: string | null;
+  images?: Record<string, AlbumCoverEntry[]>;
   duration_formatted?: string;
   total_discs?: number;
   total_tracks?: number;

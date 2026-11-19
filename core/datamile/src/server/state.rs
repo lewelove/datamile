@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use libdatamile::config::{ActionDef, CoversRegistry, InterfaceDef};
+use libdatamile::config::{ActionDef, InterfaceDef};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast};
 
@@ -11,23 +11,23 @@ use crate::server::logic::LogicEngine;
 use crate::server::mpd::MpdEngine;
 
 #[derive(Default)]
-pub struct CoverTaskRegistry {
+pub struct ImageTaskRegistry {
     tasks: Mutex<HashSet<PathBuf>>,
 }
 
-pub struct CoverTaskGuard {
+pub struct ImageTaskGuard {
     path: PathBuf,
-    registry: Arc<CoverTaskRegistry>,
+    registry: Arc<ImageTaskRegistry>,
 }
 
-impl CoverTaskRegistry {
+impl ImageTaskRegistry {
     #[must_use]
-    pub fn try_claim(self: &Arc<Self>, path: PathBuf) -> Option<CoverTaskGuard> {
+    pub fn try_claim(self: &Arc<Self>, path: PathBuf) -> Option<ImageTaskGuard> {
         let Ok(mut set) = self.tasks.lock() else {
             return None;
         };
         if set.insert(path.clone()) {
-            Some(CoverTaskGuard {
+            Some(ImageTaskGuard {
                 path,
                 registry: Arc::clone(self),
             })
@@ -37,7 +37,7 @@ impl CoverTaskRegistry {
     }
 }
 
-impl Drop for CoverTaskGuard {
+impl Drop for ImageTaskGuard {
     fn drop(&mut self) {
         if let Ok(mut set) = self.registry.tasks.lock() {
             set.remove(&self.path);
@@ -159,7 +159,7 @@ pub struct AppState {
     pub tracked_albums: Arc<Mutex<HashSet<String>>>,
     pub full_rescan_needed: Arc<AtomicBool>,
     pub active_writes: Arc<Mutex<HashSet<PathBuf>>>,
-    pub cover_tasks: Arc<CoverTaskRegistry>,
+    pub image_tasks: Arc<ImageTaskRegistry>,
     pub update_lock: Arc<Mutex<UpdateState>>,
     pub deps_graph: Arc<RwLock<DependencyGraph>>,
 }
@@ -170,7 +170,6 @@ pub struct AppConfig {
     pub cache_root: PathBuf,
     pub state_root: PathBuf,
     pub resolved_dependencies: Vec<PathBuf>,
-    pub covers: CoversRegistry,
     pub interfaces: HashMap<String, InterfaceDef>,
     pub actions: HashMap<String, ActionDef>,
     pub config_dir: PathBuf,

@@ -1,6 +1,7 @@
 pub mod fast_rgb_to_bmp;
 
 use std::io::Cursor;
+use std::path::{Path, PathBuf};
 
 pub use fast_image_resize::FilterType;
 use fast_image_resize::images::Image;
@@ -30,6 +31,12 @@ pub fn parse_fit_mode(mode: &str) -> Option<FitMode> {
         "inside" => Some(FitMode::Inside),
         _ => None,
     }
+}
+
+/// Single source of truth for where master and derivative images live on disk.
+#[must_use]
+pub fn master_dir(cache_root: &Path, address: &str) -> PathBuf {
+    cache_root.join("images").join(address)
 }
 
 #[must_use]

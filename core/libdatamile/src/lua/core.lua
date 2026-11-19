@@ -3,11 +3,7 @@ _G.d = _G.datamile
 
 _G.REGISTRY = {
     config = {},
-    covers = {
-        master = { size = 1080, filter = "mitchell" },
-        targets = {}
-    },
-    covers_rules = {},
+    images_rules = {},
     keys = {
         album = {},
         tracks = {}
@@ -73,7 +69,6 @@ _G.loadfile = function(filename, mode, env)
 end
 
 function __DATAMILE_GET_CONFIG() return REGISTRY.config end
-function __DATAMILE_GET_COVERS() return REGISTRY.covers end
 function __DATAMILE_GET_INTERFACES()
     local result = {}
     for name, intf in pairs(REGISTRY.interfaces or {}) do

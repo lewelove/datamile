@@ -423,10 +423,10 @@ export class ViewState {
             date: dictEntry.date,
             keys: dictEntry.keys,
             colors: dictEntry.colors,
-            covers: dictEntry.covers || {
+            images: dictEntry.images || {
               main: [
                 {
-                  address: dictEntry.cover_hash || ""
+                  address: dictEntry.image_hash || ""
                 }
               ]
             },

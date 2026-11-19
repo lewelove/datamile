@@ -7,18 +7,16 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use libdatamile::error::DatamileError;
 use libdatamile::images::{
-    FitMode, calculate_rendered_dimensions, master_dir, parse_filter, parse_fit_mode,
-    resize_image_fit,
+    FitMode, calculate_rendered_dimensions, filter_type_to_str, master_path,
+    parse_filter, parse_fit_mode, resize_image_fit, save_qoi_atomic,
 };
 use serde_json::{Value, json};
 
 struct ImageSpec {
     fit_mode: FitMode,
-    fit_mode_str: String,
     target_width: u32,
     target_height: u32,
     filter_type: libdatamile::images::FilterType,
-    filter_str: String,
     sources: Vec<String>,
 }
 
@@ -26,7 +24,7 @@ fn parse_fit_tuple(
     spec_obj: &serde_json::Map<String, Value>,
     album_root: &Path,
     namespace: &str,
-) -> Result<(FitMode, String, u32, u32), DatamileError> {
+) -> Result<(FitMode, u32, u32), DatamileError> {
     let fit_arr = spec_obj
         .get("fit")
         .and_then(Value::as_array)
@@ -90,7 +88,7 @@ fn parse_fit_tuple(
                 .to_string(),
         })?;
 
-    Ok((fit_mode, fit_mode_str, target_width, target_height))
+    Ok((fit_mode, target_width, target_height))
 }
 
 fn parse_sources(
@@ -146,7 +144,7 @@ fn parse_image_spec(
                 message: "Image specification must be a table".to_string(),
             })?;
 
-    let (fit_mode, fit_mode_str, target_width, target_height) =
+    let (fit_mode, target_width, target_height) =
         parse_fit_tuple(spec_obj, album_root, namespace)?;
 
     let filter_str = spec_obj
@@ -170,11 +168,9 @@ fn parse_image_spec(
 
     Ok(ImageSpec {
         fit_mode,
-        fit_mode_str,
         target_width,
         target_height,
         filter_type,
-        filter_str,
         sources,
     })
 }
@@ -283,11 +279,15 @@ pub fn process_images(
                 |f| format!("{f:?}").to_lowercase(),
             );
 
+            // Canonical enum spellings keep "Lanczos" and "lanczos" from
+            // producing two cache addresses for the same bytes.
+            let fit_str = spec.fit_mode.as_str();
+            let filter_str = filter_type_to_str(spec.filter_type);
             let address = compute_image_address(
-                &spec.fit_mode_str,
+                fit_str,
                 spec.target_width,
                 spec.target_height,
-                &spec.filter_str,
+                filter_str,
                 raw_hash.as_bytes(),
             );
 
@@ -299,8 +299,7 @@ pub fn process_images(
                 spec.fit_mode,
             );
 
-            let master_dir = master_dir(cache_root, &address);
-            let master_qoi_path = master_dir.join("master.qoi");
+            let master_qoi_path = master_path(cache_root, &address);
 
             if !master_qoi_path.exists() {
                 let img_rgb = img.into_rgb8();
@@ -311,9 +310,7 @@ pub fn process_images(
                     spec.fit_mode,
                     spec.filter_type,
                 ) {
-                    let _ = fs::create_dir_all(&master_dir);
-                    let _ = resized
-                        .save_with_format(&master_qoi_path, image::ImageFormat::Qoi);
+                    let _ = save_qoi_atomic(&master_qoi_path, &resized);
                 }
             }
 
@@ -321,8 +318,8 @@ pub fn process_images(
                 "address": address,
                 "width": rendered_w,
                 "height": rendered_h,
-                "fit": spec.fit_mode_str,
-                "filter": spec.filter_str,
+                "fit": fit_str,
+                "filter": filter_str,
                 "source": {
                     "file": {
                         "path": path_for_json,

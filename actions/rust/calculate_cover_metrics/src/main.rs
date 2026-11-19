@@ -10,17 +10,9 @@ use anyhow::{Context, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
+use libactions::lock::{resolve_album_image_from_lock, resolve_cover_candidate};
 use models::{CoverFileInfo, CoverMetricsDoc};
 use tempfile::NamedTempFile;
-
-const COVER_CANDIDATES: &[&str] = &[
-    "cover.jpg",
-    "cover.png",
-    "folder.jpg",
-    "front.jpg",
-    "cover.jpeg",
-    "front.png",
-];
 
 #[derive(Parser)]
 #[command(
@@ -57,7 +49,7 @@ fn main() -> Result<()> {
 
     let cover_path = args
         .cover
-        .or_else(|| resolve_from_lock(&album_dir))
+        .or_else(|| resolve_album_image_from_lock(&album_dir))
         .or_else(|| resolve_cover_candidate(&album_dir))
         .context("No cover image found for album")?;
 
@@ -112,21 +104,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn resolve_from_lock(album_dir: &Path) -> Option<PathBuf> {
-    let lock_path = album_dir.join("album.lock.json");
-    let content = fs::read_to_string(lock_path).ok()?;
-    let val: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let path_str = val
-        .pointer("/album/images/main/0/source/file/path")
-        .and_then(serde_json::Value::as_str)?;
-    let target = if Path::new(path_str).is_absolute() {
-        PathBuf::from(path_str)
-    } else {
-        album_dir.join(path_str)
-    };
-    if target.is_file() { Some(target) } else { None }
-}
-
 fn verify_existing_metrics(metrics_file: &Path, info_dir: &Path) -> bool {
     if !metrics_file.exists() {
         return false;
@@ -165,14 +142,4 @@ fn relative_path_from(target: &Path, base_dir: &Path) -> String {
         return format!("../{}", rel.to_string_lossy());
     }
     target.to_string_lossy().to_string()
-}
-
-fn resolve_cover_candidate(album_dir: &Path) -> Option<PathBuf> {
-    for candidate in COVER_CANDIDATES {
-        let p = album_dir.join(candidate);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
 }

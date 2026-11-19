@@ -1,4 +1,4 @@
-export interface AlbumCoverEntry {
+export interface AlbumImageEntry {
   address: string;
   width?: number;
   height?: number;
@@ -39,7 +39,7 @@ export interface AlbumLockData {
   date?: string;
   keys?: Record<string, unknown>;
   colors?: AlbumColors | null;
-  images?: Record<string, AlbumCoverEntry[]>;
+  images?: Record<string, AlbumImageEntry[]>;
   info?: AlbumInfoData;
   manifests?: Record<string, unknown>;
 }
@@ -87,8 +87,7 @@ export interface AlbumCardItem {
   id: string;
   title?: string;
   artist?: string;
-  image_hash?: string | null;
-  images?: Record<string, AlbumCoverEntry[]>;
+  images?: Record<string, AlbumImageEntry[]>;
   total_discs?: number;
   total_tracks?: number;
   duration_formatted?: string;
@@ -102,9 +101,7 @@ export interface AlbumDictEntry {
   album?: string;
   albumartist?: string;
   date?: string;
-  image_path?: string | null;
-  image_hash?: string | null;
-  images?: Record<string, AlbumCoverEntry[]>;
+  images?: Record<string, AlbumImageEntry[]>;
   duration_formatted?: string;
   total_discs?: number;
   total_tracks?: number;
@@ -279,7 +276,6 @@ export type WsMessage =
       manifest?: LogicManifest;
       shelves?: Record<string, string[]>;
       ui_state?: PersistedState;
-      config?: Record<string, unknown>;
     }
   | { type: "VIEW_DATA"; ids?: string[] }
   | { type: "SHELF_DATA"; ids?: string[] }
@@ -299,6 +295,5 @@ export type WsMessage =
       shelves?: Record<string, string[]>;
     }
   | { type: "LOGIC_UPDATE"; manifest?: LogicManifest }
-  | { type: "CONFIG_UPDATE"; config?: Record<string, unknown> }
   | { type: "CACHE_REBUILT" }
   | (MpdStatusPayload & { type: "MPD_STATUS" });

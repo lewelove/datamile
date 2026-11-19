@@ -412,10 +412,6 @@ async fn handle_config_change(state: &Arc<AppState>) {
                 logic.manifest.clone()
             };
 
-            let _ = state
-                .tx
-                .send(json!({ "type": "CONFIG_UPDATE" }).to_string());
-
             let _ = state.tx.send(
                 json!({
                     "type": "LOGIC_UPDATE",

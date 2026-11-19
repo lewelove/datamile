@@ -11,6 +11,7 @@ anyhow = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
 clap = { workspace = true }
+libactions = { workspace = true }
 image = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

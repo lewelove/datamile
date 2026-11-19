@@ -15,7 +15,7 @@ let leftColumnWidth = $derived(Math.round(0.36 * windowWidth));
 let albumData = $derived(album.album || {});
 let infoData = $derived(albumData.info || {});
 
-let coverHash = $derived(albumData.images?.main?.[0]?.address || "");
+let imageHash = $derived(albumData.images?.main?.[0]?.address || "");
 let title = $derived(albumData.album || "Untitled");
 let artist = $derived(albumData.albumartist || "Unknown");
 let dateString = $derived(albumData.date || "");
@@ -27,14 +27,14 @@ let durationStr = $derived(infoData.duration_formatted || "--:--");
 let isReady = $state(false);
 
 $effect(() => {
-  if (!coverHash) {
+  if (!imageHash) {
     isReady = true;
     return;
   }
 
   const dpr = window.devicePixelRatio || 1;
   const targetWidth = Math.round((leftColumnWidth - 64) * dpr);
-  const srcUrl = `/api/images/${coverHash}.bmp?size=${targetWidth}&filter=catmullrom`;
+  const srcUrl = `/api/images/${imageHash}.bmp?size=${targetWidth}&filter=catmullrom`;
 
   const img = new Image();
   img.src = srcUrl;
@@ -110,7 +110,7 @@ function handleBackdropClick(e: MouseEvent) {
       <div class="column-left">
         <div class="cover-container" style:height="{leftColumnWidth - 64}px">
           <ClearCover
-            hash={coverHash}
+            hash={imageHash}
             width={leftColumnWidth - 64}
             height={leftColumnWidth - 64}
           />

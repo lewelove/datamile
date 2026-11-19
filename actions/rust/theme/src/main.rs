@@ -12,16 +12,8 @@ use clap::Parser;
 use image::DynamicImage;
 use image::imageops::FilterType;
 use libactions::color::{calculate_palette_ratios, sort_palette};
+use libactions::lock::{resolve_album_image_from_lock, resolve_cover_candidate};
 use palette::Srgb;
-
-const COVER_CANDIDATES: &[&str] = &[
-    "cover.jpg",
-    "cover.png",
-    "folder.jpg",
-    "front.jpg",
-    "cover.jpeg",
-    "front.png",
-];
 
 #[derive(Parser)]
 #[command(author, version, about = "Extract color palettes from album artwork")]
@@ -60,7 +52,7 @@ fn main() -> Result<()> {
     let cover_path = if let Some(cp) = args.cover {
         cp
     } else if let Some(ref p) = args.path {
-        resolve_from_lock(p)
+        resolve_album_image_from_lock(p)
             .or_else(|| resolve_cover_candidate(p))
             .context("Could not find cover image in album directory")?
     } else {
@@ -136,31 +128,6 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn resolve_from_lock(album_dir: &Path) -> Option<PathBuf> {
-    let lock_path = album_dir.join("album.lock.json");
-    let content = std::fs::read_to_string(lock_path).ok()?;
-    let val: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let path_str = val
-        .pointer("/album/images/main/0/source/file/path")
-        .and_then(serde_json::Value::as_str)?;
-    let target = if Path::new(path_str).is_absolute() {
-        PathBuf::from(path_str)
-    } else {
-        album_dir.join(path_str)
-    };
-    if target.is_file() { Some(target) } else { None }
-}
-
-fn resolve_cover_candidate(album_dir: &Path) -> Option<PathBuf> {
-    for candidate in COVER_CANDIDATES {
-        let p = album_dir.join(candidate);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
 }
 
 fn process_image_to_palette(

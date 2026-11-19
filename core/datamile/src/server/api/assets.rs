@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -8,8 +9,8 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use libdatamile::images::{
     FilterType, ImageWireFormat, decode_qoi_to_rgb, encode_rgb_image, filter_type_to_str,
-    master_dir, parse_filter, parse_wire_format, read_qoi_dimensions, resize_image_fit,
-    resize_image_max_edge,
+    master_dir, master_path, parse_filter, parse_wire_format, read_qoi_dimensions,
+    resize_image_fit, resize_image_max_edge, save_qoi_atomic, write_atomic,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -62,14 +63,36 @@ fn error_response(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
+/// How long a request waits for a master another task is already rendering.
+const MASTER_WAIT_ATTEMPTS: u8 = 50;
+const MASTER_WAIT_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Masters are written atomically, so an existing file is always complete.
+async fn wait_for_master(master_path: PathBuf) -> Result<PathBuf, StatusCode> {
+    for _ in 0..MASTER_WAIT_ATTEMPTS {
+        if master_path.exists() {
+            return Ok(master_path);
+        }
+        tokio::time::sleep(MASTER_WAIT_INTERVAL).await;
+    }
+    Err(StatusCode::NOT_FOUND)
+}
+
 async fn ensure_master_image(
     state: &Arc<AppState>,
-    master_path: PathBuf,
     address: &str,
-) -> Result<(), StatusCode> {
+) -> Result<PathBuf, StatusCode> {
+    let cache_root = state.config.read().await.cache_root.clone();
+    let master_path = master_path(&cache_root, address);
+
     if master_path.exists() {
-        return Ok(());
+        return Ok(master_path);
     }
+
+    // A prewarm worker or a parallel request may already render this address.
+    let Some(_guard) = state.image_tasks.try_claim(master_path.clone()) else {
+        return wait_for_master(master_path).await;
+    };
 
     let lookup_item = {
         let logic = state.logic.read().await;
@@ -99,13 +122,7 @@ async fn ensure_master_image(
             item.filter,
         )?;
 
-        if let Some(parent) = blob_path_clone.parent() {
-            std::fs::create_dir_all(parent).ok()?;
-        }
-
-        resized
-            .save_with_format(&blob_path_clone, image::ImageFormat::Qoi)
-            .ok()?;
+        save_qoi_atomic(&blob_path_clone, &resized).ok()?;
         Some(())
     })
     .await;
@@ -114,7 +131,7 @@ async fn ensure_master_image(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    Ok(())
+    Ok(master_path)
 }
 
 fn parse_target_request(
@@ -266,12 +283,10 @@ pub async fn image(
         guard.cache_root.clone()
     };
 
-    let master_dir = master_dir(&cache_root, address);
-    let master_path = master_dir.join("master.qoi");
-
-    if let Err(status) = ensure_master_image(&state, master_path.clone(), address).await {
-        return error_response(status, "Image not found");
-    }
+    let master_path = match ensure_master_image(&state, address).await {
+        Ok(path) => path,
+        Err(status) => return error_response(status, "Image not found"),
+    };
 
     let m_dimension = match read_master_dimension(&master_path).await {
         Ok(dim) => dim,
@@ -301,7 +316,7 @@ pub async fn image(
         return StatusCode::NOT_MODIFIED.into_response();
     }
 
-    let cached_file_path = master_dir.join(&cache_filename);
+    let cached_file_path = master_dir(&cache_root, address).join(&cache_filename);
 
     let bytes = if let Ok(data) = tokio::fs::read(&cached_file_path).await {
         data
@@ -381,7 +396,6 @@ fn collect_matching_addresses(
 
 async fn process_cache_candidate(
     state: &Arc<AppState>,
-    master_dir: PathBuf,
     master_path: PathBuf,
     target_path: PathBuf,
     params: (u32, FilterType, u8, ImageWireFormat),
@@ -391,7 +405,6 @@ async fn process_cache_candidate(
     };
 
     let (size, filter, quality, wire_format) = params;
-    let target_path_clone = target_path.clone();
 
     let _ = tokio::task::spawn_blocking(move || {
         let _guard = guard;
@@ -405,8 +418,7 @@ async fn process_cache_candidate(
         }
 
         let encoded = encode_rgb_image(&img, wire_format, quality)?;
-        let _ = std::fs::create_dir_all(&master_dir);
-        let _ = std::fs::write(&target_path_clone, encoded);
+        write_atomic(&target_path, &encoded).ok()?;
         Some(())
     })
     .await;
@@ -441,38 +453,34 @@ async fn run_cache_images_batch(
     let semaphore = Arc::new(Semaphore::new(concurrency));
 
     for address in target_addresses {
-        let master_dir = master_dir(&cache_root, &address);
-        let master_path = master_dir.join("master.qoi");
-
-        if ensure_master_image(&state, master_path.clone(), &address)
-            .await
-            .is_err()
-        {
-            continue;
-        }
-
-        let Ok(m_dimension) = read_master_dimension(&master_path).await else {
-            continue;
-        };
-
-        let cache_filename =
-            build_cache_filename(size, m_dimension, filter, quality, wire_format);
-        let target_path = master_dir.join(&cache_filename);
-
-        if target_path.exists() {
-            continue;
-        }
-
         let sem_clone = Arc::clone(&semaphore);
         let state_clone = Arc::clone(&state);
+        let cache_root = cache_root.clone();
 
         tokio::spawn(async move {
             let Ok(_permit) = sem_clone.acquire().await else {
                 return;
             };
+
+            let Ok(master_path) = ensure_master_image(&state_clone, &address).await
+            else {
+                return;
+            };
+
+            let Ok(m_dimension) = read_master_dimension(&master_path).await else {
+                return;
+            };
+
+            let cache_filename =
+                build_cache_filename(size, m_dimension, filter, quality, wire_format);
+            let target_path = master_dir(&cache_root, &address).join(&cache_filename);
+
+            if target_path.exists() {
+                return;
+            }
+
             process_cache_candidate(
                 &state_clone,
-                master_dir,
                 master_path,
                 target_path,
                 (size, filter, quality, wire_format),
@@ -567,7 +575,7 @@ pub async fn album_image(
     let path_opt = {
         let logic = state.logic.read().await;
         logic.album_record(&id).and_then(|record| {
-            let ip = record.image_path.as_deref()?;
+            let ip = record.main_image_path.as_deref()?;
             Some(if std::path::Path::new(ip).is_absolute() {
                 PathBuf::from(ip)
             } else {

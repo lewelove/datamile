@@ -16,6 +16,9 @@ use serde_json::value::RawValue;
 use serde_json::{Value, json};
 pub use sort::{SortKey, SortOrder, value_to_sort_key};
 
+/// Render size assumed when an image entry omits its rendered dimensions.
+const DEFAULT_IMAGE_DIM: u32 = 1080;
+
 #[derive(Clone, Debug)]
 pub struct ImageLookupItem {
     pub album_dir: PathBuf,
@@ -32,7 +35,7 @@ pub struct AlbumRecord {
     pub path: PathBuf,
     pub title: String,
     pub artist: String,
-    pub image_path: Option<String>,
+    pub main_image_path: Option<String>,
     pub raw_json: Arc<str>,
     pub dict_raw: Box<RawValue>,
     pub total_discs: u64,
@@ -282,21 +285,15 @@ impl LogicEngine {
         &mut self,
         album: &Value,
         album_dir_canon: &Path,
-    ) -> (Option<Value>, Option<Value>, Vec<(String, String)>) {
+    ) -> (Option<String>, Vec<(String, String)>) {
         let mut image_namespaces = Vec::new();
-        let main_image = album
-            .get("images")
-            .and_then(|c| c.get("main"))
-            .and_then(Value::as_array)
-            .and_then(|arr| arr.first());
-
-        let image_path_val = main_image
-            .and_then(|m| m.pointer("/source/file/path"))
-            .cloned();
-        let image_hash_val = main_image.and_then(|m| m.get("address")).cloned();
+        let main_image_path = album
+            .pointer("/images/main/0/source/file/path")
+            .and_then(Value::as_str)
+            .map(str::to_string);
 
         let Some(images) = album.get("images").and_then(Value::as_object) else {
-            return (image_path_val, image_hash_val, image_namespaces);
+            return (main_image_path, image_namespaces);
         };
 
         for (ns, entries) in images {
@@ -322,12 +319,12 @@ impl LogicEngine {
                     .get("width")
                     .and_then(Value::as_u64)
                     .and_then(|v| u32::try_from(v).ok())
-                    .unwrap_or(1080);
+                    .unwrap_or(DEFAULT_IMAGE_DIM);
                 let height = entry
                     .get("height")
                     .and_then(Value::as_u64)
                     .and_then(|v| u32::try_from(v).ok())
-                    .unwrap_or(1080);
+                    .unwrap_or(DEFAULT_IMAGE_DIM);
 
                 let fit_mode = parse_fit_mode(fit_str).unwrap_or(FitMode::Inside);
                 let filter = parse_filter(filter_str).unwrap_or(FilterType::CatmullRom);
@@ -347,7 +344,7 @@ impl LogicEngine {
             }
         }
 
-        (image_path_val, image_hash_val, image_namespaces)
+        (main_image_path, image_namespaces)
     }
 
     pub fn ingest_pre_evaluated(
@@ -397,13 +394,8 @@ impl LogicEngine {
             },
         );
 
-        let (image_path_val, image_hash_val, image_namespaces) =
+        let (main_image_path, image_namespaces) =
             self.ingest_images(album, &album_dir_canon);
-
-        let image_path = image_path_val
-            .as_ref()
-            .and_then(Value::as_str)
-            .map(str::to_string);
 
         let title = album
             .get("album")
@@ -422,8 +414,6 @@ impl LogicEngine {
             "album": album.get("album"),
             "albumartist": album.get("albumartist"),
             "date": album.get("date"),
-            "image_path": image_path_val,
-            "image_hash": image_hash_val,
             "images": album.get("images"),
             "duration_formatted": info.get("duration_formatted"),
             "total_discs": info.get("total_discs"),
@@ -441,7 +431,7 @@ impl LogicEngine {
             path: album_dir_canon.clone(),
             title,
             artist,
-            image_path,
+            main_image_path,
             raw_json: Arc::from(metadata_json),
             dict_raw,
             total_discs,

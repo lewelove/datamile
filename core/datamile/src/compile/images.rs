@@ -7,18 +7,16 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use libdatamile::error::DatamileError;
 use libdatamile::images::{
-    FitMode, calculate_rendered_dimensions, parse_filter, parse_fit_mode,
-    resize_image_fit,
+    FitMode, calculate_rendered_dimensions, filter_type_to_str, master_path,
+    parse_filter, parse_fit_mode, resize_image_fit, save_qoi_atomic,
 };
 use serde_json::{Value, json};
 
-struct CoverSpec {
+struct ImageSpec {
     fit_mode: FitMode,
-    fit_mode_str: String,
     target_width: u32,
     target_height: u32,
     filter_type: libdatamile::images::FilterType,
-    filter_str: String,
     sources: Vec<String>,
 }
 
@@ -26,11 +24,11 @@ fn parse_fit_tuple(
     spec_obj: &serde_json::Map<String, Value>,
     album_root: &Path,
     namespace: &str,
-) -> Result<(FitMode, String, u32, u32), DatamileError> {
+) -> Result<(FitMode, u32, u32), DatamileError> {
     let fit_arr = spec_obj
         .get("fit")
         .and_then(Value::as_array)
-        .ok_or_else(|| DatamileError::InvalidCoverFit {
+        .ok_or_else(|| DatamileError::InvalidImageFit {
             path: album_root.to_path_buf(),
             namespace: namespace.to_string(),
             message: "Missing or invalid 'fit' tuple, expected { mode, width, height }"
@@ -38,7 +36,7 @@ fn parse_fit_tuple(
         })?;
 
     if fit_arr.len() != 3 {
-        return Err(DatamileError::InvalidCoverFit {
+        return Err(DatamileError::InvalidImageFit {
             path: album_root.to_path_buf(),
             namespace: namespace.to_string(),
             message: format!(
@@ -50,7 +48,7 @@ fn parse_fit_tuple(
 
     let fit_mode_str = fit_arr[0]
         .as_str()
-        .ok_or_else(|| DatamileError::InvalidCoverFit {
+        .ok_or_else(|| DatamileError::InvalidImageFit {
             path: album_root.to_path_buf(),
             namespace: namespace.to_string(),
             message: "First element of 'fit' tuple must be a string ('crop' or 'inside')"
@@ -59,7 +57,7 @@ fn parse_fit_tuple(
         .to_string();
 
     let fit_mode =
-        parse_fit_mode(&fit_mode_str).ok_or_else(|| DatamileError::InvalidCoverFit {
+        parse_fit_mode(&fit_mode_str).ok_or_else(|| DatamileError::InvalidImageFit {
             path: album_root.to_path_buf(),
             namespace: namespace.to_string(),
             message: format!(
@@ -71,7 +69,7 @@ fn parse_fit_tuple(
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
         .filter(|&v| (1..=4096).contains(&v))
-        .ok_or_else(|| DatamileError::InvalidCoverFit {
+        .ok_or_else(|| DatamileError::InvalidImageFit {
             path: album_root.to_path_buf(),
             namespace: namespace.to_string(),
             message:
@@ -83,14 +81,14 @@ fn parse_fit_tuple(
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
         .filter(|&v| (1..=4096).contains(&v))
-        .ok_or_else(|| DatamileError::InvalidCoverFit {
+        .ok_or_else(|| DatamileError::InvalidImageFit {
             path: album_root.to_path_buf(),
             namespace: namespace.to_string(),
             message: "Third element of 'fit' tuple must be an integer between 1 and 4096"
                 .to_string(),
         })?;
 
-    Ok((fit_mode, fit_mode_str, target_width, target_height))
+    Ok((fit_mode, target_width, target_height))
 }
 
 fn parse_sources(
@@ -122,7 +120,7 @@ fn parse_sources(
         _ => {
             return Err(DatamileError::TypeMismatch {
                 path: album_root.to_path_buf(),
-                key: format!("covers.{namespace}.sources"),
+                key: format!("images.{namespace}.sources"),
                 expected_type: "string, array of strings, or nil".to_string(),
                 found_val: src_val.to_string(),
             });
@@ -132,27 +130,27 @@ fn parse_sources(
     Ok(sources)
 }
 
-fn parse_cover_spec(
+fn parse_image_spec(
     namespace: &str,
     spec_val: &Value,
     album_root: &Path,
-) -> Result<CoverSpec, DatamileError> {
+) -> Result<ImageSpec, DatamileError> {
     let spec_obj =
         spec_val
             .as_object()
-            .ok_or_else(|| DatamileError::InvalidCoverFit {
+            .ok_or_else(|| DatamileError::InvalidImageFit {
                 path: album_root.to_path_buf(),
                 namespace: namespace.to_string(),
-                message: "Cover specification must be a table".to_string(),
+                message: "Image specification must be a table".to_string(),
             })?;
 
-    let (fit_mode, fit_mode_str, target_width, target_height) =
+    let (fit_mode, target_width, target_height) =
         parse_fit_tuple(spec_obj, album_root, namespace)?;
 
     let filter_str = spec_obj
         .get("filter")
         .and_then(Value::as_str)
-        .ok_or_else(|| DatamileError::InvalidCoverFilter {
+        .ok_or_else(|| DatamileError::InvalidImageFilter {
             path: album_root.to_path_buf(),
             namespace: namespace.to_string(),
             found: "missing".to_string(),
@@ -160,7 +158,7 @@ fn parse_cover_spec(
         .to_string();
 
     let filter_type =
-        parse_filter(&filter_str).ok_or_else(|| DatamileError::InvalidCoverFilter {
+        parse_filter(&filter_str).ok_or_else(|| DatamileError::InvalidImageFilter {
             path: album_root.to_path_buf(),
             namespace: namespace.to_string(),
             found: filter_str.clone(),
@@ -168,18 +166,16 @@ fn parse_cover_spec(
 
     let sources = parse_sources(spec_obj, album_root, namespace)?;
 
-    Ok(CoverSpec {
+    Ok(ImageSpec {
         fit_mode,
-        fit_mode_str,
         target_width,
         target_height,
         filter_type,
-        filter_str,
         sources,
     })
 }
 
-fn compute_cover_address(
+fn compute_image_address(
     fit_mode: &str,
     width: u32,
     height: u32,
@@ -226,14 +222,14 @@ fn resolve_source_target(
     }
 }
 
-pub fn process_covers(
+pub fn process_images(
     album_root: &Path,
     cache_root: &Path,
-    covers_val: Option<&Value>,
+    images_val: Option<&Value>,
     dependencies: &mut HashSet<PathBuf>,
 ) -> Result<BTreeMap<String, Value>, DatamileError> {
     let mut result_map = BTreeMap::new();
-    let Some(covers_obj) = covers_val.and_then(Value::as_object) else {
+    let Some(images_obj) = images_val.and_then(Value::as_object) else {
         return Ok(result_map);
     };
 
@@ -241,8 +237,8 @@ pub fn process_covers(
         .canonicalize()
         .unwrap_or_else(|_| album_root.to_path_buf());
 
-    for (namespace, spec_val) in covers_obj {
-        let spec = parse_cover_spec(namespace, spec_val, album_root)?;
+    for (namespace, spec_val) in images_obj {
+        let spec = parse_image_spec(namespace, spec_val, album_root)?;
         let mut entries = Vec::new();
 
         for src_str in &spec.sources {
@@ -283,11 +279,15 @@ pub fn process_covers(
                 |f| format!("{f:?}").to_lowercase(),
             );
 
-            let address = compute_cover_address(
-                &spec.fit_mode_str,
+            // Canonical enum spellings keep "Lanczos" and "lanczos" from
+            // producing two cache addresses for the same bytes.
+            let fit_str = spec.fit_mode.as_str();
+            let filter_str = filter_type_to_str(spec.filter_type);
+            let address = compute_image_address(
+                fit_str,
                 spec.target_width,
                 spec.target_height,
-                &spec.filter_str,
+                filter_str,
                 raw_hash.as_bytes(),
             );
 
@@ -299,8 +299,7 @@ pub fn process_covers(
                 spec.fit_mode,
             );
 
-            let master_dir = cache_root.join("covers").join(&address);
-            let master_qoi_path = master_dir.join("master.qoi");
+            let master_qoi_path = master_path(cache_root, &address);
 
             if !master_qoi_path.exists() {
                 let img_rgb = img.into_rgb8();
@@ -310,10 +309,12 @@ pub fn process_covers(
                     spec.target_height,
                     spec.fit_mode,
                     spec.filter_type,
-                ) {
-                    let _ = fs::create_dir_all(&master_dir);
-                    let _ = resized
-                        .save_with_format(&master_qoi_path, image::ImageFormat::Qoi);
+                ) && let Err(e) = save_qoi_atomic(&master_qoi_path, &resized)
+                {
+                    log::warn!(
+                        "Failed to write master image {}: {e}",
+                        master_qoi_path.display()
+                    );
                 }
             }
 
@@ -321,8 +322,8 @@ pub fn process_covers(
                 "address": address,
                 "width": rendered_w,
                 "height": rendered_h,
-                "fit": spec.fit_mode_str,
-                "filter": spec.filter_str,
+                "fit": fit_str,
+                "filter": filter_str,
                 "source": {
                     "file": {
                         "path": path_for_json,

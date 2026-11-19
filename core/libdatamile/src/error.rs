@@ -115,17 +115,17 @@ pub enum DatamileError {
         path_b: PathBuf,
     },
 
-    #[error("Invalid Cover Fit in {path} for '{namespace}': {message}")]
-    InvalidCoverFit {
+    #[error("Invalid Image Fit in {path} for '{namespace}': {message}")]
+    InvalidImageFit {
         path: PathBuf,
         namespace: String,
         message: String,
     },
 
     #[error(
-        "Invalid Cover Filter in {path} for '{namespace}': '{found}' is not a valid filter"
+        "Invalid Image Filter in {path} for '{namespace}': '{found}' is not a valid filter"
     )]
-    InvalidCoverFilter {
+    InvalidImageFilter {
         path: PathBuf,
         namespace: String,
         found: String,

@@ -391,7 +391,6 @@ async fn handle_config_change(state: &Arc<AppState>) {
 
     match libdatamile::lua::ResolvedConfig::load() {
         Ok(new_config) => {
-            let covers = new_config.covers.clone();
             let new_interfaces = new_config.interfaces.clone();
             let new_actions = new_config.actions.clone();
             let dependencies = new_config.dependencies.clone();
@@ -399,7 +398,6 @@ async fn handle_config_change(state: &Arc<AppState>) {
 
             {
                 let mut config_guard = state.config.write().await;
-                config_guard.covers.clone_from(&covers);
                 config_guard.interfaces.clone_from(&new_interfaces);
                 config_guard.actions.clone_from(&new_actions);
                 config_guard.resolved_dependencies.clone_from(&dependencies);
@@ -413,16 +411,6 @@ async fn handle_config_change(state: &Arc<AppState>) {
                 }
                 logic.manifest.clone()
             };
-
-            let _ = state.tx.send(
-                json!({
-                    "type": "CONFIG_UPDATE",
-                    "config": {
-                        "covers": covers
-                    }
-                })
-                .to_string(),
-            );
 
             let _ = state.tx.send(
                 json!({

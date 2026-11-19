@@ -10,7 +10,7 @@ let targetWidth = $derived(Math.round(width * dpr));
 
 let algo = "catmullrom";
 let srcUrl = $derived(
-  hash && targetWidth > 0 ? `/api/covers/${hash}.bmp?size=${targetWidth}&filter=${algo}` : ""
+  hash && targetWidth > 0 ? `/api/images/${hash}.bmp?size=${targetWidth}&filter=${algo}` : ""
 );
 </script>
 

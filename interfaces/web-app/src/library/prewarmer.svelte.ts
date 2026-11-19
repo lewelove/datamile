@@ -19,8 +19,7 @@ class Prewarmer {
         json.type === "ALBUM_UPDATED" ||
         json.type === "ALBUMS_UPDATED" ||
         json.type === "INIT_DICT" ||
-        json.type === "LOGIC_UPDATE" ||
-        json.type === "CONFIG_UPDATE"
+        json.type === "LOGIC_UPDATE"
       ) {
         this.pruneTextures();
         this.orchestrate();
@@ -37,6 +36,11 @@ class Prewarmer {
       }
     }
 
+    // A thumbnail that failed earlier — cold cache, or a request that raced a
+    // render in progress — must be retried after the dictionary changes.
+    // Otherwise it stays blank for the rest of the session.
+    this.failedUrls.clear();
+
     let evicted = false;
     this.pinnedTextures.forEach((bitmap, url) => {
       if (!this.validUrls.has(url)) {
@@ -44,7 +48,6 @@ class Prewarmer {
           bitmap.close();
         }
         this.pinnedTextures.delete(url);
-        this.failedUrls.delete(url);
         evicted = true;
       }
     });

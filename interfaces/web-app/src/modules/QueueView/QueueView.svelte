@@ -13,7 +13,7 @@ import Sidebar from "./Sidebar.svelte";
 
 let activeId = $derived(player.currentAlbumId);
 let activeAlbum = $derived(activeId ? collection.dict[activeId] : null);
-let coverHash = $derived(activeAlbum?.cover_hash || "");
+let imageHash = $derived(activeAlbum?.images?.main?.[0]?.address || "");
 let fullAlbum = $derived(activeId ? collection.fullAlbumCache[activeId] : null);
 
 let palette = $derived(
@@ -80,7 +80,7 @@ $effect(() => {
     </div>
 
     <div class="center-wing" bind:clientWidth={moduleWidth}>
-      <CoverPanel {coverHash} width={moduleWidth} />
+      <CoverPanel {imageHash} width={moduleWidth} />
     </div>
 
     <div class="right-wing">

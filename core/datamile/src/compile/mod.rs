@@ -1,7 +1,7 @@
 pub mod album;
 pub mod build;
 pub mod context;
-pub mod covers;
+pub mod images;
 pub mod stream;
 pub mod tracks;
 pub mod utils;

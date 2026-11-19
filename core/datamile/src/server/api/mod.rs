@@ -26,12 +26,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/internal/query", post(system::run_query))
         .route("/api/internal/tracked_albums", get(system::tracked_albums))
         .route(
-            "/api/internal/cache_covers",
-            post(assets::trigger_cache_covers),
+            "/api/internal/cache_images",
+            post(assets::trigger_cache_images),
         )
-        .route("/api/covers/{file}", get(assets::cover))
+        .route("/api/images/{file}", get(assets::image))
         .route("/api/album/{*id}", get(assets::album_metadata))
-        .route("/api/assets/cover/{*id}", get(assets::album_cover))
+        .route("/api/assets/image/{*id}", get(assets::album_image))
         .route("/api/play/{*id}", post(playback::play_album))
         .route("/api/play-disc/{*id}", post(playback::play_disc))
         .route("/api/queue/{*id}", post(playback::queue_album))

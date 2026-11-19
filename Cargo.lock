@@ -409,6 +409,7 @@ dependencies = [
  "blake3",
  "clap 4.6.6",
  "image",
+ "libactions",
  "serde",
  "serde_json",
  "tempfile",
@@ -1658,6 +1659,7 @@ dependencies = [
  "reqwest 0.13.4",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

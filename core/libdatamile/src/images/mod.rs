@@ -1,6 +1,7 @@
 pub mod fast_rgb_to_bmp;
 
 use std::io::Cursor;
+use std::path::{Path, PathBuf};
 
 pub use fast_image_resize::FilterType;
 use fast_image_resize::images::Image;
@@ -30,6 +31,24 @@ pub fn parse_fit_mode(mode: &str) -> Option<FitMode> {
         "inside" => Some(FitMode::Inside),
         _ => None,
     }
+}
+
+/// Single source of truth for where master and derivative images live on disk.
+#[must_use]
+pub fn master_dir(cache_root: &Path, address: &str) -> PathBuf {
+    cache_root.join("images").join(address)
+}
+
+#[must_use]
+pub fn master_path(cache_root: &Path, address: &str) -> PathBuf {
+    master_dir(cache_root, address).join("master.qoi")
+}
+
+/// Encodes the image as QOI and stores it atomically at `path`.
+pub fn save_qoi_atomic(path: &Path, img: &image::RgbImage) -> std::io::Result<()> {
+    let encoded = qoi::encode_to_vec(img.as_raw(), img.width(), img.height())
+        .map_err(std::io::Error::other)?;
+    crate::utils::write_atomic(path, &encoded)
 }
 
 #[must_use]

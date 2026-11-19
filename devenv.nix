@@ -96,7 +96,7 @@ in
     (cd "$ROOT/interfaces/web-app" && bun run check && bun run lint:logic)
   '';
 
-  scripts.test.exec = ''
+  scripts.tests.exec = ''
     set -euo pipefail
 
     ROOT=$(git rev-parse --show-toplevel)

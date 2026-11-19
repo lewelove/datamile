@@ -46,3 +46,6 @@ fn resolve_cover_candidate(album_dir: &Path) -> Option<PathBuf> {
         .map(|name| album_dir.join(name))
         .find(|path| path.is_file())
 }
+
+#[cfg(test)]
+mod tests;

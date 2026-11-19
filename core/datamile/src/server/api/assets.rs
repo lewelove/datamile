@@ -67,29 +67,32 @@ async fn ensure_master_image(
     state: &Arc<AppState>,
     cache_root: &StdPath,
     address: &str,
-) -> Result<PathBuf, StatusCode> {
-    let master_path = master_path(cache_root, address);
+) -> Result<PathBuf, (StatusCode, &'static str)> {
+    let not_found = (StatusCode::NOT_FOUND, "Image not found");
+    let master_qoi = master_path(cache_root, address);
 
-    if master_path.exists() {
-        return Ok(master_path);
+    if master_qoi.exists() {
+        return Ok(master_qoi);
     }
 
     // A prewarm worker or a parallel request may already render this address.
-    let guard = match state.image_tasks.claim(master_path.clone()) {
+    let guard = match state.image_tasks.claim(master_qoi.clone()) {
         Some(ImageClaim::Claimed(guard)) => guard,
         Some(ImageClaim::InFlight(mut rx)) => {
             let _ = rx.wait_for(|done| *done).await;
-            return master_path
-                .exists()
-                .then_some(master_path)
-                .ok_or(StatusCode::NOT_FOUND);
+            return master_qoi.exists().then_some(master_qoi).ok_or(not_found);
         }
-        None => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        None => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Image task registry unavailable",
+            ));
+        }
     };
 
     // The owner may have finished between our `exists()` check and the claim.
-    if master_path.exists() {
-        return Ok(master_path);
+    if master_qoi.exists() {
+        return Ok(master_qoi);
     }
 
     let lookup_item = {
@@ -98,7 +101,7 @@ async fn ensure_master_image(
     };
 
     let Some(item) = lookup_item else {
-        return Err(StatusCode::NOT_FOUND);
+        return Err(not_found);
     };
 
     let raw_path = std::path::Path::new(&item.path);
@@ -108,7 +111,7 @@ async fn ensure_master_image(
         item.album_dir.join(raw_path)
     };
 
-    let blob_path_clone = master_path.clone();
+    let blob_path_clone = master_qoi.clone();
 
     // The guard travels with the blocking work: a dropped request must not
     // release the claim while the image is still being rendered.
@@ -128,11 +131,14 @@ async fn ensure_master_image(
     })
     .await;
 
-    if !matches!(gen_result, Ok(Some(()))) {
-        return Err(StatusCode::NOT_FOUND);
+    match gen_result {
+        Ok(Some(())) => Ok(master_qoi),
+        Ok(None) => Err(not_found),
+        Err(_) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Image render task failed",
+        )),
     }
-
-    Ok(master_path)
 }
 
 fn parse_target_request(
@@ -245,8 +251,27 @@ fn build_cache_filename(
     )
 }
 
+/// Reads a master QOI and renders the requested derivative from it.
+fn encode_from_master(
+    master_path: &StdPath,
+    size: u32,
+    m_dim: u32,
+    filter: FilterType,
+    wire_format: ImageWireFormat,
+    quality: u8,
+) -> Option<Vec<u8>> {
+    let master_bytes = std::fs::read(master_path).ok()?;
+    let mut img = decode_qoi_to_rgb(&master_bytes)?;
+
+    if size != m_dim {
+        img = resize_image_max_edge(&img, size, filter)?;
+    }
+
+    encode_rgb_image(&img, wire_format, quality)
+}
+
 async fn render_in_memory(
-    master_path: PathBuf,
+    master_qoi: PathBuf,
     resolved_size: u32,
     m_dim: u32,
     filter: FilterType,
@@ -254,14 +279,14 @@ async fn render_in_memory(
     quality: u8,
 ) -> Result<Vec<u8>, StatusCode> {
     tokio::task::spawn_blocking(move || {
-        let master_bytes = std::fs::read(&master_path).ok()?;
-        let mut img = decode_qoi_to_rgb(&master_bytes)?;
-
-        if resolved_size != m_dim {
-            img = resize_image_max_edge(&img, resolved_size, filter)?;
-        }
-
-        encode_rgb_image(&img, wire_format, quality)
+        encode_from_master(
+            &master_qoi,
+            resolved_size,
+            m_dim,
+            filter,
+            wire_format,
+            quality,
+        )
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
@@ -284,12 +309,12 @@ pub async fn image(
         guard.cache_root.clone()
     };
 
-    let master_path = match ensure_master_image(&state, &cache_root, address).await {
+    let master_qoi = match ensure_master_image(&state, &cache_root, address).await {
         Ok(path) => path,
-        Err(status) => return error_response(status, "Image not found"),
+        Err((status, msg)) => return error_response(status, msg),
     };
 
-    let m_dimension = match read_master_dimension(&master_path).await {
+    let m_dimension = match read_master_dimension(&master_qoi).await {
         Ok(dim) => dim,
         Err((status, msg)) => return error_response(status, msg),
     };
@@ -323,7 +348,7 @@ pub async fn image(
         data
     } else {
         match render_in_memory(
-            master_path,
+            master_qoi,
             resolved_size,
             m_dimension,
             filter_type,
@@ -369,10 +394,13 @@ fn collect_matching_addresses(
 ) -> Vec<String> {
     let mut matched = HashSet::new();
 
-    let addr_filter: Option<HashSet<&str>> =
-        addresses.map(|arr| arr.iter().map(String::as_str).collect());
-    let name_filter: Option<HashSet<&str>> =
-        names.map(|arr| arr.iter().map(String::as_str).collect());
+    // An empty list means "no filter", not "match nothing".
+    let addr_filter: Option<HashSet<&str>> = addresses
+        .filter(|arr| !arr.is_empty())
+        .map(|arr| arr.iter().map(String::as_str).collect());
+    let name_filter: Option<HashSet<&str>> = names
+        .filter(|arr| !arr.is_empty())
+        .map(|arr| arr.iter().map(String::as_str).collect());
 
     for record in logic.albums.values() {
         for (ns, addr) in &record.image_namespaces {
@@ -397,7 +425,7 @@ fn collect_matching_addresses(
 
 async fn process_cache_candidate(
     state: &Arc<AppState>,
-    master_path: PathBuf,
+    master_qoi: PathBuf,
     target_path: PathBuf,
     m_dim: u32,
     params: (u32, FilterType, u8, ImageWireFormat),
@@ -411,14 +439,8 @@ async fn process_cache_candidate(
 
     let _ = tokio::task::spawn_blocking(move || {
         let _guard = guard;
-        let master_bytes = std::fs::read(&master_path).ok()?;
-
-        let mut img = decode_qoi_to_rgb(&master_bytes)?;
-        if size != m_dim {
-            img = resize_image_max_edge(&img, size, filter)?;
-        }
-
-        let encoded = encode_rgb_image(&img, wire_format, quality)?;
+        let encoded =
+            encode_from_master(&master_qoi, size, m_dim, filter, wire_format, quality)?;
         write_atomic(&target_path, &encoded).ok()?;
         Some(())
     })
@@ -445,9 +467,14 @@ async fn run_cache_images_batch(
 
     let (cache_root, concurrency) = {
         let guard = state.config.read().await;
-        let c = guard.app.compiler.jobs.unwrap_or_else(|| {
-            std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
-        });
+        let c = guard
+            .app
+            .compiler
+            .jobs
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
+            })
+            .max(1);
         (guard.cache_root.clone(), c)
     };
 
@@ -463,13 +490,13 @@ async fn run_cache_images_batch(
                 return;
             };
 
-            let Ok(master_path) =
+            let Ok(master_qoi) =
                 ensure_master_image(&state_clone, &cache_root, &address).await
             else {
                 return;
             };
 
-            let Ok(m_dimension) = read_master_dimension(&master_path).await else {
+            let Ok(m_dimension) = read_master_dimension(&master_qoi).await else {
                 return;
             };
 
@@ -483,7 +510,7 @@ async fn run_cache_images_batch(
 
             process_cache_candidate(
                 &state_clone,
-                master_path,
+                master_qoi,
                 target_path,
                 m_dimension,
                 (size, filter, quality, wire_format),

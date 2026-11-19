@@ -148,7 +148,7 @@ class CollectionStore {
 
       const addresses = Object.values(json.updated || {})
         .map(mainImageAddress)
-        .filter((address): address is string => Boolean(address));
+        .filter((address) => address.length > 0);
       if (addresses.length > 0) {
         triggerImagePrewarm(addresses);
       }

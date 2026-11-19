@@ -309,8 +309,12 @@ pub fn process_images(
                     spec.target_height,
                     spec.fit_mode,
                     spec.filter_type,
-                ) {
-                    let _ = save_qoi_atomic(&master_qoi_path, &resized);
+                ) && let Err(e) = save_qoi_atomic(&master_qoi_path, &resized)
+                {
+                    log::warn!(
+                        "Failed to write master image {}: {e}",
+                        master_qoi_path.display()
+                    );
                 }
             }
 

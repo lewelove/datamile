@@ -106,7 +106,7 @@ pub fn write_atomic(path: &Path, bytes: impl AsRef<[u8]>) -> std::io::Result<()>
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "Invalid cache file path: no parent directory",
+            "Invalid file path: no parent directory",
         )
     })?;
 

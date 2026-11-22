@@ -16,12 +16,16 @@ let activeAlbum = $derived(activeId ? collection.dict[activeId] : null);
 let imageHash = $derived(activeAlbum?.images?.main?.[0]?.address || "");
 let fullAlbum = $derived(activeId ? collection.fullAlbumCache[activeId] : null);
 
-let palette = $derived(
-  fullAlbum?.album?.objects?.colors?.background ||
-    activeAlbum?.objects?.colors?.background ||
-    []
-);
-let hasPalette = $derived(palette && palette.length > 0);
+let palette = $derived.by(() => {
+  const background =
+    fullAlbum?.album?.objects?.colors?.background ??
+    activeAlbum?.objects?.colors?.background;
+
+  // Types do not survive the JSON round trip: a `background = "#112233"` typo
+  // would reach the shader, which spreads the string into per-character colors.
+  return Array.isArray(background) ? background : [];
+});
+let hasPalette = $derived(palette.length > 0);
 let foregroundColor = $derived(
   fullAlbum?.album?.objects?.colors?.foreground ||
     activeAlbum?.objects?.colors?.foreground ||

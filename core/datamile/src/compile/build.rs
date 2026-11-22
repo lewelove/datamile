@@ -201,6 +201,10 @@ pub fn build(
     let cache_root = libdatamile::utils::expand_path(&config.app.storage.cache);
     let build_data = load_primary_and_files(&album_root_canon, config, &cache_root)?;
 
+    // Cheapest check first: no Lua dispatch or image I/O for an album that
+    // cannot produce a usable lock anyway.
+    validate_album_header(&build_data.parsed_manifests, &album_root_canon)?;
+
     let album_kind = album::is_virtual_album(&build_data.parsed_manifests);
     tracks::validate_audio_files(
         album_kind,
@@ -253,7 +257,6 @@ pub fn build(
     )?;
 
     let album_id = extract_album_id(&lua_res, &album_root_canon)?;
-    validate_album_header(&build_data.parsed_manifests, &album_root_canon)?;
 
     let mut album_tags = utils::lua_object(lua_res.get("tags"));
     utils::sort_json_keys(&mut album_tags);

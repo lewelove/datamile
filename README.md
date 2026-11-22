@@ -99,8 +99,8 @@ datamile.action("search-cover", {
     -- Run `d.system` with your script as CLI
     d.system({
       "/Path/To/Your/search-cover.py",
-      "--artist", entry.lock.album.albumartist,
-      "--album", entry.lock.album.album,
+      "--artist", entry.lock.album.tags.albumartist,
+      "--album", entry.lock.album.tags.album,
     }, { detach = true })
   end
 })

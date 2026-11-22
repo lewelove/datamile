@@ -5,6 +5,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use tempfile::NamedTempFile;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashMode {
     Compute,
@@ -96,6 +99,40 @@ pub fn calculate_blake3_address(content: &[u8]) -> String {
     let hash = blake3::hash(content);
     let raw = hash.as_bytes();
     URL_SAFE_NO_PAD.encode(raw).chars().take(16).collect()
+}
+
+/// Renders a lock tag as display text.
+///
+/// Tags keep their JSON type, so `album = 1984` stays a number and `genre` may be
+/// a list. Anything that renders those as strings only would show `Unknown` for a
+/// perfectly good value, so numbers and booleans are stringified and scalar lists
+/// are joined.
+#[must_use]
+pub fn tag_text(value: Option<&serde_json::Value>) -> Option<String> {
+    fn scalar_text(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            serde_json::Value::Bool(b) => Some(b.to_string()),
+            _ => None,
+        }
+    }
+
+    match value? {
+        serde_json::Value::Array(items) => {
+            let joined = items
+                .iter()
+                .filter_map(scalar_text)
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            if joined.is_empty() {
+                return None;
+            }
+            Some(joined)
+        }
+        other => scalar_text(other),
+    }
 }
 
 /// Writes bytes through a temp file in the same directory, then renames.

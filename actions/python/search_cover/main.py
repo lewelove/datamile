@@ -22,9 +22,9 @@ def main():
         if lock_file.exists():
             with open(lock_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                meta = data.get("album", {})
-                artist = artist or meta.get("albumartist") or meta.get("artist") or ""
-                album = album or meta.get("album") or ""
+                tags = data.get("album", {}).get("tags", {})
+                artist = artist or tags.get("albumartist") or tags.get("artist") or ""
+                album = album or tags.get("album") or ""
 
     if not artist and not album:
         print("\033[31mError: Must provide --artist and --album or a valid --path with album.lock.json\033[0m")

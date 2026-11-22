@@ -10,6 +10,7 @@ use anyhow::Result;
 use libdatamile::error::DatamileError;
 use libdatamile::images::{FilterType, FitMode, parse_filter, parse_fit_mode};
 use libdatamile::lua::{LogicManifest, with_evaluated_lua_vm};
+use libdatamile::utils::tag_text;
 use roaring::RoaringBitmap;
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -242,16 +243,10 @@ impl LogicEngine {
                 Some(Value::String(s)) => s.parse().unwrap_or(1),
                 _ => 1,
             };
-            let title = track
-                .pointer("/tags/title")
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown")
-                .to_string();
-            let artist = track
-                .pointer("/tags/artist")
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown")
-                .to_string();
+            let title = tag_text(track.pointer("/tags/title"))
+                .unwrap_or_else(|| "Unknown".to_string());
+            let artist = tag_text(track.pointer("/tags/artist"))
+                .unwrap_or_else(|| "Unknown".to_string());
             let duration = tinfo
                 .get("duration_formatted")
                 .and_then(Value::as_str)
@@ -397,17 +392,11 @@ impl LogicEngine {
         let (main_image_path, image_namespaces) =
             self.ingest_images(album, &album_dir_canon);
 
-        let title = album
-            .pointer("/tags/album")
-            .and_then(Value::as_str)
-            .unwrap_or("Unknown")
-            .to_string();
+        let title = tag_text(album.pointer("/tags/album"))
+            .unwrap_or_else(|| "Unknown".to_string());
 
-        let artist = album
-            .pointer("/tags/albumartist")
-            .and_then(Value::as_str)
-            .unwrap_or("Unknown")
-            .to_string();
+        let artist = tag_text(album.pointer("/tags/albumartist"))
+            .unwrap_or_else(|| "Unknown".to_string());
 
         let entry = json!({
             "id": id,

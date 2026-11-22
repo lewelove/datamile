@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use libdatamile::utils::tag_text;
 use rayon::prelude::*;
 use serde_json::Value;
 
@@ -136,18 +137,10 @@ fn finalize(
     active_writes: Option<&Arc<Mutex<HashSet<PathBuf>>>>,
     verbosity: LogVerbosity,
 ) -> Result<(bool, Option<crate::server::api::system::AlbumIngestPayload>)> {
-    let artist = item
-        .lock_val
-        .pointer("/album/tags/albumartist")
-        .and_then(Value::as_str)
-        .unwrap_or("Unknown")
-        .to_string();
-    let album = item
-        .lock_val
-        .pointer("/album/tags/album")
-        .and_then(Value::as_str)
-        .unwrap_or("Unknown")
-        .to_string();
+    let artist = tag_text(item.lock_val.pointer("/album/tags/albumartist"))
+        .unwrap_or_else(|| "Unknown".to_string());
+    let album = tag_text(item.lock_val.pointer("/album/tags/album"))
+        .unwrap_or_else(|| "Unknown".to_string());
 
     let content = serde_json::to_string_pretty(&item.lock_val)?;
 

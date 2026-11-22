@@ -5,7 +5,11 @@ use serde_json::{Value, json};
 
 use crate::lua::LuaEngine;
 
-fn dispatch(setup: &str) -> Result<Value, String> {
+fn dispatch_with(
+    setup: &str,
+    manifests: Value,
+    total_tracks: u32,
+) -> Result<Value, String> {
     let engine = LuaEngine::new().expect("Failed to create LuaEngine");
     engine
         .lua
@@ -14,12 +18,22 @@ fn dispatch(setup: &str) -> Result<Value, String> {
         .exec()
         .expect("Failed to run setup chunk");
 
-    let ctx = json!({ "paths": { "album_root": "/tmp" }, "total_tracks": 1 });
-    let manifests = json!({ "metadata": { "album": {}, "tracks": [{}] } });
+    let ctx = json!({
+        "paths": { "album_root": "/tmp" },
+        "total_tracks": total_tracks,
+    });
 
     engine
         .execute_dispatcher(&ctx, &manifests)
         .map_err(|e| e.to_string())
+}
+
+fn dispatch(setup: &str) -> Result<Value, String> {
+    dispatch_with(
+        setup,
+        json!({ "metadata": { "album": {}, "tracks": [{}] } }),
+        1,
+    )
 }
 
 /// `value` is a Lua expression, spliced in as the hook's return value.
@@ -27,6 +41,26 @@ fn album_hook(kind: &str, value: &str) -> Result<Value, String> {
     dispatch(&format!(
         "datamile.compile.album.{kind}('probe', function() return {value} end)"
     ))
+}
+
+/// Same, but for the track hooks, which get the track index appended.
+fn track_hook(
+    owner: &str,
+    kind: &str,
+    value: &str,
+    total_tracks: u32,
+) -> Result<Value, String> {
+    let manifests = json!({
+        "metadata": {
+            "album": {},
+            "tracks": (0..total_tracks).map(|_| json!({})).collect::<Vec<_>>()
+        }
+    });
+    let setup = format!(
+        "datamile.compile.{owner}.{kind}('probe', function(_, _, i) return {value} end)"
+    );
+
+    dispatch_with(&setup, manifests, total_tracks)
 }
 
 #[test]
@@ -94,7 +128,151 @@ fn object_lands_verbatim() {
 
 #[test]
 fn empty_objects_are_omitted() {
-    let res = album_hook("object", "nil").expect("empty object must not fail");
+    for value in ["nil", "''", "{}"] {
+        let res = album_hook("object", value).expect("empty object must not fail");
+        assert!(
+            res.pointer("/objects/probe").is_none(),
+            "value {value} leaked into objects"
+        );
+    }
+}
 
-    assert!(res.pointer("/objects/probe").is_none());
+#[test]
+fn object_with_a_function_errors_with_the_object_name() {
+    let err = album_hook("object", "{ cb = function() end }")
+        .expect_err("a function is not JSON");
+
+    assert!(
+        err.contains("album object 'probe'") && err.contains("probe.cb is a function"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn sparse_tag_lists_error() {
+    // Holes and float/0-based keys serialize as JSON objects, not arrays.
+    for value in [
+        "{ [1] = 'a', [3] = 'b' }",
+        "{ [0] = 'a' }",
+        "{ [2] = 'a' }",
+        "{ [1.5] = 'a' }",
+    ] {
+        let err = album_hook("tag", value).expect_err("a sparse table is not a list");
+
+        assert!(
+            err.contains("album tag 'probe'") && err.contains("dense 1-based list"),
+            "value {value} gave unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn non_scalar_non_table_tag_errors() {
+    let err = album_hook("tag", "function() end").expect_err("a function is not a tag");
+
+    assert!(
+        err.contains("album tag 'probe'") && err.contains("got function"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn track_tags_land_per_track() {
+    let res = track_hook("track", "tag", "'track ' .. i", 2).expect("track tag is legal");
+
+    assert_eq!(res.pointer("/tracks/0/tags/probe"), Some(&json!("track 1")));
+    assert_eq!(res.pointer("/tracks/1/tags/probe"), Some(&json!("track 2")));
+}
+
+#[test]
+fn track_objects_land_per_track() {
+    let res =
+        track_hook("track", "object", "{ idx = i }", 2).expect("track object is legal");
+
+    assert_eq!(
+        res.pointer("/tracks/1/objects/probe"),
+        Some(&json!({ "idx": 2 }))
+    );
+}
+
+#[test]
+fn track_hooks_answer_to_their_aliases() {
+    for owner in ["tracks", "track", "t"] {
+        let res =
+            track_hook(owner, "tag", "'x'", 1).expect("alias must register the hook");
+        assert_eq!(
+            res.pointer("/tracks/0/tags/probe"),
+            Some(&json!("x")),
+            "alias {owner} did not register"
+        );
+    }
+}
+
+#[test]
+fn track_tag_error_names_the_index() {
+    let err =
+        track_hook("track", "tag", "{{ 1 }}", 2).expect_err("nested table is illegal");
+
+    assert!(
+        err.contains("track tag 'probe' at index 1"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn true_shorthand_reads_the_manifest() {
+    let manifests = json!({
+        "metadata": {
+            "album": { "genre": ["Ambient"] },
+            "tracks": [{ "title": "One" }]
+        }
+    });
+    let res = dispatch_with(
+        "datamile.compile.album.tag('genre', true)\n\
+         datamile.compile.track.tag('title', true)",
+        manifests,
+        1,
+    )
+    .expect("shorthand is legal");
+
+    assert_eq!(res.pointer("/tags/genre"), Some(&json!(["Ambient"])));
+    assert_eq!(res.pointer("/tracks/0/tags/title"), Some(&json!("One")));
+}
+
+#[test]
+fn albumartist_falls_back_to_artist() {
+    let manifests = json!({ "metadata": { "album": { "artist": "A" }, "tracks": [{}] } });
+    let res = dispatch_with("", manifests, 1).expect("defaults must run");
+
+    assert_eq!(res.pointer("/tags/albumartist"), Some(&json!("A")));
+}
+
+#[test]
+fn track_artist_falls_back_to_the_album() {
+    let manifests = json!({
+        "metadata": {
+            "album": { "artist": "Album Artist" },
+            "tracks": [{}]
+        }
+    });
+    let res = dispatch_with("", manifests, 1).expect("defaults must run");
+
+    assert_eq!(
+        res.pointer("/tracks/0/tags/artist"),
+        Some(&json!("Album Artist"))
+    );
+}
+
+#[test]
+fn a_default_tag_can_be_replaced() {
+    let manifests =
+        json!({ "metadata": { "album": { "album": "From Manifest" }, "tracks": [{}] } });
+    let res = dispatch_with(
+        "datamile.compile.album.tag('album', function() return 'From Config' end)",
+        manifests,
+        1,
+    )
+    .expect("re-registering is legal");
+
+    assert_eq!(res.pointer("/tags/album"), Some(&json!("From Config")));
 }

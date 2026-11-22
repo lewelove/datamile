@@ -7,11 +7,11 @@ local function is_scalar(v)
     return t == "string" or t == "number" or t == "boolean"
 end
 
-local function describe(owner, name, index)
+local function describe(owner, kind, name, index)
     if index then
-        return string.format("%s tag '%s' at index %d", owner, name, index)
+        return string.format("%s %s '%s' at index %d", owner, kind, name, index)
     end
-    return string.format("%s tag '%s'", owner, name)
+    return string.format("%s %s '%s'", owner, kind, name)
 end
 
 -- A tag is one scalar or a list of scalars. Returning anything else is a config
@@ -26,7 +26,7 @@ local function check_tag(owner, name, value, index)
             error(
                 string.format(
                     "Error evaluating %s: expected a scalar or a list of scalars, got %s",
-                    describe(owner, name, index), type(value)
+                    describe(owner, "tag", name, index), type(value)
                 ),
                 0
             )
@@ -38,12 +38,29 @@ local function check_tag(owner, name, value, index)
         return nil
     end
 
+    local count = 0
     for k, item in pairs(value) do
         if type(k) ~= "number" or not is_scalar(item) then
             error(
                 string.format(
                     "Error evaluating %s: expected a scalar or a list of scalars, got a table with non-scalar content",
-                    describe(owner, name, index)
+                    describe(owner, "tag", name, index)
+                ),
+                0
+            )
+        end
+        count = count + 1
+    end
+
+    -- Holes, 0-based keys and float keys serialize as a JSON object instead of an
+    -- array, so the list has to be dense from 1. Counting `pairs` first makes the
+    -- walk below safe on tables where `#value` is undefined.
+    for i = 1, count do
+        if value[i] == nil then
+            error(
+                string.format(
+                    "Error evaluating %s: expected a dense 1-based list of scalars, got a sparse table",
+                    describe(owner, "tag", name, index)
                 ),
                 0
             )
@@ -53,14 +70,62 @@ local function check_tag(owner, name, value, index)
     return value
 end
 
+-- JSON has no form for functions, userdata, threads or NaN/inf, and mlua only
+-- reports those after the dispatcher returns, with no hint about which hook
+-- produced them. Walking the value here keeps the failure attached to its owner.
+local function json_problem(value, path)
+    local t = type(value)
+
+    if t == "table" then
+        for k, item in pairs(value) do
+            local key_type = type(k)
+            if key_type ~= "string" and key_type ~= "number" then
+                return string.format("%s has a %s key", path, key_type)
+            end
+
+            local problem = json_problem(item, string.format("%s.%s", path, tostring(k)))
+            if problem then
+                return problem
+            end
+        end
+        return nil
+    end
+
+    if t == "string" or t == "boolean" then
+        return nil
+    end
+
+    if t == "number" then
+        -- NaN never equals itself, and infinities have no JSON representation.
+        if value == value and value ~= math.huge and value ~= -math.huge then
+            return nil
+        end
+        return string.format("%s is a non-finite number", path)
+    end
+
+    return string.format("%s is a %s", path, t)
+end
+
 -- Objects take any JSON. Empty means absent, so nothing is written for it.
-local function check_object(value)
+local function check_object(owner, name, value, index)
     if value == nil or value == "" then
         return nil
     end
     if type(value) == "table" and next(value) == nil then
         return nil
     end
+
+    local problem = json_problem(value, name)
+    if problem then
+        error(
+            string.format(
+                "Error evaluating %s: not representable as JSON: %s",
+                describe(owner, "object", name, index), problem
+            ),
+            0
+        )
+    end
+
     return value
 end
 
@@ -212,7 +277,7 @@ function __DATAMILE_DISPATCHER(ctx, manifests)
         if not status then
             error(string.format("Error evaluating album object '%s': %s", name, res))
         end
-        local value = check_object(res)
+        local value = check_object("album", name, res)
         if value ~= nil then
             results.objects[name] = value
         end
@@ -247,7 +312,7 @@ function __DATAMILE_DISPATCHER(ctx, manifests)
             if not status then
                 error(string.format("Error evaluating track object '%s' at index %d: %s", name, i, res))
             end
-            local value = check_object(res)
+            local value = check_object("track", name, res, i)
             if value ~= nil then
                 results.tracks[i].objects[name] = value
             end

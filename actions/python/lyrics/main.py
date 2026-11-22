@@ -58,9 +58,10 @@ def get_album_lyrics(target_dir, access_token, mpd_file, server_url):
         album_lock = json.load(f)
 
     album_meta = album_lock.get("album", {})
+    album_tags = album_meta.get("tags", {})
     album_id = album_meta.get("id", "")
-    album_artist = album_meta.get("albumartist")
-    total_discs = int(album_meta.get("info", {}).get("total_discs", 1))
+    album_artist = album_tags.get("albumartist")
+    total_discs = int(album_meta.get("objects", {}).get("info", {}).get("total_discs", 1))
     tracks = album_lock.get("tracks", [])
 
     if not album_artist or not tracks:
@@ -74,7 +75,7 @@ def get_album_lyrics(target_dir, access_token, mpd_file, server_url):
     lyrics_dir = target_dir / "Lyrics"
     lyrics_dir.mkdir(exist_ok=True)
 
-    print(f"\033[1;36mFetching lyrics for: {album_artist} - {album_meta.get('album')}\033[0m")
+    print(f"\033[1;36mFetching lyrics for: {album_artist} - {album_tags.get('album')}\033[0m")
 
     playing_idx = None
     if mpd_file:
@@ -88,9 +89,10 @@ def get_album_lyrics(target_dir, access_token, mpd_file, server_url):
                     break
 
     def fetch_for_track(track):
-        title = track.get("title")
-        track_num = str(track.get("tracknumber", "0")).zfill(2)
-        disc_num = str(track.get("discnumber", "1"))
+        tags = track.get("tags", {})
+        title = tags.get("title")
+        track_num = str(tags.get("tracknumber", "0")).zfill(2)
+        disc_num = str(tags.get("discnumber", "1"))
 
         if not title:
             return

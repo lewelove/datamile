@@ -45,7 +45,9 @@ let isQueueVisible = $derived(currentTab === "queue" || retentionTab === "queue"
 
 let isQueueInstant = $derived(instantTab === "queue");
 
-let isModalVisible = $derived(!!view.focusedAlbum);
+// The drawer only exists on the home tab; on queue the visible album is the playing one.
+let isModalVisible = $derived(!!view.focusedAlbum && isHomeActive);
+let shortcutAlbumId = $derived(isHomeActive ? view.focusedAlbum?.id : player.currentAlbumId);
 
 function handleKeydown(e: KeyboardEvent) {
   if (["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName ?? "")) return;
@@ -63,14 +65,8 @@ function handleKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && (key === "t" || key === "T" || code === "KeyT")) {
     e.preventDefault();
     e.stopPropagation();
-    const targetId = isModalVisible
-      ? view.focusedAlbum?.id
-      : nav.activeTab === "queue"
-        ? player.currentAlbumId
-        : null;
-
-    if (targetId) {
-      executeAction("open_terminal", targetId).catch(() => {});
+    if (shortcutAlbumId) {
+      executeAction("open_terminal", shortcutAlbumId).catch(() => {});
     }
     return;
   }
@@ -78,14 +74,8 @@ function handleKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && (key === "d" || key === "D" || code === "KeyD")) {
     e.preventDefault();
     e.stopPropagation();
-    const targetId = isModalVisible
-      ? view.focusedAlbum?.id
-      : nav.activeTab === "queue"
-        ? player.currentAlbumId
-        : null;
-
-    if (targetId) {
-      executeAction("open_folder", targetId).catch(() => {});
+    if (shortcutAlbumId) {
+      executeAction("open_folder", shortcutAlbumId).catch(() => {});
     }
     return;
   }

@@ -6,6 +6,7 @@ mod tests;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
@@ -598,42 +599,89 @@ impl LuaEngine {
     }
 }
 
-#[must_use]
-pub fn resolve_config_path() -> Option<PathBuf> {
-    if let Some(home_config) =
-        dirs::home_dir().map(|h| h.join(".config/datamile/init.lua"))
-        && home_config.exists()
-    {
-        return Some(home_config);
+/// Config directory passed on the command line. Process-wide because the server
+/// re-loads the config on file changes, long after main parsed the arguments.
+static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_config_dir(dir: PathBuf) {
+    let _ = CONFIG_DIR.set(dir);
+}
+
+fn init_lua_in(dir: &Path) -> Result<PathBuf> {
+    if !dir.exists() {
+        anyhow::bail!("config directory does not exist: {}", dir.display());
     }
 
-    if let Ok(env_path) = std::env::var("DATAMILE_CONFIG_PATH") {
-        let p = PathBuf::from(env_path);
-        if p.exists() {
-            return Some(p);
-        }
+    if !dir.is_dir() {
+        anyhow::bail!(
+            "config path must be a directory containing init.lua, got a file: {}",
+            dir.display()
+        );
     }
 
-    let mut curr = std::env::current_dir().ok()?;
+    let init = dir.join("init.lua");
+    if !init.is_file() {
+        anyhow::bail!("no init.lua in config directory: {}", dir.display());
+    }
+
+    Ok(init)
+}
+
+/// Explicit override, then `DATAMILE_CONFIG_PATH`, then `~/.config/datamile`,
+/// then the nearest `config/init.lua` or `init.lua` above the working directory.
+///
+/// An explicit override that does not resolve is an error, never a silent
+/// fallback: running against a different config than the one asked for is worse
+/// than not running at all.
+pub(crate) fn resolve_config(
+    flag_dir: Option<&Path>,
+    env_dir: Option<&Path>,
+    home_init: Option<&Path>,
+    cwd: &Path,
+) -> Result<Option<PathBuf>> {
+    if let Some(dir) = flag_dir {
+        return init_lua_in(dir).map(Some);
+    }
+
+    if let Some(dir) = env_dir {
+        return init_lua_in(dir).map(Some);
+    }
+
+    if home_init.is_some_and(Path::is_file) {
+        return Ok(home_init.map(Path::to_path_buf));
+    }
+
+    let mut curr = cwd;
     loop {
         let local_nested = curr.join("config/init.lua");
-        if local_nested.exists() {
-            return Some(local_nested);
+        if local_nested.is_file() {
+            return Ok(Some(local_nested));
         }
 
         let local_root = curr.join("init.lua");
-        if local_root.exists() {
-            return Some(local_root);
+        if local_root.is_file() {
+            return Ok(Some(local_root));
         }
 
-        if let Some(parent) = curr.parent() {
-            curr = parent.to_path_buf();
-        } else {
-            break;
-        }
+        let Some(parent) = curr.parent() else {
+            return Ok(None);
+        };
+        curr = parent;
     }
+}
 
-    None
+pub fn resolve_config_path() -> Result<PathBuf> {
+    let env_dir = std::env::var_os("DATAMILE_CONFIG_PATH").map(PathBuf::from);
+    let home_init = dirs::home_dir().map(|h| h.join(".config/datamile/init.lua"));
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    resolve_config(
+        CONFIG_DIR.get().map(PathBuf::as_path),
+        env_dir.as_deref(),
+        home_init.as_deref(),
+        &cwd,
+    )?
+    .ok_or_else(|| anyhow::anyhow!("Could not locate init.lua"))
 }
 
 #[derive(Clone, Debug)]
@@ -648,7 +696,7 @@ pub struct ResolvedConfig {
 
 impl ResolvedConfig {
     pub fn load() -> Result<Self> {
-        let path = resolve_config_path().context("Could not locate init.lua")?;
+        let path = resolve_config_path()?;
         let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let engine = LuaEngine::new()?;
         let mut evaluated = engine.evaluate_config(&path)?;

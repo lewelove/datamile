@@ -7,6 +7,8 @@ mod server;
 mod update;
 mod x;
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use libdatamile::utils::expand_path;
@@ -14,6 +16,10 @@ use libdatamile::utils::expand_path;
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    /// Config directory containing init.lua, which is also the root for
+    /// `require` and relative storage paths. Default: ~/.config/datamile
+    #[arg(long, global = true, value_name = "DIR")]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -297,5 +303,11 @@ fn init_logger() {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_logger();
-    Cli::parse().command.execute().await
+    let cli = Cli::parse();
+
+    if let Some(dir) = cli.config {
+        libdatamile::lua::set_config_dir(dir);
+    }
+
+    cli.command.execute().await
 }

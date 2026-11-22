@@ -203,11 +203,19 @@ The `build` places `datamile` executable at `{repo_path}/rust/target/release/dat
 
 ### 2. Configure It
 
-You create `~/.config/datamile/init.lua` file:
+You create `~/.config/datamile/init.lua` file. The directory holding it is the config root: it is what `require` searches, and what relative `storage.*` paths resolve against. To use a different root, point `--config` at its directory (works on every subcommand, in either position):
+
+```bash
+# A second config next to the one you use daily
+datamile --config ~/datamile-experiments compile "/music/Some Album" --stdout --pretty
+```
+
+The flag beats the `DATAMILE_CONFIG_PATH` environment variable, which also takes a directory and beats `~/.config/datamile`. An override that does not resolve is an error, never a silent fallback to your usual config.
 
 ```lua
 -- Since we are using Lua, a truly god-tier config language, for convenience
 -- you can define cloned repository path as local string variable
+-- (no defaults are shipped: tags, images and the album id are yours to declare)
 local repo_dir = "Path/To/Cloned/Repo/"
 
 datamile.config({ 

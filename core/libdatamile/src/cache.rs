@@ -69,7 +69,7 @@ pub fn read_object_cached(
     };
 
     if let Ok(json_str) = serde_json::to_string(&json_val) {
-        let _ = crate::utils::write_atomic_cache_file(&cache_file, &json_str);
+        let _ = crate::utils::write_atomic(&cache_file, &json_str);
     }
 
     Ok(json_val)

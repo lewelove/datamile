@@ -2,13 +2,13 @@
 import { player } from "../player.svelte.ts";
 import ClearCover from "../ClearCover.svelte";
 
-let { coverHash = "", width = 0 }: { coverHash?: string; width?: number } = $props();
+let { imageHash = "", width = 0 }: { imageHash?: string; width?: number } = $props();
 
 let persistentHash = $state("");
 
 $effect(() => {
   if (player.currentFile) {
-    persistentHash = coverHash;
+    persistentHash = imageHash;
   }
 });
 </script>

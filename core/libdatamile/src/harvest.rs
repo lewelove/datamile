@@ -124,7 +124,7 @@ pub fn harvest_file_cached(path: &Path, cache_root: &Path) -> Result<TrackJson> 
     let harvested = harvest_file(path)?;
 
     if let Ok(json_str) = serde_json::to_string(&harvested) {
-        let _ = crate::utils::write_atomic_cache_file(&cache_file, &json_str);
+        let _ = crate::utils::write_atomic(&cache_file, &json_str);
     }
 
     Ok(harvested)

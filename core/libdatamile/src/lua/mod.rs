@@ -13,7 +13,7 @@ use mlua::serde::SerializeOptions;
 use mlua::{Lua, LuaSerdeExt, Table};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ActionDef, AppConfig, CoversConfig, CoversRegistry, InterfaceDef};
+use crate::config::{ActionDef, AppConfig, InterfaceDef};
 use crate::error::DatamileError;
 
 const LUA_CORE: &str = include_str!("core.lua");
@@ -234,7 +234,6 @@ pub struct LuaEngine {
 
 pub struct EvaluatedLuaData {
     pub app: AppConfig,
-    pub covers: CoversRegistry,
     pub interfaces: HashMap<String, InterfaceDef>,
     pub actions: HashMap<String, ActionDef>,
     pub dependencies: Vec<PathBuf>,
@@ -357,7 +356,6 @@ impl LuaEngine {
             self.lua.set_app_data(EngineContext::new(resolved_cache));
         }
 
-        let covers: CoversRegistry = call_getter(&self.lua, "__DATAMILE_GET_COVERS")?;
         let interfaces: HashMap<String, InterfaceDef> =
             call_getter(&self.lua, "__DATAMILE_GET_INTERFACES")?;
         let actions: HashMap<String, ActionDef> =
@@ -384,7 +382,6 @@ impl LuaEngine {
 
         Ok(EvaluatedLuaData {
             app: app_config,
-            covers,
             interfaces,
             actions,
             dependencies,
@@ -642,7 +639,6 @@ pub fn resolve_config_path() -> Option<PathBuf> {
 #[derive(Clone, Debug)]
 pub struct ResolvedConfig {
     pub app: AppConfig,
-    pub covers: CoversRegistry,
     pub interfaces: HashMap<String, InterfaceDef>,
     pub actions: HashMap<String, ActionDef>,
     pub dependencies: Vec<PathBuf>,
@@ -673,13 +669,6 @@ impl ResolvedConfig {
             evaluated.app.compiler.audio_extensions = Some(validated);
         }
 
-        if evaluated.covers.targets.is_empty() {
-            evaluated.covers.targets.push(CoversConfig {
-                filter: "lanczos".to_string(),
-                size: 200,
-            });
-        }
-
         if !evaluated.app.storage.music_directory.is_empty() {
             evaluated.app.storage.music_directory = crate::utils::resolve_path(
                 &evaluated.app.storage.music_directory,
@@ -706,7 +695,6 @@ impl ResolvedConfig {
 
         Ok(Self {
             app: evaluated.app,
-            covers: evaluated.covers,
             interfaces: evaluated.interfaces,
             actions: evaluated.actions,
             dependencies,

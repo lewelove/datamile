@@ -142,9 +142,6 @@ export class ViewState {
       }
       this.isLoading = false;
       this._pendingViewReset = false;
-    } else if (json.type === "CONFIG_UPDATE") {
-      this.refreshView(false);
-      this.refreshSidebar();
     } else if (json.type === "LOGIC_UPDATE") {
       if (json.manifest) {
         collection.manifest = json.manifest;
@@ -423,13 +420,7 @@ export class ViewState {
             date: dictEntry.date,
             keys: dictEntry.keys,
             colors: dictEntry.colors,
-            covers: dictEntry.covers || {
-              main: [
-                {
-                  address: dictEntry.cover_hash || ""
-                }
-              ]
-            },
+            images: dictEntry.images || {},
             info: {
               virtual: dictEntry.virtual,
               total_discs: dictEntry.total_discs,

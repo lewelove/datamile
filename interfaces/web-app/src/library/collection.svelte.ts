@@ -1,10 +1,11 @@
 import { SvelteMap } from "svelte/reactivity";
 import { sync } from "./sync.svelte.ts";
 import { updatePlayerState } from "../modules/player.svelte.ts";
-import { config as globalConfig, updateConfig } from "../config.svelte.ts";
+import { config as globalConfig } from "../config.svelte.ts";
 import type {
   AlbumCardItem,
   AlbumDictEntry,
+  AlbumImageEntry,
   CabinetDef,
   CabinetListItem,
   DropdownItem,
@@ -21,20 +22,41 @@ import type {
   WsMessage
 } from "../types.ts";
 
-function triggerCoverPrewarm() {
-  const sizes = [200, 619];
-  for (const size of sizes) {
-    fetch("/api/internal/cache_covers", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        names: ["main"],
-        format: "bmp",
-        size,
-        filter: "catmullrom"
-      })
-    }).catch(() => {});
-  }
+const DEFAULT_THUMBNAIL_SIZE = 200;
+const DEFAULT_THUMBNAIL_FILTER = "lanczos";
+
+/**
+ * The grid thumbnail URL and the prewarm request must agree on size and
+ * filter: the cache file is keyed by both, so any mismatch misses the cache.
+ */
+function thumbnailParams(): { size: number; filter: string } {
+  const imageConfig = globalConfig.album_grid.album_card.cover;
+  return {
+    size: imageConfig.size || DEFAULT_THUMBNAIL_SIZE,
+    filter: imageConfig.filter || DEFAULT_THUMBNAIL_FILTER
+  };
+}
+
+function mainImageAddress(
+  album: { images?: Record<string, AlbumImageEntry[]> } | null | undefined
+): string {
+  return album?.images?.main?.[0]?.address || "";
+}
+
+/**
+ * Prewarms derived thumbnails. Without addresses the whole library is swept,
+ * so single-album updates pass only what they touched.
+ */
+function triggerImagePrewarm(addresses?: string[]) {
+  const { size, filter } = thumbnailParams();
+  const target = addresses
+    ? { addresses }
+    : { names: ["main"] };
+  fetch("/api/internal/cache_images", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...target, format: "bmp", size, filter })
+  }).catch(() => {});
 }
 
 class CollectionStore {
@@ -52,7 +74,6 @@ class CollectionStore {
     shelves: {},
     cabinets: {}
   });
-  config: Record<string, unknown> = $state({});
 
   constructor() {
     sync.addEventListener("message", (e: Event) =>
@@ -70,10 +91,7 @@ class CollectionStore {
       if (json.manifest) {
         this.manifest = json.manifest;
       }
-      if (json.config) {
-        this.config = { ...this.config, ...json.config };
-      }
-      triggerCoverPrewarm();
+      triggerImagePrewarm();
     } else if (json.type === "VIEW_DATA") {
       this.libraryViewIds = json.ids || [];
     } else if (json.type === "GROUP_RESULT") {
@@ -86,7 +104,6 @@ class CollectionStore {
       }
       delete this.dict[json.id];
       delete this.fullAlbumCache[json.id];
-      triggerCoverPrewarm();
     } else if (json.type === "ALBUM_UPDATED") {
       if (json.shelves) {
         this.sidebarShelves = json.shelves;
@@ -101,7 +118,11 @@ class CollectionStore {
         delete this.dict[json.id];
       }
       delete this.fullAlbumCache[json.id];
-      triggerCoverPrewarm();
+
+      const imageAddress = mainImageAddress(json.dictEntry);
+      if (imageAddress) {
+        triggerImagePrewarm([imageAddress]);
+      }
     } else if (json.type === "ALBUMS_UPDATED") {
       if (json.shelves) {
         this.sidebarShelves = json.shelves;
@@ -124,15 +145,16 @@ class CollectionStore {
           delete this.fullAlbumCache[id];
         }
       }
-      triggerCoverPrewarm();
+
+      const addresses = Object.values(json.updated || {})
+        .map(mainImageAddress)
+        .filter((address) => address.length > 0);
+      if (addresses.length > 0) {
+        triggerImagePrewarm(addresses);
+      }
     } else if (json.type === "LOGIC_UPDATE") {
       if (json.manifest) {
         this.manifest = json.manifest;
-      }
-    } else if (json.type === "CONFIG_UPDATE") {
-      if (json.config) {
-        this.config = { ...this.config, ...json.config };
-        updateConfig(json.config);
       }
     } else if (json.type === "MPD_STATUS") {
       updatePlayerState(json);
@@ -150,8 +172,7 @@ class CollectionStore {
         id: a.id,
         title: a.album,
         artist: a.albumartist,
-        cover_hash: a.cover_hash,
-        covers: a.covers,
+        images: a.images,
         total_discs: a.total_discs,
         total_tracks: a.total_tracks,
         duration_formatted: a.duration_formatted,
@@ -163,13 +184,15 @@ class CollectionStore {
     return albums;
   }
 
-  getThumbnailUrl(album: { cover_hash?: string | null } | null | undefined): string {
-    if (!album || !album.cover_hash) {
+  getThumbnailUrl(
+    album: AlbumCardItem | AlbumDictEntry | null | undefined
+  ): string {
+    const address = mainImageAddress(album);
+    if (!address) {
       return "";
     }
-    const algo = globalConfig.album_grid.album_card.cover.filter || "lanczos";
-    const size = globalConfig.album_grid.album_card.cover.size || 200;
-    return `/api/covers/${album.cover_hash}.bmp?size=${size}&filter=${algo}`;
+    const { size, filter } = thumbnailParams();
+    return `/api/images/${address}.bmp?size=${size}&filter=${filter}`;
   }
 
   async ensureFullAlbum(id: string): Promise<FullAlbum | null> {

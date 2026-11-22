@@ -71,28 +71,3 @@ pub struct CompilerConfig {
     pub audio_extensions: Option<Vec<String>>,
     pub jobs: Option<usize>,
 }
-
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Hash, Default)]
-pub struct CoversConfig {
-    pub filter: String,
-    pub size: u32,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-#[serde(default)]
-pub struct CoversRegistry {
-    pub master: CoversConfig,
-    pub targets: Vec<CoversConfig>,
-}
-
-impl Default for CoversRegistry {
-    fn default() -> Self {
-        Self {
-            master: CoversConfig {
-                filter: "mitchell".to_string(),
-                size: 1080,
-            },
-            targets: Vec::new(),
-        }
-    }
-}

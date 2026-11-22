@@ -38,19 +38,19 @@ Here are the few powerful examples of this architecture being used, based on con
 
 When adding an album to your library simply fetch raw response JSONs from the upstream metadata source (Discogs, MusicBrainz, etc), save them, and consume at compile time.
 
-The Goal: I want my albums to always have the `genres` and `styles` keys as arrays of strings from the Discogs Master release group, so I can group albums by these keys in the UI.
+The Goal: I want my albums to always have the `genres` and `styles` tags as arrays of strings from the Discogs Master release group, so I can group albums by these tags in the UI.
 
 The Solution: I find album master release group on Discogs, copy the `discogs.com/master/...` URL, then use a small Discogs API key based program (look into `actions/` for code reference) to fetch a JSON and save it under `{album_directory}/Info/discogs_master.json`. Then I express `genres` and `styles` key compilation logic directly in Lua:
 
 ```lua
-datamile.compile.album.key("genres", function(ctx, m)
+datamile.compile.album.tag("genres", function(ctx, m)
   -- Join the path with the album root from context
   local path = ctx.paths.album_root .. "/Info/discogs_master.json"
   local discogs = d.fs.read_json(path) -- Read JSON directly
   return discogs.genres -- Return the array! That's it!
 end)
 
-datamile.compile.album.key("styles", function(ctx, m)
+datamile.compile.album.tag("styles", function(ctx, m)
   local path = ctx.paths.album_root .. "/Info/discogs_master.json"
   local discogs = d.fs.read_json(path)
   return discogs.styles -- Same with `styles`!
@@ -218,14 +218,19 @@ datamile.config({
   }
 })
 
--- Optionally you can define all keys besides standard ones
+-- Optionally you can define all tags besides standard ones
 -- you want to load from TOML manifests and be present in `album.lock.json`
 
--- [album.lock.json].album.keys level
-datamile.compile.album.key( "album_key_name", true )
+-- [album.lock.json].album.tags level
+datamile.compile.album.tag( "album_tag_name", true )
 
--- [album.lock.json].tracks[].keys level
-datamile.compile.tracks.key( "track_key_name", true )
+-- [album.lock.json].tracks[].tags level
+datamile.compile.track.tag( "track_tag_name", true )
+
+-- Values that are not flat (nested tables, arrays of tables) go into
+-- `objects` instead, and are written to `album.lock.json` as JSON
+-- datamile.compile.album.object( "album_object_name", function(ctx, m) ... end )
+-- datamile.compile.track.object( "track_object_name", function(ctx, m, i) ... end )
 
 -- For `datamile interface` command to run you point default interface
 -- to the `interfaces/web-app` directory from the previous step

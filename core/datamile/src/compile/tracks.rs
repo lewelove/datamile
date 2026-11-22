@@ -1,13 +1,12 @@
 use std::path::Path;
 
-use libdatamile::compiler::manifest::extract_strict_u32;
 use libdatamile::compiler::validation::validate_track_indices;
 use libdatamile::error::DatamileError;
 use libdatamile::utils::HashMode;
 use serde_json::{Value, json};
 
 use crate::compile::album::AlbumKind;
-use crate::compile::utils::sort_json_keys;
+use crate::compile::utils::{self, sort_json_keys};
 use crate::harvest;
 
 pub fn build_ctx_tracks(
@@ -67,77 +66,49 @@ pub fn build_ctx_tracks(
     Ok((ctx_tracks, duration_sum_ms))
 }
 
+fn track_info(ctx_track: &Value) -> Value {
+    json!({
+        "sample_rate": ctx_track.get("sample_rate").cloned().unwrap_or_else(|| json!(0)),
+        "bits_per_sample": ctx_track.get("bits_per_sample").cloned().unwrap_or_else(|| json!(0)),
+        "bitrate_kbps": ctx_track.get("bitrate_kbps").cloned().unwrap_or_else(|| json!(0)),
+        "encoding": ctx_track.get("encoding").cloned().unwrap_or_else(|| json!("")),
+        "channels": ctx_track.get("channels").cloned().unwrap_or_else(|| json!(0)),
+        "duration_milliseconds": ctx_track.get("duration_milliseconds").cloned().unwrap_or_else(|| json!(0)),
+        "duration_formatted": libdatamile::resolvers::format_ms(ctx_track.get("duration_milliseconds").and_then(Value::as_u64).unwrap_or(0)),
+    })
+}
+
 pub fn build_final_tracks(
-    primary_tracks: &[Value],
-    albumartist: &str,
-    track_keys_array: Option<&Vec<Value>>,
+    lua_tracks: Option<&Vec<Value>>,
     ctx_tracks: &[Value],
-    album_root: &Path,
-) -> Result<Vec<Value>, DatamileError> {
+) -> Vec<Value> {
     let mut final_tracks = Vec::new();
 
-    for (i, t_val) in primary_tracks.iter().enumerate() {
-        let discnumber =
-            extract_strict_u32(t_val.get("discnumber"), "discnumber", Some(1))?;
-        let tracknumber =
-            extract_strict_u32(t_val.get("tracknumber"), "tracknumber", None)?;
+    for (i, ctx_track) in ctx_tracks.iter().enumerate() {
+        let lua_track = lua_tracks.and_then(|arr| arr.get(i));
 
-        let t_artist = t_val
-            .get("artist")
-            .and_then(Value::as_str)
-            .unwrap_or(albumartist)
-            .to_string();
-        let t_title = t_val
-            .get("title")
-            .and_then(Value::as_str)
-            .ok_or_else(|| DatamileError::TypeMismatch {
-                path: album_root.to_path_buf(),
-                key: "title".to_string(),
-                expected_type: "string".to_string(),
-                found_val: "missing".to_string(),
-            })?
-            .to_string();
+        let mut tags = utils::lua_object(lua_track.and_then(|t| t.get("tags")));
+        sort_json_keys(&mut tags);
 
-        let mut t_keys = track_keys_array
-            .and_then(|arr| arr.get(i))
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        let lyrics_val = t_keys.as_object_mut().and_then(|m| m.remove("lyrics"));
-        sort_json_keys(&mut t_keys);
-
-        let ctx_track = &ctx_tracks[i];
+        let mut objects = utils::lua_object(lua_track.and_then(|t| t.get("objects")));
+        // `info` is the one object Rust owns, and only until config registers it too.
+        if let Some(map) = objects.as_object_mut() {
+            map.entry("info").or_insert_with(|| track_info(ctx_track));
+        }
+        sort_json_keys(&mut objects);
 
         let mut t_obj = serde_json::Map::new();
-        t_obj.insert("discnumber".to_string(), json!(discnumber));
-        t_obj.insert("tracknumber".to_string(), json!(tracknumber));
-        t_obj.insert("artist".to_string(), json!(t_artist));
-        t_obj.insert("title".to_string(), json!(t_title));
-        t_obj.insert("keys".to_string(), t_keys);
-
-        let t_info = json!({
-            "sample_rate": ctx_track.get("sample_rate").cloned().unwrap_or_else(|| json!(0)),
-            "bits_per_sample": ctx_track.get("bits_per_sample").cloned().unwrap_or_else(|| json!(0)),
-            "bitrate_kbps": ctx_track.get("bitrate_kbps").cloned().unwrap_or_else(|| json!(0)),
-            "encoding": ctx_track.get("encoding").cloned().unwrap_or_else(|| json!("")),
-            "channels": ctx_track.get("channels").cloned().unwrap_or_else(|| json!(0)),
-            "duration_milliseconds": ctx_track.get("duration_milliseconds").cloned().unwrap_or_else(|| json!(0)),
-            "duration_formatted": libdatamile::resolvers::format_ms(ctx_track.get("duration_milliseconds").and_then(Value::as_u64).unwrap_or(0)),
-        });
-        t_obj.insert("info".to_string(), t_info);
+        t_obj.insert("tags".to_string(), tags);
+        t_obj.insert("objects".to_string(), objects);
         t_obj.insert(
             "file".to_string(),
             ctx_track.get("file").cloned().unwrap_or_else(|| json!({})),
         );
 
-        if let Some(mut l_val) = lyrics_val {
-            sort_json_keys(&mut l_val);
-            t_obj.insert("lyrics".to_string(), l_val);
-        }
-
         final_tracks.push(Value::Object(t_obj));
     }
 
-    Ok(final_tracks)
+    final_tracks
 }
 
 pub fn validate_audio_files(

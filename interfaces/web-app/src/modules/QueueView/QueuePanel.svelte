@@ -18,12 +18,14 @@ let mappedTracks = $derived(
       id: item.id,
       file: item.file,
       isPlaying: player.currentFile === item.file,
-      trackNo: meta ? meta.tracknumber : item.track_no ?? "#",
-      discNo: meta ? meta.discnumber : item.disc_no ?? 1,
-      duration: meta ? meta.info?.duration_formatted ?? "" : item.duration ?? "",
-      durationMs: meta ? Number(meta.info?.duration_milliseconds ?? 0) : item.duration_ms ?? 0,
-      title: meta ? meta.title : item.title || item.file,
-      artist: meta ? meta.artist ?? "" : item.artist || "",
+      trackNo: meta ? (meta.tags?.tracknumber ?? "#") : item.track_no ?? "#",
+      discNo: meta ? Number(meta.tags?.discnumber ?? 1) : item.disc_no ?? 1,
+      duration: meta ? meta.objects?.info?.duration_formatted ?? "" : item.duration ?? "",
+      durationMs: meta
+        ? Number(meta.objects?.info?.duration_milliseconds ?? 0)
+        : item.duration_ms ?? 0,
+      title: meta ? (meta.tags?.title ?? "") : item.title || item.file,
+      artist: meta ? (meta.tags?.artist ?? "") : item.artist || "",
       albumId: item.album_id || null
     };
   })
@@ -53,10 +55,10 @@ let groupedQueue = $derived.by(() => {
       {#each groupedQueue as group, groupIdx (group.albumId || groupIdx)}
         {#if group.albumMeta}
           <QueueHeader
-            top={group.albumMeta.album}
-            middle={group.albumMeta.albumartist}
-            bottomLeft={group.albumMeta.date?.substring(0, 4) || ""}
-            bottomRight={group.albumMeta.duration_formatted || ""}
+            top={group.albumMeta.tags?.album}
+            middle={group.albumMeta.tags?.albumartist}
+            bottomLeft={String(group.albumMeta.tags?.date || "").substring(0, 4)}
+            bottomRight={(group.albumMeta.objects?.info?.duration_formatted as string) || ""}
           />
         {/if}
         <TracklistView tracks={group.tracks} albumMeta={group.albumMeta} />

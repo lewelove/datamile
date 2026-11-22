@@ -32,15 +32,39 @@ export interface AlbumInfoData {
   duration_formatted?: string;
 }
 
-export interface AlbumLockData {
-  id?: string;
+export interface AlbumTags {
   album?: string;
   albumartist?: string;
   date?: string;
-  keys?: Record<string, unknown>;
-  colors?: AlbumColors | null;
-  images?: Record<string, AlbumImageEntry[]>;
+  [key: string]: unknown;
+}
+
+export interface AlbumObjects {
   info?: AlbumInfoData;
+  colors?: AlbumColors | null;
+  [key: string]: unknown;
+}
+
+export interface TrackTags {
+  tracknumber?: number | string;
+  discnumber?: number | string;
+  title?: string;
+  artist?: string;
+  lyrics?: string;
+  instrumental?: boolean;
+  [key: string]: unknown;
+}
+
+export interface TrackObjects {
+  info?: TrackPhysicsInfo;
+  [key: string]: unknown;
+}
+
+export interface AlbumLockData {
+  id?: string;
+  tags?: AlbumTags;
+  objects?: AlbumObjects;
+  images?: Record<string, AlbumImageEntry[]>;
   manifests?: Record<string, unknown>;
 }
 
@@ -54,11 +78,6 @@ export interface TrackPhysicsInfo {
   channels?: number;
 }
 
-export interface TrackLyrics {
-  type?: string;
-  text?: string;
-}
-
 export interface TrackFileInfo {
   path?: string;
   mtime?: number;
@@ -67,14 +86,9 @@ export interface TrackFileInfo {
 
 export interface TrackItem {
   id?: string | number;
-  discnumber: number;
-  tracknumber: number;
-  title: string;
-  artist?: string;
-  info?: TrackPhysicsInfo;
+  tags?: TrackTags;
+  objects?: TrackObjects;
   file?: TrackFileInfo;
-  keys?: Record<string, unknown>;
-  lyrics?: TrackLyrics;
 }
 
 export interface FullAlbum {
@@ -92,22 +106,15 @@ export interface AlbumCardItem {
   total_tracks?: number;
   duration_formatted?: string;
   virtual?: boolean;
-  keys?: Record<string, unknown>;
+  tags?: AlbumTags;
   colors?: AlbumColors | null;
 }
 
 export interface AlbumDictEntry {
   id: string;
-  album?: string;
-  albumartist?: string;
-  date?: string;
+  tags?: AlbumTags;
+  objects?: AlbumObjects;
   images?: Record<string, AlbumImageEntry[]>;
-  duration_formatted?: string;
-  total_discs?: number;
-  total_tracks?: number;
-  virtual?: boolean;
-  keys?: Record<string, unknown>;
-  colors?: AlbumColors | null;
 }
 
 export interface GrouperTreeNode {

@@ -415,18 +415,9 @@ export class ViewState {
           id: album.id,
           album: {
             id: album.id,
-            album: dictEntry.album,
-            albumartist: dictEntry.albumartist,
-            date: dictEntry.date,
-            keys: dictEntry.keys,
-            colors: dictEntry.colors,
-            images: dictEntry.images || {},
-            info: {
-              virtual: dictEntry.virtual,
-              total_discs: dictEntry.total_discs,
-              total_tracks: dictEntry.total_tracks,
-              duration_formatted: dictEntry.duration_formatted
-            }
+            tags: dictEntry.tags,
+            objects: dictEntry.objects,
+            images: dictEntry.images || {}
           },
           tracks: []
         };

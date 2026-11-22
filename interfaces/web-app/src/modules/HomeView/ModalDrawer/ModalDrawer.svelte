@@ -13,12 +13,12 @@ let windowWidth = $state(typeof window !== "undefined" ? window.innerWidth : 128
 let leftColumnWidth = $derived(Math.round(0.36 * windowWidth));
 
 let albumData = $derived(album.album || {});
-let infoData = $derived(albumData.info || {});
+let infoData = $derived(albumData.objects?.info || {});
 
 let imageHash = $derived(albumData.images?.main?.[0]?.address || "");
-let title = $derived(albumData.album || "Untitled");
-let artist = $derived(albumData.albumartist || "Unknown");
-let dateString = $derived(albumData.date || "");
+let title = $derived(albumData.tags?.album || "Untitled");
+let artist = $derived(albumData.tags?.albumartist || "Unknown");
+let dateString = $derived(String(albumData.tags?.date || ""));
 
 let discCount = $derived(Number(infoData.total_discs) || 1);
 let trackCount = $derived(Number(infoData.total_tracks) || 0);
@@ -69,11 +69,11 @@ async function handlePlayTrack(index: number) {
     if (!track) {
       return;
     }
-    const discNumber = track.discnumber;
+    const discNumber = Number(track.tags?.discnumber ?? 1);
 
     let intraDiscOffset = 0;
     for (let i = 0; i < index; i++) {
-      if (tracks[i].discnumber === discNumber) {
+      if (Number(tracks[i].tags?.discnumber ?? 1) === discNumber) {
         intraDiscOffset++;
       }
     }

@@ -53,7 +53,7 @@ async function handleJump(id: string | number) {
 }
 
 let isMultiDiscAlbum = $derived(
-  albumMeta && Number(albumMeta.total_discs || 1) > 1
+  albumMeta && Number(albumMeta.objects?.info?.total_discs || 1) > 1
 );
 </script>
 
@@ -88,7 +88,7 @@ let isMultiDiscAlbum = $derived(
     >
       <div class="v-track-body">
         <span class="v-truncate v-track-title track-title">{track.title}</span>
-        {#if track.artist && albumMeta && track.artist.toLowerCase() !== albumMeta.albumartist?.toLowerCase()}
+        {#if track.artist && albumMeta && track.artist.toLowerCase() !== String(albumMeta.tags?.albumartist || "").toLowerCase()}
           <span class="v-truncate v-track-artist track-artist">{track.artist}</span>
         {/if}
       </div>

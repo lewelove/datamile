@@ -111,7 +111,7 @@ async fn tracks_internal(
         for track in tracks {
             if let Some(td) = target_disc {
                 let current_disc = track
-                    .get("discnumber")
+                    .pointer("/tags/discnumber")
                     .and_then(serde_json::Value::as_u64)
                     .map_or(1, |v| u32::try_from(v).unwrap_or(1));
                 if current_disc != td {

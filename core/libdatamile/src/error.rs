@@ -99,15 +99,6 @@ pub enum DatamileError {
         found_val: String,
     },
 
-    #[error(
-        "Invalid Color Format in {path}: Field '{key}' must be a valid hex color string, found '{found}'"
-    )]
-    InvalidColorFormat {
-        path: PathBuf,
-        key: String,
-        found: String,
-    },
-
     #[error("Duplicate Album ID '{id}': defined in both {path_a} and {path_b}")]
     DuplicateAlbumId {
         id: String,

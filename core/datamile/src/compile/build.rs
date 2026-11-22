@@ -30,21 +30,12 @@ struct DispatcherInput<'a> {
     duration_sum_ms: u64,
 }
 
-struct AlbumHeader<'a> {
-    artist: &'a str,
-    title: &'a str,
-    date: &'a str,
-    id: &'a str,
-}
-
 struct AlbumAssemblyInput<'a> {
-    header: AlbumHeader<'a>,
-    keys: Value,
-    info: Value,
+    id: &'a str,
+    tags: Value,
+    objects: Value,
     manifests: &'a BTreeMap<String, Value>,
     images: &'a BTreeMap<String, Value>,
-    parsed_manifests: &'a serde_json::Map<String, Value>,
-    album_root: &'a Path,
 }
 
 fn load_primary_and_files(
@@ -119,26 +110,14 @@ fn build_dispatcher_context(
 
 fn assemble_album_object(
     input: &AlbumAssemblyInput<'_>,
-) -> Result<serde_json::Map<String, Value>, DatamileError> {
+) -> serde_json::Map<String, Value> {
     let mut album_obj = serde_json::Map::new();
-    album_obj.insert("albumartist".to_string(), json!(input.header.artist));
-    album_obj.insert("album".to_string(), json!(input.header.title));
-    album_obj.insert("date".to_string(), json!(input.header.date));
-    album_obj.insert("id".to_string(), json!(input.header.id));
-    album_obj.insert("keys".to_string(), input.keys.clone());
-    album_obj.insert("info".to_string(), input.info.clone());
+    album_obj.insert("id".to_string(), json!(input.id));
+    album_obj.insert("tags".to_string(), input.tags.clone());
+    album_obj.insert("objects".to_string(), input.objects.clone());
     album_obj.insert("manifests".to_string(), json!(input.manifests));
     album_obj.insert("images".to_string(), json!(input.images));
-
-    if let Some(theme) = input.parsed_manifests.get("theme")
-        && let Some(colors) = theme.get("album").and_then(|a| a.get("colors"))
-    {
-        let colors_validated =
-            utils::validate_and_format_colors(colors, input.album_root)?;
-        album_obj.insert("colors".to_string(), colors_validated);
-    }
-
-    Ok(album_obj)
+    album_obj
 }
 
 fn run_dispatcher_phase(
@@ -179,10 +158,10 @@ fn extract_album_id(lua_res: &Value, album_root: &Path) -> Result<String, Datami
         })
 }
 
-fn resolve_album_metadata(
+fn validate_album_header(
     parsed_manifests: &serde_json::Map<String, Value>,
     album_root_canon: &Path,
-) -> Result<(String, String, String), DatamileError> {
+) -> Result<(), DatamileError> {
     let empty_album = json!({});
     let primary_manifest = parsed_manifests.get("metadata").ok_or_else(|| {
         DatamileError::MissingPrimaryManifest {
@@ -190,20 +169,20 @@ fn resolve_album_metadata(
         }
     })?;
     let primary_album = primary_manifest.get("album").unwrap_or(&empty_album);
-    album::parse_mandatory_album_fields(primary_album, album_root_canon)
+    album::validate_mandatory_fields(primary_album, album_root_canon)
 }
 
 fn build_lock_json(
     assembly_input: &AlbumAssemblyInput<'_>,
     final_tracks: Vec<Value>,
-) -> Result<Value, DatamileError> {
-    let album_obj = assemble_album_object(assembly_input)?;
+) -> Value {
+    let album_obj = assemble_album_object(assembly_input);
     let mut final_json = json!({
         "album": Value::Object(album_obj),
         "tracks": Value::Array(final_tracks),
     });
     utils::strip_empty_values(&mut final_json);
-    Ok(final_json)
+    final_json
 }
 
 pub fn build(
@@ -274,12 +253,12 @@ pub fn build(
     )?;
 
     let album_id = extract_album_id(&lua_res, &album_root_canon)?;
-    let mut album_keys = lua_res.get("album").cloned().unwrap_or_else(|| json!({}));
-    utils::sort_json_keys(&mut album_keys);
+    validate_album_header(&build_data.parsed_manifests, &album_root_canon)?;
 
-    let (albumartist, album_title, date) =
-        resolve_album_metadata(&build_data.parsed_manifests, &album_root_canon)?;
+    let mut album_tags = utils::lua_object(lua_res.get("tags"));
+    utils::sort_json_keys(&mut album_tags);
 
+    let mut album_objects = utils::lua_object(lua_res.get("objects"));
     let info_obj = json!({
         "virtual": album_kind == album::AlbumKind::Virtual,
         "total_discs": total_discs,
@@ -287,31 +266,26 @@ pub fn build(
         "duration_milliseconds": duration_sum_ms,
         "duration_formatted": libdatamile::resolvers::format_ms(duration_sum_ms),
     });
+    // `info` is the one object Rust owns, and only until config registers it too.
+    if let Some(objects) = album_objects.as_object_mut() {
+        objects.entry("info").or_insert(info_obj);
+    }
+    utils::sort_json_keys(&mut album_objects);
 
     let final_tracks = tracks::build_final_tracks(
-        &build_data.primary_tracks,
-        &albumartist,
         lua_res.get("tracks").and_then(Value::as_array),
         &ctx_tracks,
-        &album_root_canon,
-    )?;
+    );
 
     let assembly_input = AlbumAssemblyInput {
-        header: AlbumHeader {
-            artist: &albumartist,
-            title: &album_title,
-            date: &date,
-            id: &album_id,
-        },
-        keys: album_keys,
-        info: info_obj,
+        id: &album_id,
+        tags: album_tags,
+        objects: album_objects,
         manifests: &lock_manifests,
         images: &images_map,
-        parsed_manifests: &build_data.parsed_manifests,
-        album_root: &album_root_canon,
     };
 
-    let lock_json = build_lock_json(&assembly_input, final_tracks)?;
+    let lock_json = build_lock_json(&assembly_input, final_tracks);
 
     Ok(BuildOutput {
         album_dir: album_root_canon,

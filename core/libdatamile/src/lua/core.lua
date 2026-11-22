@@ -4,12 +4,15 @@ _G.d = _G.datamile
 _G.REGISTRY = {
     config = {},
     images_rules = {},
-    keys = {
+    tags = {
+        album = {},
+        tracks = {}
+    },
+    objects = {
         album = {},
         tracks = {}
     },
     id_fn = nil,
-    lyrics = nil,
     interfaces = {},
     actions = {},
     dependencies = {},

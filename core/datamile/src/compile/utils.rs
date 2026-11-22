@@ -1,7 +1,12 @@
-use std::path::Path;
-
-use libdatamile::error::DatamileError;
 use serde_json::{Value, json};
+
+/// Lua's empty table can reach us as an empty array; only a real object is data.
+pub fn lua_object(value: Option<&Value>) -> Value {
+    match value {
+        Some(v @ Value::Object(_)) => v.clone(),
+        _ => json!({}),
+    }
+}
 
 pub fn strip_empty_values(value: &mut Value) {
     match value {
@@ -51,66 +56,4 @@ pub fn sort_json_keys(value: &mut Value) {
         }
         _ => {}
     }
-}
-
-pub fn is_valid_hex_color(s: &str) -> bool {
-    if !s.starts_with('#') {
-        return false;
-    }
-    let hex = &s[1..];
-    let len = hex.len();
-    if len != 3 && len != 4 && len != 6 && len != 8 {
-        return false;
-    }
-    hex.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-pub fn validate_and_format_colors(
-    colors: &Value,
-    album_root: &Path,
-) -> Result<Value, DatamileError> {
-    let mut formatted_colors = serde_json::Map::new();
-
-    if let Some(fg) = colors.get("foreground")
-        && let Some(s) = fg.as_str()
-    {
-        if !is_valid_hex_color(s) {
-            return Err(DatamileError::InvalidColorFormat {
-                path: album_root.to_path_buf(),
-                key: "foreground".to_string(),
-                found: s.to_string(),
-            });
-        }
-        formatted_colors.insert("foreground".to_string(), json!(s));
-    }
-
-    if let Some(bg) = colors.get("background") {
-        if let Some(arr) = bg.as_array() {
-            let mut bg_arr = Vec::new();
-            for (i, v) in arr.iter().enumerate() {
-                if let Some(s) = v.as_str() {
-                    if !is_valid_hex_color(s) {
-                        return Err(DatamileError::InvalidColorFormat {
-                            path: album_root.to_path_buf(),
-                            key: format!("background[{i}]"),
-                            found: s.to_string(),
-                        });
-                    }
-                    bg_arr.push(s.to_string());
-                }
-            }
-            formatted_colors.insert("background".to_string(), json!(bg_arr));
-        } else if let Some(s) = bg.as_str() {
-            if !is_valid_hex_color(s) {
-                return Err(DatamileError::InvalidColorFormat {
-                    path: album_root.to_path_buf(),
-                    key: "background".to_string(),
-                    found: s.to_string(),
-                });
-            }
-            formatted_colors.insert("background".to_string(), json!(vec![s]));
-        }
-    }
-
-    Ok(Value::Object(formatted_colors))
 }

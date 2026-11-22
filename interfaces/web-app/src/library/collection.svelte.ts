@@ -168,17 +168,18 @@ class CollectionStore {
       if (!a) {
         continue;
       }
+      const info = a.objects?.info;
       albums.push({
         id: a.id,
-        title: a.album,
-        artist: a.albumartist,
+        title: a.tags?.album,
+        artist: a.tags?.albumartist,
         images: a.images,
-        total_discs: a.total_discs,
-        total_tracks: a.total_tracks,
-        duration_formatted: a.duration_formatted,
-        virtual: a.virtual,
-        keys: a.keys,
-        colors: a.colors
+        total_discs: Number(info?.total_discs) || 1,
+        total_tracks: Number(info?.total_tracks) || 0,
+        duration_formatted: info?.duration_formatted,
+        virtual: info?.virtual,
+        tags: a.tags,
+        colors: a.objects?.colors ?? null
       });
     }
     return albums;

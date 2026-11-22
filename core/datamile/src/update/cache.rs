@@ -50,6 +50,9 @@ pub fn lua_config_hash(dependencies: &[PathBuf]) -> String {
     let mut sorted_deps = dependencies.to_vec();
     sorted_deps.sort();
     let mut hasher = blake3::Hasher::new();
+    // The defaults compiled into the binary are not tracked dependencies, so a
+    // new binary has to invalidate old locks by itself.
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
     for dep in &sorted_deps {
         if let Ok(content) = fs::read(dep) {
             hasher.update(&content);

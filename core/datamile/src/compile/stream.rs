@@ -138,15 +138,13 @@ fn finalize(
 ) -> Result<(bool, Option<crate::server::api::system::AlbumIngestPayload>)> {
     let artist = item
         .lock_val
-        .get("album")
-        .and_then(|a| a.get("albumartist"))
+        .pointer("/album/tags/albumartist")
         .and_then(Value::as_str)
         .unwrap_or("Unknown")
         .to_string();
     let album = item
         .lock_val
-        .get("album")
-        .and_then(|a| a.get("album"))
+        .pointer("/album/tags/album")
         .and_then(Value::as_str)
         .unwrap_or("Unknown")
         .to_string();

@@ -17,6 +17,10 @@ let {
 
 let multiDisc = $derived(Number(totalDiscs) > 1);
 
+function discNo(track: TrackItem) {
+  return Number(track.tags?.discnumber ?? 1);
+}
+
 function formatDuration(str?: string) {
   if (!str) {
     return "0:00";
@@ -54,8 +58,11 @@ function formatMs(ms: number) {
 
 function getDiscDuration(discNumber: number) {
   const totalMs = tracks
-    .filter((t) => t.discnumber === discNumber)
-    .reduce((acc, t) => acc + (Number(t.info?.duration_milliseconds) || 0), 0);
+    .filter((t) => discNo(t) === discNumber)
+    .reduce(
+      (acc, t) => acc + (Number(t.objects?.info?.duration_milliseconds) || 0),
+      0
+    );
   return formatMs(totalMs);
 }
 
@@ -69,7 +76,7 @@ function handlePlayDisc(discNumber: number) {
   if (onplaydisc) {
     onplaydisc(discNumber);
   } else {
-    const firstIndex = tracks.findIndex((t) => t.discnumber === discNumber);
+    const firstIndex = tracks.findIndex((t) => discNo(t) === discNumber);
     if (firstIndex !== -1 && onplay) {
       onplay(firstIndex);
     }
@@ -78,21 +85,21 @@ function handlePlayDisc(discNumber: number) {
 </script>
 
 <div class="tracks-list">
-  {#each tracks as track, i (track.id || `${track.discnumber}-${track.tracknumber}-${i}`)}
-    {#if multiDisc && (i === 0 || track.discnumber !== tracks[i - 1].discnumber)}
+  {#each tracks as track, i (track.id || `${track.tags?.discnumber}-${track.tags?.tracknumber}-${i}`)}
+    {#if multiDisc && (i === 0 || discNo(track) !== discNo(tracks[i - 1]))}
       {#if i > 0}
         <div class="disc-separator"></div>
       {/if}
       <div class="disc-header-row">
-        <span class="disc-label">Disc {track.discnumber}</span>
+        <span class="disc-label">Disc {discNo(track)}</span>
 
         <div class="disc-header-right">
-          <span class="v-mono disc-duration-label">{getDiscDuration(track.discnumber)}</span>
+          <span class="v-mono disc-duration-label">{getDiscDuration(discNo(track))}</span>
           <button
             type="button"
             class="v-btn-icon disc-play-btn"
-            onclick={() => handlePlayDisc(track.discnumber)}
-            title="Play Disc {track.discnumber}"
+            onclick={() => handlePlayDisc(discNo(track))}
+            title="Play Disc {discNo(track)}"
           >
             <span class="icon filled disc-play-icon">play_arrow</span>
           </button>
@@ -111,17 +118,17 @@ function handlePlayDisc(discNumber: number) {
       }}
       role="button"
       tabindex="0"
-      aria-label="Track {track.tracknumber}: {track.title}"
+      aria-label="Track {track.tags?.tracknumber}: {track.tags?.title}"
     >
-      <span class="v-mono v-track-index track-index">{track.tracknumber}</span>
+      <span class="v-mono v-track-index track-index">{track.tags?.tracknumber}</span>
       <div class="v-track-body track-body">
-        <span class="v-truncate v-track-title track-title">{track.title}</span>
-        {#if track.artist && albumArtist && track.artist.toLowerCase() !== albumArtist.toLowerCase()}
-          <span class="v-truncate v-track-artist track-artist">{track.artist}</span>
+        <span class="v-truncate v-track-title track-title">{track.tags?.title}</span>
+        {#if String(track.tags?.artist || "") && albumArtist && String(track.tags?.artist).toLowerCase() !== albumArtist.toLowerCase()}
+          <span class="v-truncate v-track-artist track-artist">{String(track.tags?.artist)}</span>
         {/if}
       </div>
       <span class="v-mono v-track-meta track-meta"
-        >{formatDuration(track.info?.duration_formatted)}</span
+        >{formatDuration(track.objects?.info?.duration_formatted)}</span
       >
     </div>
   {/each}

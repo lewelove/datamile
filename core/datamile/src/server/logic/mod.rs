@@ -208,7 +208,7 @@ impl LogicEngine {
         let mut track_uris = Vec::new();
 
         for (track_idx, track) in tracks.iter().enumerate() {
-            let Some(tinfo) = track.get("info") else {
+            let Some(tinfo) = track.pointer("/objects/info") else {
                 continue;
             };
 
@@ -228,14 +228,14 @@ impl LogicEngine {
             );
             let mpd_uri = mpd_uri_raw.trim_start_matches('/').to_string();
 
-            let track_no = match track.get("tracknumber") {
+            let track_no = match track.pointer("/tags/tracknumber") {
                 Some(Value::Number(n)) => {
                     n.as_u64().and_then(|v| u32::try_from(v).ok()).unwrap_or(0)
                 }
                 Some(Value::String(s)) => s.parse().unwrap_or(0),
                 _ => 0,
             };
-            let disc_no = match track.get("discnumber") {
+            let disc_no = match track.pointer("/tags/discnumber") {
                 Some(Value::Number(n)) => {
                     n.as_u64().and_then(|v| u32::try_from(v).ok()).unwrap_or(1)
                 }
@@ -243,12 +243,12 @@ impl LogicEngine {
                 _ => 1,
             };
             let title = track
-                .get("title")
+                .pointer("/tags/title")
                 .and_then(Value::as_str)
                 .unwrap_or("Unknown")
                 .to_string();
             let artist = track
-                .get("artist")
+                .pointer("/tags/artist")
                 .and_then(Value::as_str)
                 .unwrap_or("Unknown")
                 .to_string();
@@ -368,7 +368,7 @@ impl LogicEngine {
         let Some(album) = parsed.get("album") else {
             return Ok(());
         };
-        let Some(info) = album.get("info") else {
+        let Some(info) = album.pointer("/objects/info") else {
             return Ok(());
         };
 
@@ -398,29 +398,22 @@ impl LogicEngine {
             self.ingest_images(album, &album_dir_canon);
 
         let title = album
-            .get("album")
+            .pointer("/tags/album")
             .and_then(Value::as_str)
             .unwrap_or("Unknown")
             .to_string();
 
         let artist = album
-            .get("albumartist")
+            .pointer("/tags/albumartist")
             .and_then(Value::as_str)
             .unwrap_or("Unknown")
             .to_string();
 
         let entry = json!({
             "id": id,
-            "album": album.get("album"),
-            "albumartist": album.get("albumartist"),
-            "date": album.get("date"),
+            "tags": album.get("tags"),
+            "objects": album.get("objects"),
             "images": album.get("images"),
-            "duration_formatted": info.get("duration_formatted"),
-            "total_discs": info.get("total_discs"),
-            "total_tracks": info.get("total_tracks"),
-            "virtual": info.get("virtual"),
-            "keys": album.get("keys"),
-            "colors": album.get("colors")
         });
 
         let dict_str = serde_json::to_string(&entry)?;

@@ -26,18 +26,18 @@ pub fn is_virtual_album(parsed_manifests: &serde_json::Map<String, Value>) -> Al
     }
 }
 
-pub fn parse_mandatory_album_fields(
+pub fn validate_mandatory_fields(
     primary_album: &Value,
     album_root: &Path,
-) -> Result<(String, String, String), DatamileError> {
-    let get_album_str = |k: &str| -> Result<String, DatamileError> {
+) -> Result<(), DatamileError> {
+    let check_str = |k: &str| -> Result<(), DatamileError> {
         let v = primary_album.get(k);
         if let Some(s) = v.and_then(Value::as_str) {
             if !s.is_empty() {
-                return Ok(s.to_string());
+                return Ok(());
             }
-        } else if let Some(n) = v.and_then(Value::as_number) {
-            return Ok(n.to_string());
+        } else if v.and_then(Value::as_number).is_some() {
+            return Ok(());
         }
         Err(DatamileError::TypeMismatch {
             path: album_root.to_path_buf(),
@@ -47,11 +47,9 @@ pub fn parse_mandatory_album_fields(
         })
     };
 
-    let albumartist =
-        get_album_str("albumartist").or_else(|_| get_album_str("artist"))?;
-    let album = get_album_str("album")?;
-    let date = get_album_str("date")?;
-    Ok((albumartist, album, date))
+    check_str("albumartist").or_else(|_| check_str("artist"))?;
+    check_str("album")?;
+    check_str("date")
 }
 
 pub fn generate_lock_manifests(

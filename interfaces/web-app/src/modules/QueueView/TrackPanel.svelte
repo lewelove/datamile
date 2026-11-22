@@ -15,8 +15,10 @@ let currentTrackFull = $derived(
   activeTrackIdx !== null && fullAlbum?.tracks ? fullAlbum.tracks[activeTrackIdx] ?? null : null
 );
 
-let title = $derived(currentTrackFull?.title || player.title || "Unknown Title");
-let artist = $derived(currentTrackFull?.artist || player.artist || "Unknown Artist");
+let title = $derived(currentTrackFull?.tags?.title || player.title || "Unknown Title");
+let artist = $derived(
+  currentTrackFull?.tags?.artist || player.artist || "Unknown Artist"
+);
 let duration = $derived(player.duration || 0);
 
 function formatTime(totalSeconds: number) {
@@ -28,7 +30,8 @@ function formatTime(totalSeconds: number) {
 }
 
 let trackDuration = $derived(
-  currentTrackFull?.info?.duration_formatted || (duration > 0 ? formatTime(duration) : "")
+  currentTrackFull?.objects?.info?.duration_formatted ||
+    (duration > 0 ? formatTime(duration) : "")
 );
 
 let trackFormat = $derived.by(() => {
@@ -41,7 +44,7 @@ let trackFormat = $derived.by(() => {
       return ext.toUpperCase();
     }
   }
-  const enc = currentTrackFull?.info?.encoding;
+  const enc = currentTrackFull?.objects?.info?.encoding;
   if (enc) {
     if (enc.toLowerCase() === "mpeg") return "MP3";
     return enc.toUpperCase();

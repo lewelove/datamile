@@ -11,19 +11,13 @@ let {
 
 let scrollEl: HTMLDivElement | undefined = $state();
 
-let isInstrumental = $derived(track?.keys?.instrumental === true);
+let isInstrumental = $derived(track?.tags?.instrumental === true);
 
 let lyricsText = $derived.by(() => {
-  if (!track || track.keys?.instrumental === true) {
+  if (!track || track.tags?.instrumental === true) {
     return "";
   }
-  if (track.lyrics?.text) {
-    return track.lyrics.text;
-  }
-  if (typeof track.keys?.lyrics === "string") {
-    return track.keys.lyrics;
-  }
-  return "";
+  return typeof track.tags?.lyrics === "string" ? track.tags.lyrics : "";
 });
 
 $effect(() => {

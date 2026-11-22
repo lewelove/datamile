@@ -17,11 +17,15 @@ let imageHash = $derived(activeAlbum?.images?.main?.[0]?.address || "");
 let fullAlbum = $derived(activeId ? collection.fullAlbumCache[activeId] : null);
 
 let palette = $derived(
-  fullAlbum?.album?.colors?.background || activeAlbum?.colors?.background || []
+  fullAlbum?.album?.objects?.colors?.background ||
+    activeAlbum?.objects?.colors?.background ||
+    []
 );
 let hasPalette = $derived(palette && palette.length > 0);
 let foregroundColor = $derived(
-  fullAlbum?.album?.colors?.foreground || activeAlbum?.colors?.foreground || null
+  fullAlbum?.album?.objects?.colors?.foreground ||
+    activeAlbum?.objects?.colors?.foreground ||
+    null
 );
 
 let isShaderOn = $derived(view.isShaderActive && hasPalette);

@@ -177,89 +177,21 @@ _G.datamile.compile.a = _G.datamile.compile.album
 _G.datamile.compile.track = _G.datamile.compile.tracks
 _G.datamile.compile.t = _G.datamile.compile.tracks
 
--- Defaults for the fields every consumer reads. This file runs before the user's
--- init.lua, which re-registers a name to replace the default wholesale.
-local function album_value(m, name)
-    return d.get(m, "metadata.album", name)
-end
-
-local function track_value(m, i, name)
-    return d.get(m, "metadata.tracks", i, name)
-end
-
-_G.datamile.compile.album.tag("albumartist", function(ctx, m)
-    return d.fn.coalesce(album_value(m, "albumartist"), album_value(m, "artist"))
-end)
-_G.datamile.compile.album.tag("album", function(ctx, m)
-    return album_value(m, "album")
-end)
-_G.datamile.compile.album.tag("date", function(ctx, m)
-    return album_value(m, "date")
-end)
-
-_G.datamile.compile.tracks.tag("tracknumber", function(ctx, m, i)
-    return track_value(m, i, "tracknumber")
-end)
-_G.datamile.compile.tracks.tag("discnumber", function(ctx, m, i)
-    return track_value(m, i, "discnumber")
-end)
-_G.datamile.compile.tracks.tag("title", function(ctx, m, i)
-    return track_value(m, i, "title")
-end)
-_G.datamile.compile.tracks.tag("artist", function(ctx, m, i)
-    return d.fn.coalesce(
-        track_value(m, i, "artist"),
-        album_value(m, "albumartist"),
-        album_value(m, "artist")
-    )
-end)
-
-_G.datamile.compile.album.image("main", function(ctx, m)
-    local root = ctx.paths.album_root
-    local candidates = {
-        "cover.png",
-        "cover.jpg",
-        "cover.jpeg",
-        "folder.png",
-        "folder.jpg",
-        "folder.jpeg",
-    }
-    local matched = nil
-
-    for _, name in ipairs(candidates) do
-        if d.fs.exists(d.fs.joinpath(root, name)) then
-            matched = name
-            break
-        end
-    end
-
-    return {
-        fit = { "crop", 1080, 1080 },
-        filter = "catmullrom",
-        sources = matched
-    }
-end)
-
 function __DATAMILE_DISPATCHER(ctx, manifests)
     local results = { id = nil, tags = {}, objects = {}, tracks = {}, images = {} }
 
-    local meta_album = manifests.metadata and manifests.metadata.album or {}
-    if type(REGISTRY.id_fn) == "function" then
-        local status, res = pcall(REGISTRY.id_fn, ctx, manifests)
-        if not status then
-            error(string.format("Error evaluating album id: %s", res))
-        end
-        if res == nil or res == "" then
-            error("Album id function returned empty or nil value")
-        end
-        results.id = tostring(res)
-    else
-        local artist = d.fn.coalesce(meta_album.albumartist, meta_album.artist, "Unknown")
-        local raw_date = tostring(d.fn.coalesce(meta_album.date, ""))
-        local year = raw_date:match("%d%d%d%d") or "Unknown"
-        local album = d.fn.coalesce(meta_album.album, "Unknown")
-        results.id = string.format("%s - %s - %s", artist, year, album)
+    if type(REGISTRY.id_fn) ~= "function" then
+        error("Album id is not registered: call datamile.compile.album.id(fn) in your config")
     end
+
+    local status, res = pcall(REGISTRY.id_fn, ctx, manifests)
+    if not status then
+        error(string.format("Error evaluating album id: %s", res))
+    end
+    if res == nil or res == "" then
+        error("Album id function returned empty or nil value")
+    end
+    results.id = tostring(res)
 
     for tag_name, func in pairs(REGISTRY.tags.album) do
         local status, res = pcall(func, ctx, manifests)

@@ -115,32 +115,39 @@ Semantics:
   `object("info", …)` replaces `objects.info` wholesale. Rust only fills a
   default when Lua produced nothing for that name.
 
-### Defaults shipped in the binary
+### Nothing is shipped
 
-`LuaEngine::new()` loads `compiler.lua` before the user's `init.lua`, so defaults
-are ordinary registrations that user config overrides by registering the same
-name again (`REGISTRY` slot is overwritten).
+`LuaEngine::new()` loads `compiler.lua` and then the user's `init.lua`. The
+engine ships no tags, no image rules and no id function: a config that registers
+nothing produces a lock with empty `tags`, empty `objects` and no `images`, and
+the compile fails on the missing id. Every value in a lock therefore comes from
+the user's own config, in plain sight, and needs no knowledge of a hidden
+default to be understood or changed.
 
-Album tags:
+That makes `datamile.compile.album.id(fn)` mandatory: there is no fallback id
+template, because a plausible-but-wrong id is worse than a compile error.
 
-| tag | value |
-| --- | --- |
-| `albumartist` | `[album].albumartist` → `[album].artist` |
-| `album` | `[album].album` |
-| `date` | `[album].date` |
+Declaring the tags a lock is expected to carry is the same three-line shape as
+any other tag:
 
-Track tags:
+```lua
+-- [album] section of the primary manifest
+local function album_value(m, name) return d.get(m, "metadata.album", name) end
 
-| tag | value |
-| --- | --- |
-| `tracknumber` | entry `tracknumber` |
-| `discnumber` | entry `discnumber` |
-| `title` | entry `title` |
-| `artist` | entry `artist` → album `albumartist` (preserves today's Rust fallback) |
+-- Album tags
+datamile.compile.album.tag("albumartist", function(ctx, m)
+  return album_value(m, "albumartist") or album_value(m, "artist")
+end)
+datamile.compile.album.tag("album", function(ctx, m) return album_value(m, "album") end)
 
-`info` is a Rust-provided default, not a Lua rule, so a bare config still
-produces usable locks. It is also the only `objects` name Rust claims, and only
-until the user config registers the same name itself:
+-- Track tags
+local function track_value(m, i, name) return d.get(m, "metadata.tracks", i, name) end
+datamile.compile.track.tag("title", function(ctx, m, i) return track_value(m, i, "title") end)
+```
+
+`info` is the one object Rust still fills, so a config that never mentions it
+still gets durations and disc counts. It is also the only `objects` name Rust
+claims, and only until the user config registers the same name itself:
 
 - album `objects.info` = `virtual`, `total_discs`, `total_tracks`,
   `duration_milliseconds`, `duration_formatted` (all already computed in
@@ -222,7 +229,8 @@ an error. Only non-scalar values are.
   - `compile.album.key` → `.tag`, `compile.tracks.key` → `.tag`;
   - add `.object` on both;
   - delete `compile.tracks.lyrics` — `lyrics` is an ordinary track tag now;
-  - add the default tag registrations (§3);
+  - delete the shipped default tags, the `main` image rule and the fallback id
+    template (§3);
   - one shared `set_tag(registry, owner, name, fn)` helper that also does the
     type check, used by both album and track loops;
   - dispatcher returns `{ id, tags, objects, images }` for the album,
@@ -276,12 +284,11 @@ an error. Only non-scalar values are.
 1. User config (lives outside this repo): `.key` → `.tag`, `a.keys.x` →
    `a.tags.x`, `a.info` → `a.objects.info`, `a.colors` → `a.objects.colors`,
    `compile.tracks.lyrics` → `compile.track.tag("lyrics", …)` returning a string.
-2. One forced full recompile (`datamile update --force`). Existing locks hold
+2. Move the defaults that used to ship in `compiler.lua` into the config: the
+   seven tags, the `main` cover rule and an `album.id` function. Without the id
+   no album compiles, and without the tags and the image rule the lock is empty.
+3. One forced full recompile (`datamile update --force`). Existing locks hold
    `keys`; new server code reads `tags`, so stale locks render "Unknown".
-3. Add `env!("CARGO_PKG_VERSION")` to `update/cache.rs::lua_config_hash`. The
-   shipped defaults live in `compiler.lua`, which is loaded via
-   `lua.load(include_str!(…))` and is therefore *not* in `REGISTRY.dependencies` —
-   without the version salt, a binary upgrade never invalidates old locks.
 
 ## 8. Tests
 

@@ -5,7 +5,11 @@ use serde_json::{Value, json};
 
 use crate::lua::LuaEngine;
 
-fn dispatch_with(
+/// The engine ships no id, so every case that expects a lock to be built has to
+/// register one first.
+const TEST_ID: &str = "datamile.compile.album.id(function() return 'test-id' end)";
+
+fn dispatch_raw(
     setup: &str,
     manifests: Value,
     total_tracks: u32,
@@ -26,6 +30,14 @@ fn dispatch_with(
     engine
         .execute_dispatcher(&ctx, &manifests)
         .map_err(|e| e.to_string())
+}
+
+fn dispatch_with(
+    setup: &str,
+    manifests: Value,
+    total_tracks: u32,
+) -> Result<Value, String> {
+    dispatch_raw(&format!("{TEST_ID}\n{setup}"), manifests, total_tracks)
 }
 
 fn dispatch(setup: &str) -> Result<Value, String> {
@@ -240,39 +252,25 @@ fn true_shorthand_reads_the_manifest() {
 }
 
 #[test]
-fn albumartist_falls_back_to_artist() {
-    let manifests = json!({ "metadata": { "album": { "artist": "A" }, "tracks": [{}] } });
-    let res = dispatch_with("", manifests, 1).expect("defaults must run");
+fn the_engine_ships_no_tags_images_or_objects() {
+    let res = dispatch("").expect("a config with no hooks still dispatches");
 
-    assert_eq!(res.pointer("/tags/albumartist"), Some(&json!("A")));
+    assert_eq!(res.pointer("/tags"), Some(&json!({})));
+    assert_eq!(res.pointer("/tracks/0/tags"), Some(&json!({})));
+    assert_eq!(res.pointer("/images"), Some(&json!({})));
 }
 
 #[test]
-fn track_artist_falls_back_to_the_album() {
-    let manifests = json!({
-        "metadata": {
-            "album": { "artist": "Album Artist" },
-            "tracks": [{}]
-        }
-    });
-    let res = dispatch_with("", manifests, 1).expect("defaults must run");
-
-    assert_eq!(
-        res.pointer("/tracks/0/tags/artist"),
-        Some(&json!("Album Artist"))
-    );
-}
-
-#[test]
-fn a_default_tag_can_be_replaced() {
-    let manifests =
-        json!({ "metadata": { "album": { "album": "From Manifest" }, "tracks": [{}] } });
-    let res = dispatch_with(
-        "datamile.compile.album.tag('album', function() return 'From Config' end)",
-        manifests,
+fn missing_id_is_an_error() {
+    let err = dispatch_raw(
+        "",
+        json!({ "metadata": { "album": {}, "tracks": [{}] } }),
         1,
     )
-    .expect("re-registering is legal");
+    .expect_err("no id registered");
 
-    assert_eq!(res.pointer("/tags/album"), Some(&json!("From Config")));
+    assert!(
+        err.contains("Album id is not registered"),
+        "unexpected error: {err}"
+    );
 }

@@ -76,16 +76,21 @@ in
     ROOT=$(git rev-parse --show-toplevel)
     cd "$ROOT"
 
-    cargo fmt --all
-    cargo clippy --workspace
-    cargo test --workspace
-    cargo build --workspace --release
+    # Just the artifacts: the binary and the actions it shells out to, which are
+    # resolved as target/release/<name>. Add any new action crate to this list.
+    cargo build --release \
+      -p datamile \
+      -p calculate_cover_metrics \
+      -p collect \
+      -p embed \
+      -p musicbrainz_fetch \
+      -p theme
 
     ln -sf "${pyLyrics}/bin/lyrics" "$ROOT/actions/lyrics"
     ln -sf "${pySearchCover}/bin/search_cover" "$ROOT/actions/search_cover"
     ln -sf "${pyRename}/bin/rename" "$ROOT/actions/rename"
 
-    (cd "$ROOT/interfaces/web-app" && bun run check && bun run lint:logic && bun run build)
+    (cd "$ROOT/interfaces/web-app" && bun run build)
   '';
 
   scripts.check.exec = ''

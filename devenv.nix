@@ -66,8 +66,6 @@ in
 
   enterShell = ''
     export PATH="$PWD/interfaces/web-app/node_modules/.bin:$PATH"
-    # coreutils ships a command named `fmt`; keep our script ahead of it.
-    export PATH="${config.scripts.fmt.scriptPackage}/bin:$PATH"
   '';
 
   scripts.build.exec = ''
@@ -111,7 +109,7 @@ in
     (cd "$ROOT/interfaces/web-app" && bun run lint)
   '';
 
-  scripts.fmt.exec = ''
+  scripts.format.exec = ''
     set -euo pipefail
 
     cargo fmt --all "$@"

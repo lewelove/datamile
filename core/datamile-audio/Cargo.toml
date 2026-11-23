@@ -1,0 +1,23 @@
+[package]
+name = "datamile-audio"
+version = "0.1.0"
+edition = "2024"
+description = "Read-only audio extension registry and tag/physics probing."
+license = "AGPL-3.0-only"
+
+[lints]
+workspace = true
+
+[dependencies]
+datamile-cache = { workspace = true }
+datamile-fs = { workspace = true }
+
+anyhow = { workspace = true }
+lofty = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

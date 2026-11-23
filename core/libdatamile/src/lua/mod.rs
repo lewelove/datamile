@@ -15,7 +15,6 @@ use mlua::{Lua, LuaSerdeExt, Table};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{ActionDef, AppConfig, InterfaceDef};
-use crate::error::DatamileError;
 
 const LUA_CORE: &str = include_str!("core.lua");
 const LUA_CONFIG: &str = include_str!("config.lua");
@@ -266,23 +265,6 @@ fn register_native_functions(lua: &Lua) -> mlua::Result<()> {
     globals.set("datamile", datamile_table.clone())?;
     globals.set("d", datamile_table)?;
     Ok(())
-}
-
-fn validate_audio_extensions(
-    exts: &[String],
-    section: &str,
-) -> Result<Vec<String>, DatamileError> {
-    let mut result = Vec::with_capacity(exts.len());
-    for ext in exts {
-        if !crate::harvest::SUPPORTED_AUDIO_EXTENSIONS.contains(&ext.as_str()) {
-            return Err(DatamileError::UnsupportedAudioExtension {
-                extension: ext.clone(),
-                section: section.to_string(),
-            });
-        }
-        result.push(ext.clone());
-    }
-    Ok(result)
 }
 
 impl LuaEngine {
@@ -705,16 +687,6 @@ impl ResolvedConfig {
             let validated =
                 crate::compiler::manifest::validate_and_filter_manifest_names(manifests)?;
             evaluated.app.compiler.manifests = Some(validated);
-        }
-
-        if let Some(ref exts) = evaluated.app.manifest.audio_extensions {
-            let validated = validate_audio_extensions(exts, "manifest.audio_extensions")?;
-            evaluated.app.manifest.audio_extensions = Some(validated);
-        }
-
-        if let Some(ref exts) = evaluated.app.compiler.audio_extensions {
-            let validated = validate_audio_extensions(exts, "compiler.audio_extensions")?;
-            evaluated.app.compiler.audio_extensions = Some(validated);
         }
 
         if !evaluated.app.storage.music_directory.is_empty() {

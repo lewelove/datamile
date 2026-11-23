@@ -7,7 +7,6 @@ use serde_json::{Value, json};
 
 use crate::compile::album::AlbumKind;
 use crate::compile::utils::{self, sort_json_keys};
-use crate::harvest;
 
 pub fn build_ctx_tracks(
     kind: AlbumKind,
@@ -37,29 +36,28 @@ pub fn build_ctx_tracks(
             }));
         } else {
             let file_path = &audio_files[idx];
-            let harvest = harvest::harvest_file_cached(file_path, cache_root).map_err(
-                |source| DatamileError::HarvestError {
+            let audio = datamile_audio::probe_file_cached(file_path, cache_root)
+                .map_err(|source| DatamileError::HarvestError {
                     path: file_path.clone(),
                     source,
-                },
-            )?;
+                })?;
             let rel_path = datamile_fs::rel_path(file_path, album_root);
             let file_info =
                 datamile_fs::read_file_info(file_path, &rel_path, HashMode::Skip)
                     .unwrap_or_else(|_| json!({}));
 
             ctx_tracks.push(json!({
-                "sample_rate": harvest.physics.sample_rate,
-                "bits_per_sample": harvest.physics.bit_depth.unwrap_or(0),
-                "bitrate_kbps": harvest.physics.audio_bitrate,
-                "encoding": harvest.physics.format,
-                "channels": harvest.physics.channels,
-                "duration_milliseconds": harvest.physics.duration_ms,
+                "sample_rate": audio.physics.sample_rate,
+                "bits_per_sample": audio.physics.bit_depth.unwrap_or(0),
+                "bitrate_kbps": audio.physics.audio_bitrate,
+                "encoding": audio.physics.format,
+                "channels": audio.physics.channels,
+                "duration_milliseconds": audio.physics.duration_ms,
                 "file": file_info,
-                "embedded": harvest.tags
+                "embedded": audio.tags
             }));
 
-            duration_sum_ms += harvest.physics.duration_ms;
+            duration_sum_ms += audio.physics.duration_ms;
         }
     }
 

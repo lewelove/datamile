@@ -6,9 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use datamile_audio::{SUPPORTED_AUDIO_EXTENSIONS, is_audio_file, probe_file};
 use datamile_fs::expand_path;
 use grouper::AnchorValidation;
-use libdatamile::harvest::{SUPPORTED_AUDIO_EXTENSIONS, harvest_file, is_audio_file};
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
@@ -32,6 +32,7 @@ pub struct ManifestOptions {
 pub fn run(target_path: Option<&Path>, options: &ManifestOptions) -> Result<()> {
     let config =
         libdatamile::lua::ResolvedConfig::load().context("Failed to load config")?;
+    crate::compile::context::validate_audio_config(&config)?;
     let music_dir = expand_path(&config.app.storage.music_directory);
 
     config.app.manifest.audio_extensions.as_ref().map_or_else(
@@ -214,7 +215,7 @@ fn harvest_audio_files<S: AsRef<str> + Sync>(
 
     audio_files
         .into_par_iter()
-        .filter_map(|path| match harvest_file(&path) {
+        .filter_map(|path| match probe_file(&path) {
             Ok(data) => {
                 let mut map = serde_json::Map::new();
                 for (k, v) in data.tags {

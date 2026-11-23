@@ -28,7 +28,3 @@ pub fn find_target_albums(path: &Path) -> Result<Vec<PathBuf>, DatamileError> {
     vec_results.sort();
     Ok(vec_results)
 }
-
-pub fn scan_audio_files<S: AsRef<str>>(root: &Path, extensions: &[S]) -> Vec<PathBuf> {
-    datamile_fs::scan_files_by_extension(root, extensions)
-}

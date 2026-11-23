@@ -3,6 +3,8 @@
 members = [
   "core/datamile-fs",
   "core/datamile-cache",
+  "core/datamile-audio",
+  "core/datamile-images",
   "core/libdatamile",
   "core/datamile",
   "actions/rust/libactions",
@@ -37,6 +39,8 @@ allow_attributes_without_reason = "deny"
 
 datamile-fs = { path = "core/datamile-fs" }
 datamile-cache = { path = "core/datamile-cache" }
+datamile-audio = { path = "core/datamile-audio" }
+datamile-images = { path = "core/datamile-images" }
 libdatamile = { path = "core/libdatamile" }
 libactions = { path = "actions/rust/libactions" }
 

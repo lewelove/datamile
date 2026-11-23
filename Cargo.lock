@@ -684,16 +684,14 @@ dependencies = [
  "alphanumeric-sort",
  "anyhow",
  "axum",
- "base64",
- "blake3",
  "chrono",
  "clap 4.6.6",
+ "datamile-audio",
  "datamile-cache",
  "datamile-fs",
+ "datamile-images",
  "dirs",
- "fast_image_resize",
  "futures",
- "image",
  "indexmap",
  "libdatamile",
  "log",
@@ -710,6 +708,21 @@ dependencies = [
  "toml",
  "tower-http",
  "walkdir",
+]
+
+[[package]]
+name = "datamile-audio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "datamile-cache",
+ "datamile-fs",
+ "lofty",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -738,6 +751,21 @@ dependencies = [
  "tempfile",
  "toml",
  "walkdir",
+]
+
+[[package]]
+name = "datamile-images"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "blake3",
+ "datamile-fs",
+ "fast_image_resize",
+ "image",
+ "log",
+ "qoi",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -1709,13 +1737,9 @@ dependencies = [
  "datamile-fs",
  "dirs",
  "dotenv-ng-core",
- "fast_image_resize",
- "image",
  "indexmap",
- "lofty",
  "log",
  "mlua",
- "qoi",
  "serde",
  "serde_json",
  "tempfile",

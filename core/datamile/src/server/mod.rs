@@ -18,7 +18,6 @@ use self::state::{AppConfig as ServerConfig, AppState};
 
 fn create_directories(cache_root: &Path, state_root: &Path) {
     std::fs::create_dir_all(cache_root).ok();
-    std::fs::create_dir_all(cache_root.join("harvest")).ok();
     std::fs::create_dir_all(cache_root.join("libraries")).ok();
     std::fs::create_dir_all(cache_root.join("objects")).ok();
     std::fs::create_dir_all(state_root).ok();
@@ -57,6 +56,8 @@ fn default_state() -> serde_json::Value {
 pub async fn run(port: u16) -> Result<()> {
     let config = libdatamile::lua::ResolvedConfig::load()
         .context("Failed to load application configuration")?;
+    crate::compile::context::validate_audio_config(&config)
+        .context("Invalid audio configuration")?;
     let config_dir = config
         .path
         .parent()

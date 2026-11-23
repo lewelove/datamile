@@ -31,6 +31,7 @@ pub async fn run(
 
     let config =
         libdatamile::lua::ResolvedConfig::load().context("Failed to load config")?;
+    crate::compile::context::validate_audio_config(&config)?;
     let music_directory = expand_path(&config.app.storage.music_directory)
         .canonicalize()
         .context("Invalid music_directory")?;

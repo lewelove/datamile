@@ -1,5 +1,4 @@
 mod compile;
-mod harvest;
 mod interface;
 mod manifest;
 mod query;
@@ -9,7 +8,7 @@ mod x;
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use datamile_fs::expand_path;
 
@@ -26,7 +25,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Harvest(HarvestArgs),
     Server(ServerArgs),
     Interface(InterfaceArgs),
     Compile(CompileArgs),
@@ -39,7 +37,6 @@ enum Commands {
 impl Commands {
     async fn execute(self) -> Result<()> {
         match self {
-            Self::Harvest(cmd) => cmd.run(),
             Self::Server(cmd) => cmd.run().await,
             Self::Interface(cmd) => cmd.run(),
             Self::Compile(cmd) => cmd.run().await,
@@ -48,46 +45,6 @@ impl Commands {
             Self::X(cmd) => cmd.run().await,
             Self::Query(cmd) => cmd.run().await,
         }
-    }
-}
-
-#[derive(Args)]
-struct HarvestArgs {
-    #[arg(value_name = "PATHS", required = true, num_args = 1..)]
-    paths: Vec<String>,
-    #[arg(long)]
-    pretty: bool,
-    #[arg(long, short = 'j')]
-    jobs: Option<usize>,
-}
-
-impl HarvestArgs {
-    fn run(self) -> Result<()> {
-        if let Some(j) = self.jobs {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(j)
-                .build_global()
-                .context("Failed to build thread pool")?;
-        }
-
-        let mut targets = Vec::with_capacity(self.paths.len());
-        for p in self.paths {
-            let expanded = expand_path(&p);
-            if let Ok(canon) = expanded.canonicalize() {
-                targets.push(canon);
-            } else {
-                targets.push(expanded);
-            }
-        }
-
-        let format = if self.pretty {
-            harvest::FormatMode::Pretty
-        } else {
-            harvest::FormatMode::Compact
-        };
-
-        harvest::run(targets, format);
-        Ok(())
     }
 }
 

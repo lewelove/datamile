@@ -9,6 +9,13 @@ use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{ItemValue, TagType};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[cfg(test)]
+mod tests;
+
+/// All cached file objects share this namespace, regardless of media type.
+const OBJECT_CACHE_NAMESPACE: &str = "objects";
 
 pub const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "flac", "wav", "wave", "aif", "aiff", "aifc", "afc", "alac", "mp3", "mp2", "mp1",
@@ -16,9 +23,22 @@ pub const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "ape", "wv", "mpc", "mp+", "mpp",
 ];
 
+#[derive(Debug, Error)]
+pub enum AudioError {
+    #[error("Unsupported audio extension '{extension}'")]
+    UnsupportedExtension { extension: String },
+}
+
+/// Case-insensitive membership test for a bare extension (`"FLAC"` matches).
 #[must_use]
-pub fn is_matching_extension<S: AsRef<str>>(ext: &str, candidates: &[S]) -> bool {
-    datamile_fs::is_matching_extension(ext, candidates)
+pub fn is_supported_extension(ext: &str) -> bool {
+    datamile_fs::is_matching_extension(ext, SUPPORTED_AUDIO_EXTENSIONS)
+}
+
+/// Whether the path carries one of the built-in audio extensions.
+#[must_use]
+pub fn is_supported_audio_file(path: &Path) -> bool {
+    datamile_fs::has_extension(path, SUPPORTED_AUDIO_EXTENSIONS)
 }
 
 #[must_use]
@@ -26,15 +46,37 @@ pub fn is_audio_file<S: AsRef<str>>(path: &Path, candidates: &[S]) -> bool {
     datamile_fs::has_extension(path, candidates)
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct TrackJson {
-    pub path: PathBuf,
-    pub tags: HashMap<String, serde_json::Value>,
-    pub physics: PhysicsData,
+#[must_use]
+pub fn scan_audio_files<S: AsRef<str>>(root: &Path, extensions: &[S]) -> Vec<PathBuf> {
+    datamile_fs::scan_files_by_extension(root, extensions)
+}
+
+/// Rejects configured extensions that are not known audio formats.
+///
+/// Validation stays case-sensitive, matching the historical config behavior:
+/// `"FLAC"` in a config is an error even though file matching is
+/// case-insensitive.
+pub fn validate_extensions(exts: &[String]) -> Result<Vec<String>, AudioError> {
+    for ext in exts {
+        if !SUPPORTED_AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+            return Err(AudioError::UnsupportedExtension {
+                extension: ext.clone(),
+            });
+        }
+    }
+
+    Ok(exts.to_vec())
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct PhysicsData {
+pub struct AudioMetadata {
+    pub path: PathBuf,
+    pub tags: HashMap<String, serde_json::Value>,
+    pub physics: AudioPhysics,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AudioPhysics {
     pub file_size: u64,
     pub mtime: u64,
     pub duration_ms: u64,
@@ -62,7 +104,7 @@ pub fn sanitize_key(key: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
-pub fn harvest_file(path: &Path) -> Result<TrackJson> {
+pub fn probe_file(path: &Path) -> Result<AudioMetadata> {
     let metadata = fs::metadata(path)?;
     let tagged_file = Probe::open(path)
         .context("Failed to open audio file")?
@@ -86,21 +128,26 @@ pub fn harvest_file(path: &Path) -> Result<TrackJson> {
     let mut tags = HashMap::new();
     extract_tags(&tagged_file, &mut tags);
 
-    Ok(TrackJson {
+    Ok(AudioMetadata {
         path: path.to_path_buf(),
         tags,
         physics,
     })
 }
 
-pub fn harvest_file_cached(path: &Path, cache_root: &Path) -> Result<TrackJson> {
-    datamile_cache::read_or_compute_cached(path, cache_root, "harvest", harvest_file)
+pub fn probe_file_cached(path: &Path, cache_root: &Path) -> Result<AudioMetadata> {
+    datamile_cache::read_or_compute_cached(
+        path,
+        cache_root,
+        OBJECT_CACHE_NAMESPACE,
+        probe_file,
+    )
 }
 
 fn extract_physics(
     metadata: &std::fs::Metadata,
     tagged_file: &lofty::file::TaggedFile,
-) -> PhysicsData {
+) -> AudioPhysics {
     let file_size = metadata.len();
     let mtime = metadata
         .modified()
@@ -112,7 +159,7 @@ fn extract_physics(
     let properties = tagged_file.properties();
     let file_type = tagged_file.file_type();
 
-    PhysicsData {
+    AudioPhysics {
         file_size,
         mtime,
         duration_ms: u64::try_from(properties.duration().as_millis()).unwrap_or(u64::MAX),

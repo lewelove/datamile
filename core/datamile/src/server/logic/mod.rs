@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
+use datamile_images::{FilterType, FitMode, parse_filter, parse_fit_mode};
 use libdatamile::error::DatamileError;
-use libdatamile::images::{FilterType, FitMode, parse_filter, parse_fit_mode};
 use libdatamile::lua::{LogicManifest, with_evaluated_lua_vm};
 use libdatamile::utils::tag_text;
 use roaring::RoaringBitmap;

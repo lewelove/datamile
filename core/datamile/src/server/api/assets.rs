@@ -7,10 +7,10 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use datamile_fs::write_atomic;
-use libdatamile::images::{
-    FilterType, ImageWireFormat, decode_qoi_to_rgb, encode_rgb_image, filter_type_to_str,
-    master_dir, master_path, parse_filter, parse_wire_format, read_qoi_dimensions,
-    resize_image_fit, resize_image_max_edge, save_qoi_atomic,
+use datamile_images::{
+    FilterType, ImageError, ImageSpec, ImageWireFormat, derivative_filename, master_dir,
+    master_path, parse_filter, parse_wire_format, read_master_dimension,
+    render_derivative_from_master, write_master_qoi,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -117,16 +117,14 @@ async fn ensure_master_image(
     // release the claim while the image is still being rendered.
     let gen_result = tokio::task::spawn_blocking(move || {
         let _guard = guard;
-        let img = image::open(&original_path).ok()?.into_rgb8();
-        let resized = resize_image_fit(
-            &img,
-            item.target_width,
-            item.target_height,
-            item.fit_mode,
-            item.filter,
-        )?;
+        let spec = ImageSpec {
+            fit_mode: item.fit_mode,
+            target_width: item.target_width,
+            target_height: item.target_height,
+            filter_type: item.filter,
+        };
 
-        save_qoi_atomic(&blob_path_clone, &resized).ok()?;
+        write_master_qoi(&original_path, &blob_path_clone, &spec).ok()?;
         Some(())
     })
     .await;
@@ -159,26 +157,24 @@ fn parse_target_request(
     Ok((address, wire_format))
 }
 
-async fn read_master_dimension(
-    master_path: &StdPath,
+async fn master_dimension(
+    master_qoi: PathBuf,
 ) -> Result<u32, (StatusCode, &'static str)> {
-    let mut header_buf = [0u8; 14];
-    let Ok(mut master_file) = File::open(master_path).await else {
-        return Err((StatusCode::NOT_FOUND, "Failed to read master image"));
-    };
-
-    if master_file.read_exact(&mut header_buf).await.is_err() {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Invalid master image header",
-        ));
-    }
-
-    let Some((master_w, master_h)) = read_qoi_dimensions(&header_buf) else {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "Invalid QOI dimensions"));
-    };
-
-    Ok(std::cmp::max(master_w, master_h))
+    tokio::task::spawn_blocking(move || read_master_dimension(&master_qoi))
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Image metadata task failed",
+            )
+        })?
+        .map_err(|error| match error {
+            ImageError::Io(_) => (StatusCode::NOT_FOUND, "Failed to read master image"),
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Invalid master image header",
+            ),
+        })
 }
 
 fn resolve_image_params(
@@ -226,50 +222,6 @@ fn resolve_image_params(
     Ok((resolved_size, filter_type, quality))
 }
 
-fn build_cache_filename(
-    resolved_size: u32,
-    m_dim: u32,
-    filter: FilterType,
-    quality: u8,
-    wire_format: ImageWireFormat,
-) -> String {
-    let filter_suffix = if resolved_size == m_dim {
-        String::new()
-    } else {
-        format!("_{}", filter_type_to_str(filter))
-    };
-
-    let quality_suffix = if wire_format == ImageWireFormat::Jpg {
-        format!("_q{quality}")
-    } else {
-        String::new()
-    };
-
-    format!(
-        "s{resolved_size}{filter_suffix}{quality_suffix}.{}",
-        wire_format.extension()
-    )
-}
-
-/// Reads a master QOI and renders the requested derivative from it.
-fn encode_from_master(
-    master_path: &StdPath,
-    size: u32,
-    m_dim: u32,
-    filter: FilterType,
-    wire_format: ImageWireFormat,
-    quality: u8,
-) -> Option<Vec<u8>> {
-    let master_bytes = std::fs::read(master_path).ok()?;
-    let mut img = decode_qoi_to_rgb(&master_bytes)?;
-
-    if size != m_dim {
-        img = resize_image_max_edge(&img, size, filter)?;
-    }
-
-    encode_rgb_image(&img, wire_format, quality)
-}
-
 async fn render_in_memory(
     master_qoi: PathBuf,
     resolved_size: u32,
@@ -279,7 +231,7 @@ async fn render_in_memory(
     quality: u8,
 ) -> Result<Vec<u8>, StatusCode> {
     tokio::task::spawn_blocking(move || {
-        encode_from_master(
+        render_derivative_from_master(
             &master_qoi,
             resolved_size,
             m_dim,
@@ -290,7 +242,7 @@ async fn render_in_memory(
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-    .and_then(|opt| opt.ok_or(StatusCode::INTERNAL_SERVER_ERROR))
+    .and_then(|result| result.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR))
 }
 
 pub async fn image(
@@ -314,7 +266,7 @@ pub async fn image(
         Err((status, msg)) => return error_response(status, msg),
     };
 
-    let m_dimension = match read_master_dimension(&master_qoi).await {
+    let m_dimension = match master_dimension(master_qoi.clone()).await {
         Ok(dim) => dim,
         Err((status, msg)) => return error_response(status, msg),
     };
@@ -325,7 +277,7 @@ pub async fn image(
             Err((status, msg)) => return error_response(status, msg),
         };
 
-    let cache_filename = build_cache_filename(
+    let cache_filename = derivative_filename(
         resolved_size,
         m_dimension,
         filter_type,
@@ -439,8 +391,15 @@ async fn process_cache_candidate(
 
     let _ = tokio::task::spawn_blocking(move || {
         let _guard = guard;
-        let encoded =
-            encode_from_master(&master_qoi, size, m_dim, filter, wire_format, quality)?;
+        let encoded = render_derivative_from_master(
+            &master_qoi,
+            size,
+            m_dim,
+            filter,
+            wire_format,
+            quality,
+        )
+        .ok()?;
         write_atomic(&target_path, &encoded).ok()?;
         Some(())
     })
@@ -496,12 +455,12 @@ async fn run_cache_images_batch(
                 return;
             };
 
-            let Ok(m_dimension) = read_master_dimension(&master_qoi).await else {
+            let Ok(m_dimension) = master_dimension(master_qoi.clone()).await else {
                 return;
             };
 
             let cache_filename =
-                build_cache_filename(size, m_dimension, filter, quality, wire_format);
+                derivative_filename(size, m_dimension, filter, quality, wire_format);
             let target_path = master_dir(&cache_root, &address).join(&cache_filename);
 
             if target_path.exists() {

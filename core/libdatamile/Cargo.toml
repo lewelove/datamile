@@ -17,13 +17,9 @@ anyhow = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
 dotenv-ng-core = { workspace = true }
-fast_image_resize = { workspace = true }
-image = { workspace = true }
 indexmap = { workspace = true }
-lofty = { workspace = true }
 log = { workspace = true }
 mlua = { workspace = true }
-qoi = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tempfile = { workspace = true }

@@ -1,22 +1,16 @@
 use std::collections::{BTreeMap, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use datamile_fs::ResolvedFileLocation;
-use libdatamile::error::DatamileError;
-use libdatamile::images::{
-    FitMode, calculate_rendered_dimensions, filter_type_to_str, master_path,
-    parse_filter, parse_fit_mode, resize_image_fit, save_qoi_atomic,
+use datamile_images::{
+    FitMode, ImageSpec as RenderSpec, parse_filter, parse_fit_mode,
+    render_master_from_file,
 };
+use libdatamile::error::DatamileError;
 use serde_json::{Value, json};
 
-struct ImageSpec {
-    fit_mode: FitMode,
-    target_width: u32,
-    target_height: u32,
-    filter_type: libdatamile::images::FilterType,
+struct ImageRule {
+    render: RenderSpec,
     sources: Vec<String>,
 }
 
@@ -134,7 +128,7 @@ fn parse_image_spec(
     namespace: &str,
     spec_val: &Value,
     album_root: &Path,
-) -> Result<ImageSpec, DatamileError> {
+) -> Result<ImageRule, DatamileError> {
     let spec_obj =
         spec_val
             .as_object()
@@ -166,32 +160,15 @@ fn parse_image_spec(
 
     let sources = parse_sources(spec_obj, album_root, namespace)?;
 
-    Ok(ImageSpec {
-        fit_mode,
-        target_width,
-        target_height,
-        filter_type,
+    Ok(ImageRule {
+        render: RenderSpec {
+            fit_mode,
+            target_width,
+            target_height,
+            filter_type,
+        },
         sources,
     })
-}
-
-fn compute_image_address(
-    fit_mode: &str,
-    width: u32,
-    height: u32,
-    filter: &str,
-    source_hash_bytes: &[u8],
-) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(fit_mode.as_bytes());
-    hasher.update(&[0]);
-    hasher.update(&width.to_le_bytes());
-    hasher.update(&height.to_le_bytes());
-    hasher.update(filter.as_bytes());
-    hasher.update(&[0]);
-    hasher.update(source_hash_bytes);
-    let hash_result = hasher.finalize();
-    URL_SAFE_NO_PAD.encode(hash_result.as_bytes())[..16].to_string()
 }
 
 fn resolve_source_target(
@@ -231,10 +208,10 @@ pub fn process_images(
         .unwrap_or_else(|_| album_root.to_path_buf());
 
     for (namespace, spec_val) in images_obj {
-        let spec = parse_image_spec(namespace, spec_val, album_root)?;
+        let rule = parse_image_spec(namespace, spec_val, album_root)?;
         let mut entries = Vec::new();
 
-        for src_str in &spec.sources {
+        for src_str in &rule.sources {
             let Some((canon_path, path_for_json)) = resolve_source_target(
                 src_str,
                 album_root,
@@ -244,85 +221,29 @@ pub fn process_images(
                 continue;
             };
 
-            let Ok(bytes) = fs::read(&canon_path) else {
+            let Ok(master) =
+                render_master_from_file(&canon_path, &rule.render, cache_root)
+            else {
                 continue;
             };
-
-            let raw_hash = blake3::hash(&bytes);
-            let hash_str = datamile_fs::format_blake3_string(raw_hash.as_bytes());
-
-            let meta =
-                fs::metadata(&canon_path).map_err(DatamileError::ManifestIoError)?;
-            let file_meta =
-                datamile_fs::file_meta(&meta).map_err(DatamileError::ManifestIoError)?;
-
-            let Ok(img) = image::load_from_memory(&bytes) else {
-                continue;
-            };
-
-            let src_w = img.width();
-            let src_h = img.height();
-            let format_str = image::guess_format(&bytes).map_or_else(
-                |_| "unknown".to_string(),
-                |f| format!("{f:?}").to_lowercase(),
-            );
-
-            // Canonical enum spellings keep "Lanczos" and "lanczos" from
-            // producing two cache addresses for the same bytes.
-            let fit_str = spec.fit_mode.as_str();
-            let filter_str = filter_type_to_str(spec.filter_type);
-            let address = compute_image_address(
-                fit_str,
-                spec.target_width,
-                spec.target_height,
-                filter_str,
-                raw_hash.as_bytes(),
-            );
-
-            let (rendered_w, rendered_h) = calculate_rendered_dimensions(
-                src_w,
-                src_h,
-                spec.target_width,
-                spec.target_height,
-                spec.fit_mode,
-            );
-
-            let master_qoi_path = master_path(cache_root, &address);
-
-            if !master_qoi_path.exists() {
-                let img_rgb = img.into_rgb8();
-                if let Some(resized) = resize_image_fit(
-                    &img_rgb,
-                    spec.target_width,
-                    spec.target_height,
-                    spec.fit_mode,
-                    spec.filter_type,
-                ) && let Err(e) = save_qoi_atomic(&master_qoi_path, &resized)
-                {
-                    log::warn!(
-                        "Failed to write master image {}: {e}",
-                        master_qoi_path.display()
-                    );
-                }
-            }
 
             entries.push(json!({
-                "address": address,
-                "width": rendered_w,
-                "height": rendered_h,
-                "fit": fit_str,
-                "filter": filter_str,
+                "address": master.address,
+                "width": master.rendered_width,
+                "height": master.rendered_height,
+                "fit": master.fit,
+                "filter": master.filter,
                 "source": {
                     "file": {
                         "path": path_for_json,
-                        "hash": hash_str,
-                        "mtime": file_meta.mtime,
-                        "byte_size": file_meta.byte_size
+                        "hash": master.source_hash,
+                        "mtime": master.source_mtime,
+                        "byte_size": master.source_byte_size
                     },
                     "info": {
-                        "width": src_w,
-                        "height": src_h,
-                        "format": format_str
+                        "width": master.source_width,
+                        "height": master.source_height,
+                        "format": master.source_format
                     }
                 }
             }));

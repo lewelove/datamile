@@ -17,21 +17,19 @@ name = "datamile"
 path = "src/main.rs"
 
 [dependencies]
+datamile-audio = { workspace = true }
 datamile-cache = { workspace = true }
 datamile-fs = { workspace = true }
+datamile-images = { workspace = true }
 libdatamile = { workspace = true }
 
 alphanumeric-sort = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
-base64 = { workspace = true }
-blake3 = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 dirs = { workspace = true }
-fast_image_resize = { workspace = true }
 futures = { workspace = true }
-image = { workspace = true }
 indexmap = { workspace = true }
 log = { workspace = true }
 mpd_client = { workspace = true }

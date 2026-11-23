@@ -116,14 +116,13 @@ async fn recompile_changed_albums(
     active_writes: Arc<Mutex<HashSet<PathBuf>>>,
     config_path: PathBuf,
 ) -> Vec<RecompiledAlbumItem> {
-    let resolved_lua_config = if let Ok(Ok(cfg)) =
-        tokio::task::spawn_blocking(libdatamile::lua::ResolvedConfig::load).await
-    {
-        Arc::new(cfg)
-    } else {
-        log::error!("Failed to load resolved config for album update");
-        return Vec::new();
-    };
+    let resolved_lua_config =
+        if let Ok(Ok(cfg)) = tokio::task::spawn_blocking(crate::config::load).await {
+            Arc::new(cfg)
+        } else {
+            log::error!("Failed to load resolved config for album update");
+            return Vec::new();
+        };
 
     tokio::task::spawn_blocking(move || {
         let config_ref = &resolved_lua_config;
@@ -389,7 +388,7 @@ pub async fn ingest_and_broadcast_albums(
 async fn handle_config_change(state: &Arc<AppState>) {
     log::info!("Filesystem change: reloading config and logic...");
 
-    match libdatamile::lua::ResolvedConfig::load() {
+    match crate::config::load() {
         Ok(new_config) => {
             let new_interfaces = new_config.interfaces.clone();
             let new_actions = new_config.actions.clone();

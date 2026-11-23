@@ -6,6 +6,9 @@ use fast_image_resize::images::Image;
 use fast_image_resize::{PixelType, ResizeAlg, ResizeOptions, Resizer};
 use image::ImageEncoder;
 
+/// Hard upper bound for rendered and derivative image edges.
+pub const MAX_IMAGE_DIMENSION: u32 = 4096;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FitMode {
     Crop,
@@ -138,7 +141,10 @@ pub fn calculate_rendered_dimensions(
             );
             let rendered_w = (f64::from(src_w) * scale).round() as u32;
             let rendered_h = (f64::from(src_h) * scale).round() as u32;
-            (rendered_w.clamp(1, 4096), rendered_h.clamp(1, 4096))
+            (
+                rendered_w.clamp(1, MAX_IMAGE_DIMENSION),
+                rendered_h.clamp(1, MAX_IMAGE_DIMENSION),
+            )
         }
     }
 }
@@ -237,8 +243,11 @@ pub fn resize_image_max_edge(
     )
     .ok()?;
 
-    let mut dst_image =
-        Image::new(dst_w.clamp(1, 4096), dst_h.clamp(1, 4096), PixelType::U8x3);
+    let mut dst_image = Image::new(
+        dst_w.clamp(1, MAX_IMAGE_DIMENSION),
+        dst_h.clamp(1, MAX_IMAGE_DIMENSION),
+        PixelType::U8x3,
+    );
     let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(filter));
 
     let mut resizer = Resizer::new();

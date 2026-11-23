@@ -30,9 +30,7 @@ pub struct ManifestOptions {
 }
 
 pub fn run(target_path: Option<&Path>, options: &ManifestOptions) -> Result<()> {
-    let config =
-        libdatamile::lua::ResolvedConfig::load().context("Failed to load config")?;
-    crate::compile::context::validate_audio_config(&config)?;
+    let config = crate::config::load().context("Failed to load config")?;
     let music_dir = expand_path(&config.app.storage.music_directory);
 
     config.app.manifest.audio_extensions.as_ref().map_or_else(

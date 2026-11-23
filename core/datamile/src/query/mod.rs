@@ -11,8 +11,7 @@ pub struct QueryFlags {
 }
 
 pub async fn run(query_str: Option<String>, flags: QueryFlags) -> Result<()> {
-    let config =
-        libdatamile::lua::ResolvedConfig::load().context("Failed to load config")?;
+    let config = crate::config::load().context("Failed to load config")?;
     let music_dir = expand_path(&config.app.storage.music_directory)
         .canonicalize()
         .unwrap_or_else(|_| expand_path(&config.app.storage.music_directory));

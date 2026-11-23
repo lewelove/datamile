@@ -7,6 +7,12 @@ pub enum ImageError {
     #[error("Image IO Error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Failed to read image source {path}: {source}")]
+    SourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
     #[error("Failed to decode image {path}: {source}")]
     Decode {
         path: PathBuf,

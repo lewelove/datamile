@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use datamile_fs::ResolvedFileLocation;
 use datamile_images::{
-    FitMode, ImageSpec as RenderSpec, parse_filter, parse_fit_mode,
-    render_master_from_file,
+    FitMode, ImageError, ImageSpec as RenderSpec, MAX_IMAGE_DIMENSION, parse_filter,
+    parse_fit_mode, render_master_from_file,
 };
 use libdatamile::error::DatamileError;
 use serde_json::{Value, json};
@@ -62,24 +62,25 @@ fn parse_fit_tuple(
     let target_width = fit_arr[1]
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
-        .filter(|&v| (1..=4096).contains(&v))
+        .filter(|&v| (1..=MAX_IMAGE_DIMENSION).contains(&v))
         .ok_or_else(|| DatamileError::InvalidImageFit {
             path: album_root.to_path_buf(),
             namespace: namespace.to_string(),
-            message:
-                "Second element of 'fit' tuple must be an integer between 1 and 4096"
-                    .to_string(),
+            message: format!(
+                "Second element of 'fit' tuple must be an integer between 1 and {MAX_IMAGE_DIMENSION}"
+            ),
         })?;
 
     let target_height = fit_arr[2]
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
-        .filter(|&v| (1..=4096).contains(&v))
+        .filter(|&v| (1..=MAX_IMAGE_DIMENSION).contains(&v))
         .ok_or_else(|| DatamileError::InvalidImageFit {
             path: album_root.to_path_buf(),
             namespace: namespace.to_string(),
-            message: "Third element of 'fit' tuple must be an integer between 1 and 4096"
-                .to_string(),
+            message: format!(
+                "Third element of 'fit' tuple must be an integer between 1 and {MAX_IMAGE_DIMENSION}"
+            ),
         })?;
 
     Ok((fit_mode, target_width, target_height))
@@ -221,11 +222,20 @@ pub fn process_images(
                 continue;
             };
 
-            let Ok(master) =
-                render_master_from_file(&canon_path, &rule.render, cache_root)
-            else {
-                continue;
-            };
+            // Unreadable or undecodable sources are skipped, but a metadata
+            // failure must abort the album like it always has.
+            let master =
+                match render_master_from_file(&canon_path, &rule.render, cache_root) {
+                    Ok(master) => master,
+                    Err(ImageError::Decode { .. } | ImageError::SourceRead { .. }) => {
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(DatamileError::ManifestIoError(
+                            std::io::Error::other(error),
+                        ));
+                    }
+                };
 
             entries.push(json!({
                 "address": master.address,

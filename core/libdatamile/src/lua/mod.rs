@@ -683,12 +683,6 @@ impl ResolvedConfig {
         let engine = LuaEngine::new()?;
         let mut evaluated = engine.evaluate_config(&path)?;
 
-        if let Some(ref manifests) = evaluated.app.compiler.manifests {
-            let validated =
-                crate::compiler::manifest::validate_and_filter_manifest_names(manifests)?;
-            evaluated.app.compiler.manifests = Some(validated);
-        }
-
         if !evaluated.app.storage.music_directory.is_empty() {
             evaluated.app.storage.music_directory = datamile_fs::resolve_path(
                 &evaluated.app.storage.music_directory,

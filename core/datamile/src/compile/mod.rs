@@ -49,8 +49,7 @@ pub struct CompileOptions {
 }
 
 pub async fn run(mut options: CompileOptions) -> Result<usize> {
-    let config = libdatamile::lua::ResolvedConfig::load().context("Config failed")?;
-    context::validate_audio_config(&config)?;
+    let config = crate::config::load().context("Config failed")?;
 
     if !options.flags.contains(&"default".to_string()) {
         options.flags.push("default".to_string());

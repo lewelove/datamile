@@ -8,9 +8,9 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use datamile_fs::write_atomic;
 use datamile_images::{
-    FilterType, ImageError, ImageSpec, ImageWireFormat, derivative_filename, master_dir,
-    master_path, parse_filter, parse_wire_format, read_master_dimension,
-    render_derivative_from_master, write_master_qoi,
+    FilterType, ImageError, ImageSpec, ImageWireFormat, MAX_IMAGE_DIMENSION,
+    derivative_filename, master_dir, master_path, parse_filter, parse_wire_format,
+    read_master_dimension, render_derivative_from_master, write_master_qoi,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -184,7 +184,7 @@ fn resolve_image_params(
 ) -> Result<(u32, FilterType, u8), (StatusCode, &'static str)> {
     let resolved_size = match query.size {
         None => m_dim,
-        Some(s) if (1..=4096).contains(&s) => s,
+        Some(s) if (1..=MAX_IMAGE_DIMENSION).contains(&s) => s,
         Some(_) => {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -497,7 +497,7 @@ pub async fn trigger_cache_images(
         return error_response(StatusCode::BAD_REQUEST, "Unsupported image format");
     };
 
-    if payload.size == 0 || payload.size > 4096 {
+    if payload.size == 0 || payload.size > MAX_IMAGE_DIMENSION {
         return error_response(
             StatusCode::BAD_REQUEST,
             "size must be an integer between 1 and 4096",

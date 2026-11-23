@@ -29,9 +29,7 @@ pub async fn run(
         return run_delegated_update(target_path, force, jobs, verbosity, 8000).await;
     }
 
-    let config =
-        libdatamile::lua::ResolvedConfig::load().context("Failed to load config")?;
-    crate::compile::context::validate_audio_config(&config)?;
+    let config = crate::config::load().context("Failed to load config")?;
     let music_directory = expand_path(&config.app.storage.music_directory)
         .canonicalize()
         .context("Invalid music_directory")?;

@@ -1,4 +1,5 @@
 mod compile;
+mod config;
 mod interface;
 mod manifest;
 mod query;

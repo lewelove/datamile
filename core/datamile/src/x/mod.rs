@@ -195,8 +195,7 @@ pub async fn execute(
     trailing_args: Vec<String>,
 ) -> Result<()> {
     let name_key = name.replace('-', "_");
-    let config =
-        libdatamile::lua::ResolvedConfig::load().context("Failed to load config")?;
+    let config = crate::config::load().context("Failed to load config")?;
 
     if !config.actions.contains_key(&name_key) && name != "intermediary" {
         anyhow::bail!("Action '{name}' is not declared in configuration.");

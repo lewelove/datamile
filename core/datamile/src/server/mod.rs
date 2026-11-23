@@ -54,10 +54,8 @@ fn default_state() -> serde_json::Value {
 }
 
 pub async fn run(port: u16) -> Result<()> {
-    let config = libdatamile::lua::ResolvedConfig::load()
-        .context("Failed to load application configuration")?;
-    crate::compile::context::validate_audio_config(&config)
-        .context("Invalid audio configuration")?;
+    let config =
+        crate::config::load().context("Failed to load application configuration")?;
     let config_dir = config
         .path
         .parent()

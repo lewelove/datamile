@@ -4,8 +4,7 @@ use serde_json::json;
 pub fn execute(name: Option<String>) -> Result<()> {
     let raw_name = name.unwrap_or_else(|| "default".to_string());
     let name = raw_name.replace('-', "_");
-    let config =
-        libdatamile::lua::ResolvedConfig::load().context("Failed to load config")?;
+    let config = crate::config::load().context("Failed to load config")?;
 
     if !config.interfaces.contains_key(&name) {
         anyhow::bail!("Interface '{raw_name}' is not declared in configuration.");

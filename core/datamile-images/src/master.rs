@@ -85,7 +85,10 @@ pub fn render_master_from_file(
     spec: &ImageSpec,
     cache_root: &Path,
 ) -> Result<RenderedMaster, ImageError> {
-    let bytes = fs::read(source_path)?;
+    let bytes = fs::read(source_path).map_err(|source| ImageError::SourceRead {
+        path: source_path.to_path_buf(),
+        source,
+    })?;
     let meta = fs::metadata(source_path)?;
     let file_meta = datamile_fs::file_meta(&meta)?;
 

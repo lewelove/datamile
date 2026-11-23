@@ -12,10 +12,23 @@ pub struct PreparedContext {
     pub music_directory: PathBuf,
 }
 
-/// Rejects unsupported `audio_extensions` from both config sections. Config
-/// loading itself stays media-agnostic, so every command that consumes audio
-/// config calls this first to fail fast.
-pub fn validate_audio_config(config: &ResolvedConfig) -> Result<(), DatamileError> {
+/// Applies the checks that used to live inside `ResolvedConfig::load`, so the
+/// Lua layer stays free of compiler and media knowledge while every command
+/// still starts from a validated config.
+pub fn validate_config(config: &mut ResolvedConfig) -> Result<(), DatamileError> {
+    if let Some(ref manifests) = config.app.compiler.manifests {
+        let validated =
+            libdatamile::compiler::manifest::validate_and_filter_manifest_names(
+                manifests,
+            )?;
+        config.app.compiler.manifests = Some(validated);
+    }
+
+    validate_audio_config(config)
+}
+
+/// Rejects unsupported `audio_extensions` from both config sections.
+fn validate_audio_config(config: &ResolvedConfig) -> Result<(), DatamileError> {
     validate_section(
         config.app.manifest.audio_extensions.as_deref(),
         "manifest.audio_extensions",

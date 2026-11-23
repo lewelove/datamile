@@ -2,7 +2,7 @@
 import { fade, type FadeParams } from "svelte/transition";
 import { cubicOut } from "svelte/easing";
 import { view } from "../../../library/view.svelte.ts";
-import { playAlbum, playDisc, executeAction, updateAlbum } from "../../../api.ts";
+import { playMedia, executeAction, updateMedia } from "../../../api.ts";
 import ClearCover from "../../ClearCover.svelte";
 import ModalDrawerTracks from "./ModalDrawerTracks.svelte";
 import type { FullAlbum } from "../../../types.ts";
@@ -13,6 +13,8 @@ let windowWidth = $state(typeof window !== "undefined" ? window.innerWidth : 128
 let leftColumnWidth = $derived(Math.round(0.36 * windowWidth));
 
 let albumData = $derived(album.album || {});
+let albumId = $derived(albumData.id || "");
+let albumTracks = $derived(albumData.nodes?.track || []);
 let infoData = $derived(albumData.objects?.info || {});
 
 let imageHash = $derived(albumData.images?.main?.[0]?.address || "");
@@ -50,41 +52,55 @@ function fadeIf(node: Element, params: FadeParams) {
   return fade(node, params);
 }
 
+function discIndices(discNumber: number): number[] {
+  const indices: number[] = [];
+  albumTracks.forEach((track, index) => {
+    if (Number(track.tags?.discnumber ?? 1) === discNumber) {
+      indices.push(index);
+    }
+  });
+  return indices;
+}
+
 async function handlePlay() {
   try {
-    await playAlbum(album.id);
+    await playMedia("album", albumId);
   } catch {}
 }
 
 async function handleUpdate() {
   try {
-    await updateAlbum(album.id);
+    await updateMedia("album", albumId);
   } catch {}
 }
 
 async function handlePlayTrack(index: number) {
   try {
-    const tracks = album.tracks || [];
-    const track = tracks[index];
+    const track = albumTracks[index];
     if (!track) {
       return;
     }
-    const discNumber = Number(track.tags?.discnumber ?? 1);
 
-    let intraDiscOffset = 0;
-    for (let i = 0; i < index; i++) {
-      if (Number(tracks[i].tags?.discnumber ?? 1) === discNumber) {
-        intraDiscOffset++;
-      }
+    const indices = discIndices(Number(track.tags?.discnumber ?? 1));
+    if (indices.length === 0) {
+      return;
     }
 
-    await playDisc(album.id, discNumber, intraDiscOffset);
+    await playMedia("album", albumId, {
+      start: indices[0],
+      count: indices.length,
+      offset: indices.indexOf(index)
+    });
   } catch {}
 }
 
 async function handlePlayDisc(discNumber: number) {
   try {
-    await playDisc(album.id, discNumber);
+    const indices = discIndices(discNumber);
+    if (indices.length === 0) {
+      return;
+    }
+    await playMedia("album", albumId, { start: indices[0], count: indices.length });
   } catch {}
 }
 
@@ -149,7 +165,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_folder", album.id)}
+              onclick={() => executeAction("open_folder", albumId)}
               title="Open Local Folder"
             >
               <span class="icon">folder</span>
@@ -157,7 +173,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_manifest", album.id)}
+              onclick={() => executeAction("open_manifest", albumId)}
               title="Open Manifest"
             >
               <span class="icon">edit_document</span>
@@ -165,7 +181,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_lock", album.id)}
+              onclick={() => executeAction("open_lock", albumId)}
               title="Open Data Object"
             >
               <span class="icon">code</span>
@@ -173,7 +189,7 @@ function handleBackdropClick(e: MouseEvent) {
             <button
               type="button"
               class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_terminal", album.id)}
+              onclick={() => executeAction("open_terminal", albumId)}
               title="Open Terminal"
             >
               <span class="icon">terminal_2</span>
@@ -188,7 +204,7 @@ function handleBackdropClick(e: MouseEvent) {
         </div>
         <div class="tracks-scroll-area">
           <ModalDrawerTracks
-            tracks={album.tracks || []}
+            tracks={albumTracks}
             totalDiscs={infoData.total_discs}
             albumArtist={artist}
             onplay={handlePlayTrack}

@@ -2,8 +2,9 @@ import type { MpdStatusPayload, QueueItem } from "../types.ts";
 
 export const player = $state<{
   state: string;
-  currentAlbumId: string | null;
-  currentTrackIndex: number | null;
+  currentMediaType: string | null;
+  currentMediaId: string | null;
+  currentNodeIndex: number | null;
   currentFile: string | null;
   title: string;
   artist: string;
@@ -13,8 +14,9 @@ export const player = $state<{
   queue: QueueItem[];
 }>({
   state: "stop",
-  currentAlbumId: null,
-  currentTrackIndex: null,
+  currentMediaType: null,
+  currentMediaId: null,
+  currentNodeIndex: null,
   currentFile: null,
   title: "",
   artist: "",
@@ -26,8 +28,9 @@ export const player = $state<{
 
 export function updatePlayerState(data: MpdStatusPayload) {
   player.state = data.state;
-  player.currentAlbumId = data.album_id ?? null;
-  player.currentTrackIndex = data.track_index ?? null;
+  player.currentMediaType = data.media_type ?? null;
+  player.currentMediaId = data.media_id ?? null;
+  player.currentNodeIndex = data.node_index ?? null;
   player.currentFile = data.file ?? null;
   player.title = data.title || "";
   player.artist = data.artist || "";

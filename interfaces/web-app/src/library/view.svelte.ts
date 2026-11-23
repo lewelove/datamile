@@ -120,7 +120,7 @@ export class ViewState {
   }
 
   handleMessage(json: WsMessage) {
-    if (json.type === "INIT_DICT") {
+    if (json.type === "INIT") {
       if (json.ui_state) {
         applyPersistedState(json.ui_state, this);
       }
@@ -149,41 +149,27 @@ export class ViewState {
       this.validateAndNormalizeLibrary();
       this.refreshView(false);
       this.refreshSidebar();
-    } else if (
-      json.type === "ALBUM_REMOVED" ||
-      json.type === "ALBUM_UPDATED" ||
-      json.type === "ALBUMS_UPDATED"
-    ) {
+    } else if (json.type === "MEDIA_UPDATED") {
       if (this.focusedAlbum) {
-        const focusedId = this.focusedAlbum.id;
+        const focusedId = this.focusedAlbum.album?.id;
         const isRemoved =
-          (json.type === "ALBUM_REMOVED" && json.id === focusedId) ||
-          (json.type === "ALBUMS_UPDATED" &&
-            json.removed &&
-            json.removed.includes(focusedId) &&
-            (!json.updated || !json.updated[focusedId]));
+          focusedId !== undefined &&
+          json.removed?.includes(focusedId) &&
+          (!json.updated || !json.updated[focusedId]);
 
         if (isRemoved) {
           this.focusedAlbum = null;
-        } else {
-          const isUpdated =
-            (json.type === "ALBUM_UPDATED" && json.id === focusedId) ||
-            (json.type === "ALBUMS_UPDATED" && json.updated && json.updated[focusedId]);
-          if (isUpdated) {
-            delete collection.fullAlbumCache[focusedId];
-            collection.ensureFullAlbum(focusedId).then((data) => {
-              if (data && this.focusedAlbum?.id === focusedId) {
-                this.focusedAlbum = data;
-              }
-            });
-          }
+        } else if (focusedId && json.updated?.[focusedId]) {
+          delete collection.fullAlbumCache[focusedId];
+          collection.ensureFullAlbum(focusedId).then((data) => {
+            if (data && this.focusedAlbum?.album?.id === focusedId) {
+              this.focusedAlbum = data;
+            }
+          });
         }
       }
       this.refreshView(false);
       this.refreshSidebar();
-    } else if (json.type === "CACHE_REBUILT") {
-      this.refreshSidebar();
-      this.refreshView(false);
     }
   }
 
@@ -292,6 +278,7 @@ export class ViewState {
     } else {
       sync.send({
         type: "VIEW_REQUEST",
+        media_type: "album",
         library: this.activeLibrary,
         library_filter: this.activeLibraryFilter,
         sort: this.activeSort.key,
@@ -307,6 +294,7 @@ export class ViewState {
     }
     sync.send({
       type: "GROUP_REQUEST",
+      media_type: "album",
       library: this.activeLibrary,
       library_filter: this.activeLibraryFilter,
       key: this.activeSidebarGrouper
@@ -398,7 +386,7 @@ export class ViewState {
   }
 
   async setFocus(album: { id: string }, instant: boolean = false) {
-    if (this.focusedAlbum?.id === album.id) {
+    if (this.focusedAlbum?.album?.id === album.id) {
       this.isFocusInstant = instant;
       return;
     }
@@ -410,23 +398,18 @@ export class ViewState {
       this.focusedAlbum = cached;
     } else {
       const dictEntry = collection.dict[album.id];
-      if (dictEntry) {
-        this.focusedAlbum = {
+      this.focusedAlbum = {
+        album: {
           id: album.id,
-          album: {
-            id: album.id,
-            tags: dictEntry.tags,
-            objects: dictEntry.objects,
-            images: dictEntry.images || {}
-          },
-          tracks: []
-        };
-      } else {
-        this.focusedAlbum = { id: album.id, album: { id: album.id }, tracks: [] };
-      }
+          tags: dictEntry?.tags,
+          objects: dictEntry?.objects,
+          images: dictEntry?.images || {},
+          nodes: { track: [] }
+        }
+      };
 
       const full = await collection.ensureFullAlbum(album.id);
-      if (this.focusedAlbum?.id === album.id) {
+      if (this.focusedAlbum?.album?.id === album.id) {
         this.focusedAlbum = full;
       }
     }

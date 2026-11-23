@@ -11,7 +11,7 @@ import lyricsgenius
 
 def trigger_update(server_url, album_id):
     encoded_id = urllib.parse.quote(album_id, safe='')
-    url = f"{server_url.rstrip('/')}/api/update-album/{encoded_id}"
+    url = f"{server_url.rstrip('/')}/api/media/album/update/{encoded_id}"
     req = urllib.request.Request(url, method="POST")
     try:
         urllib.request.urlopen(req, timeout=2)
@@ -62,7 +62,7 @@ def get_album_lyrics(target_dir, access_token, mpd_file, server_url):
     album_id = album_meta.get("id", "")
     album_artist = album_tags.get("albumartist")
     total_discs = int(album_meta.get("objects", {}).get("info", {}).get("total_discs", 1))
-    tracks = album_lock.get("tracks", [])
+    tracks = album_meta.get("nodes", {}).get("track", [])
 
     if not album_artist or not tracks:
         print("\033[31mError: Invalid metadata structure in lock data.\033[0m")
@@ -81,7 +81,7 @@ def get_album_lyrics(target_dir, access_token, mpd_file, server_url):
     if mpd_file:
         mpd_normalized = mpd_file.lstrip("/")
         for i, track in enumerate(tracks):
-            t_path = track.get("file", {}).get("path", "")
+            t_path = track.get("location", {}).get("path", "")
             if t_path:
                 track_abs = str((target_dir / t_path).resolve())
                 if track_abs.endswith(f"/{mpd_normalized}") or track_abs == mpd_file:

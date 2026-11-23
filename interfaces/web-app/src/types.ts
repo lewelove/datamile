@@ -60,12 +60,20 @@ export interface TrackObjects {
   [key: string]: unknown;
 }
 
+export interface NodeLocation {
+  kind?: "dir" | "file";
+  path?: string;
+  mtime?: number;
+  byte_size?: number;
+}
+
 export interface AlbumLockData {
   id?: string;
+  location?: NodeLocation;
   tags?: AlbumTags;
   objects?: AlbumObjects;
   images?: Record<string, AlbumImageEntry[]>;
-  manifests?: Record<string, unknown>;
+  nodes?: { track?: TrackItem[]; [key: string]: TrackItem[] | undefined };
 }
 
 export interface TrackPhysicsInfo {
@@ -78,23 +86,17 @@ export interface TrackPhysicsInfo {
   channels?: number;
 }
 
-export interface TrackFileInfo {
-  path?: string;
-  mtime?: number;
-  byte_size?: number;
-}
-
 export interface TrackItem {
   id?: string | number;
   tags?: TrackTags;
   objects?: TrackObjects;
-  file?: TrackFileInfo;
+  location?: NodeLocation;
+  nodes?: { [key: string]: TrackItem[] | undefined };
 }
 
+/** The literal lock JSON returned by `/api/media/album/{id}`. */
 export interface FullAlbum {
-  id: string;
-  album?: AlbumLockData;
-  tracks?: TrackItem[];
+  album: AlbumLockData;
 }
 
 export interface AlbumCardItem {
@@ -136,8 +138,9 @@ export interface QueueItem {
   file: string;
   title?: string | null;
   artist?: string | null;
-  album_id?: string | null;
-  track_index?: number | null;
+  media_type?: string | null;
+  media_id?: string | null;
+  node_index?: number | null;
   track_no?: number | string | null;
   disc_no?: number | null;
   duration?: string | null;
@@ -263,10 +266,16 @@ export type LibraryListItem = LibraryDef & { key: string };
 export type ShelfListItem = ShelfDef & { key: string };
 export type CabinetListItem = CabinetDef & { key: string };
 
+export interface ActionDef {
+  label: string;
+  description?: string | null;
+}
+
 export interface MpdStatusPayload {
   state: string;
-  album_id?: string | null;
-  track_index?: number | null;
+  media_type?: string | null;
+  media_id?: string | null;
+  node_index?: number | null;
   file?: string | null;
   title?: string | null;
   artist?: string | null;
@@ -277,30 +286,22 @@ export interface MpdStatusPayload {
 
 export type WsMessage =
   | {
-      type: "INIT_DICT";
-      dict?: Record<string, AlbumDictEntry>;
-      trackMap?: Record<string, unknown>;
+      type: "INIT";
+      media?: Record<string, Record<string, AlbumDictEntry>>;
       manifest?: LogicManifest;
+      actions?: Record<string, ActionDef>;
       shelves?: Record<string, string[]>;
       ui_state?: PersistedState;
     }
   | { type: "VIEW_DATA"; ids?: string[] }
   | { type: "SHELF_DATA"; ids?: string[] }
   | { type: "GROUP_RESULT"; key: string; result: GrouperTreeNode[] }
-  | { type: "ALBUM_REMOVED"; id: string; shelves?: Record<string, string[]> }
   | {
-      type: "ALBUM_UPDATED";
-      id: string;
-      old_id?: string;
-      dictEntry?: AlbumDictEntry;
-      shelves?: Record<string, string[]>;
-    }
-  | {
-      type: "ALBUMS_UPDATED";
+      type: "MEDIA_UPDATED";
+      media_type: string;
       removed?: string[];
       updated?: Record<string, AlbumDictEntry>;
       shelves?: Record<string, string[]>;
     }
   | { type: "LOGIC_UPDATE"; manifest?: LogicManifest }
-  | { type: "CACHE_REBUILT" }
   | (MpdStatusPayload & { type: "MPD_STATUS" });

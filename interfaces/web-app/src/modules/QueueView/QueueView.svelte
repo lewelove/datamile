@@ -11,7 +11,7 @@ import TrackPanel from "./TrackPanel.svelte";
 import QueuePanel from "./QueuePanel.svelte";
 import Sidebar from "./Sidebar.svelte";
 
-let activeId = $derived(player.currentAlbumId);
+let activeId = $derived(player.currentMediaId);
 let activeAlbum = $derived(activeId ? collection.dict[activeId] : null);
 let imageHash = $derived(activeAlbum?.images?.main?.[0]?.address || "");
 let fullAlbum = $derived(activeId ? collection.fullAlbumCache[activeId] : null);
@@ -61,7 +61,7 @@ $effect(() => {
   const uniqueIds = [
     ...new Set(
       player.queue
-        .map((item) => item.album_id)
+        .map((item) => item.media_id)
         .filter((id): id is string => Boolean(id))
     )
   ];

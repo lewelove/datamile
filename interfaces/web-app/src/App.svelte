@@ -47,7 +47,9 @@ let isQueueInstant = $derived(instantTab === "queue");
 
 // The drawer only exists on the home tab; on queue the visible album is the playing one.
 let isModalVisible = $derived(!!view.focusedAlbum && isHomeActive);
-let shortcutAlbumId = $derived(isHomeActive ? view.focusedAlbum?.id : player.currentAlbumId);
+let shortcutAlbumId = $derived(
+  isHomeActive ? view.focusedAlbum?.album?.id : player.currentMediaId
+);
 
 function handleKeydown(e: KeyboardEvent) {
   if (["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName ?? "")) return;
@@ -83,7 +85,7 @@ function handleKeydown(e: KeyboardEvent) {
   if (code === "Space") {
     e.preventDefault();
     e.stopPropagation();
-    fetch("/api/toggle-pause", { method: "POST" }).catch(() => {});
+    fetch("/api/playback/toggle-pause", { method: "POST" }).catch(() => {});
     return;
   }
 

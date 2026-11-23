@@ -1,4 +1,5 @@
 import { SvelteMap } from "svelte/reactivity";
+import { fetchMedia } from "../api.ts";
 import { sync } from "./sync.svelte.ts";
 import { updatePlayerState } from "../modules/player.svelte.ts";
 import { config as globalConfig } from "../config.svelte.ts";
@@ -52,7 +53,7 @@ function triggerImagePrewarm(addresses?: string[]) {
   const target = addresses
     ? { addresses }
     : { names: ["main"] };
-  fetch("/api/internal/cache_images", {
+  fetch("/api/images/cache", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...target, format: "bmp", size, filter })
@@ -61,7 +62,6 @@ function triggerImagePrewarm(addresses?: string[]) {
 
 class CollectionStore {
   dict: Record<string, AlbumDictEntry> = $state({});
-  trackPathMap: Record<string, unknown> = $state({});
   sidebarShelves: Record<string, string[]> = $state({});
   libraryViewIds: string[] = $state([]);
   sidebarGroups: SvelteMap<string, GrouperTreeNode[]> = $state(new SvelteMap());
@@ -82,12 +82,11 @@ class CollectionStore {
   }
 
   handleMessage(json: WsMessage) {
-    if (json.type === "INIT_DICT") {
+    if (json.type === "INIT") {
       if (json.shelves) {
         this.sidebarShelves = json.shelves;
       }
-      this.dict = json.dict || {};
-      this.trackPathMap = json.trackMap || {};
+      this.dict = json.media?.album || {};
       if (json.manifest) {
         this.manifest = json.manifest;
       }
@@ -98,32 +97,7 @@ class CollectionStore {
       const newMap = new SvelteMap(this.sidebarGroups);
       newMap.set(json.key, json.result);
       this.sidebarGroups = newMap;
-    } else if (json.type === "ALBUM_REMOVED") {
-      if (json.shelves) {
-        this.sidebarShelves = json.shelves;
-      }
-      delete this.dict[json.id];
-      delete this.fullAlbumCache[json.id];
-    } else if (json.type === "ALBUM_UPDATED") {
-      if (json.shelves) {
-        this.sidebarShelves = json.shelves;
-      }
-      if (json.old_id && json.old_id !== json.id) {
-        delete this.dict[json.old_id];
-        delete this.fullAlbumCache[json.old_id];
-      }
-      if (json.dictEntry && Object.keys(json.dictEntry).length > 0) {
-        this.dict[json.id] = json.dictEntry;
-      } else {
-        delete this.dict[json.id];
-      }
-      delete this.fullAlbumCache[json.id];
-
-      const imageAddress = mainImageAddress(json.dictEntry);
-      if (imageAddress) {
-        triggerImagePrewarm([imageAddress]);
-      }
-    } else if (json.type === "ALBUMS_UPDATED") {
+    } else if (json.type === "MEDIA_UPDATED") {
       if (json.shelves) {
         this.sidebarShelves = json.shelves;
       }
@@ -204,10 +178,8 @@ class CollectionStore {
       return this.fullAlbumCache[id];
     }
     try {
-      const res = await fetch(`/api/album/${encodeURIComponent(id)}`);
-      if (res.ok) {
-        const data = (await res.json()) as FullAlbum;
-        data.id = id;
+      const data = await fetchMedia("album", id);
+      if (data) {
         this.fullAlbumCache[id] = data;
         return data;
       }

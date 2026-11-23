@@ -7,12 +7,14 @@ import LyricsView from "./LyricsView.svelte";
 import PlayerControls from "./PlayerControls.svelte";
 
 let currentFile = $derived(player.currentFile);
-let activeId = $derived(player.currentAlbumId);
-let activeTrackIdx = $derived(player.currentTrackIndex);
+let activeId = $derived(player.currentMediaId);
+let activeTrackIdx = $derived(player.currentNodeIndex);
 
 let fullAlbum = $derived(activeId ? collection.fullAlbumCache[activeId] : null);
 let currentTrackFull = $derived(
-  activeTrackIdx !== null && fullAlbum?.tracks ? fullAlbum.tracks[activeTrackIdx] ?? null : null
+  activeTrackIdx !== null
+    ? fullAlbum?.album?.nodes?.track?.[activeTrackIdx] ?? null
+    : null
 );
 
 let title = $derived(currentTrackFull?.tags?.title || player.title || "Unknown Title");
@@ -35,7 +37,7 @@ let trackDuration = $derived(
 );
 
 let trackFormat = $derived.by(() => {
-  const filePath = currentTrackFull?.file?.path || currentFile || "";
+  const filePath = currentTrackFull?.location?.path || currentFile || "";
   const cleanPath = filePath.split("?")[0].split("#")[0];
   const dotIndex = cleanPath.lastIndexOf(".");
   if (dotIndex !== -1 && dotIndex < cleanPath.length - 1) {

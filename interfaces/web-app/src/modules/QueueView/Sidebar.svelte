@@ -6,7 +6,7 @@ import { tick } from "svelte";
 
 let { hasPalette = false }: { hasPalette?: boolean } = $props();
 
-let activeId = $derived(player.currentAlbumId);
+let activeId = $derived(player.currentMediaId);
 let isStopped = $derived(player.state === "stop");
 
 async function handleFocus() {

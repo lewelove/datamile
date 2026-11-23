@@ -8,10 +8,10 @@ import type { MappedQueueTrack, QueueGroup } from "../../types.ts";
 
 let mappedTracks = $derived(
   player.queue.map((item): MappedQueueTrack => {
-    const fullAlbum = item.album_id ? collection.fullAlbumCache[item.album_id] : null;
+    const fullAlbum = item.media_id ? collection.fullAlbumCache[item.media_id] : null;
     const meta =
-      item.track_index !== null && item.track_index !== undefined && fullAlbum?.tracks
-        ? fullAlbum.tracks[item.track_index] ?? null
+      item.node_index !== null && item.node_index !== undefined
+        ? fullAlbum?.album?.nodes?.track?.[item.node_index] ?? null
         : null;
 
     return {
@@ -26,7 +26,7 @@ let mappedTracks = $derived(
         : item.duration_ms ?? 0,
       title: meta ? (meta.tags?.title ?? "") : item.title || item.file,
       artist: meta ? (meta.tags?.artist ?? "") : item.artist || "",
-      albumId: item.album_id || null
+      albumId: item.media_id || null
     };
   })
 );

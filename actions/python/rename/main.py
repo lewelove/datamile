@@ -9,7 +9,7 @@ from pathlib import Path
 
 def trigger_update(server_url, album_id):
     encoded_id = urllib.parse.quote(album_id, safe='')
-    url = f"{server_url.rstrip('/')}/api/update-album/{encoded_id}"
+    url = f"{server_url.rstrip('/')}/api/media/album/update/{encoded_id}"
     req = urllib.request.Request(url, method="POST")
     try:
         urllib.request.urlopen(req, timeout=2)
@@ -29,7 +29,7 @@ def process_album(target_dir, auto_apply, server_url):
         album_lock = json.load(f)
 
     album_obj = album_lock.get("album", {})
-    tracks_data = album_lock.get("tracks", [])
+    tracks_data = album_obj.get("nodes", {}).get("track", [])
     if not tracks_data:
         return False
 
@@ -62,7 +62,7 @@ def process_album(target_dir, auto_apply, server_url):
     rename_tasks = []
 
     for t in tracks_data:
-        t_file = t.get("file", {})
+        t_file = t.get("location", {})
         rel_path = t_file.get("path")
         if not rel_path:
             continue

@@ -8,9 +8,10 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use datamile_fs::write_atomic;
 use datamile_images::{
-    FilterType, ImageError, ImageSpec, ImageWireFormat, MAX_IMAGE_DIMENSION,
-    derivative_filename, master_dir, master_path, parse_filter, parse_wire_format,
-    read_master_dimension, render_derivative_from_master, write_master_qoi,
+    FilterType, FitMode, ImageError, ImageSpec, ImageWireFormat, MAX_IMAGE_DIMENSION,
+    derivative_filename, master_dir, master_path, parse_filter, parse_fit_mode,
+    parse_wire_format, read_master_dimension, render_derivative_from_master,
+    write_master_qoi,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -108,8 +109,11 @@ async fn ensure_master_image(
     let original_path = if raw_path.is_absolute() {
         raw_path.to_path_buf()
     } else {
-        item.album_dir.join(raw_path)
+        item.entity_dir.join(raw_path)
     };
+
+    let fit_mode = parse_fit_mode(&item.fit).unwrap_or(FitMode::Inside);
+    let filter_type = parse_filter(&item.filter).unwrap_or(FilterType::CatmullRom);
 
     let blob_path_clone = master_qoi.clone();
 
@@ -118,10 +122,10 @@ async fn ensure_master_image(
     let gen_result = tokio::task::spawn_blocking(move || {
         let _guard = guard;
         let spec = ImageSpec {
-            fit_mode: item.fit_mode,
+            fit_mode,
             target_width: item.target_width,
             target_height: item.target_height,
-            filter_type: item.filter,
+            filter_type,
         };
 
         write_master_qoi(&original_path, &blob_path_clone, &spec).ok()?;
@@ -354,7 +358,7 @@ fn collect_matching_addresses(
         .filter(|arr| !arr.is_empty())
         .map(|arr| arr.iter().map(String::as_str).collect());
 
-    for record in logic.albums.values() {
+    for record in logic.entities.values() {
         for (ns, addr) in &record.image_namespaces {
             if let Some(ref nf) = name_filter
                 && !nf.contains(ns.as_str())
@@ -545,7 +549,7 @@ pub async fn album_metadata(
 ) -> Response {
     let json_opt = {
         let logic = state.logic.read().await;
-        logic.album_json(&id)
+        logic.entity_json(&id)
     };
     if let Some(data) = json_opt {
         return (
@@ -563,7 +567,7 @@ pub async fn album_image(
 ) -> Response {
     let path_opt = {
         let logic = state.logic.read().await;
-        logic.album_record(&id).and_then(|record| {
+        logic.entity_record(&id).and_then(|record| {
             let ip = record.main_image_path.as_deref()?;
             Some(if std::path::Path::new(ip).is_absolute() {
                 PathBuf::from(ip)

@@ -1,8 +1,7 @@
 mod compile;
 mod config;
 mod interface;
-mod manifest;
-mod query;
+mod logic_bridge;
 mod server;
 mod update;
 mod x;
@@ -30,9 +29,7 @@ enum Commands {
     Interface(InterfaceArgs),
     Compile(CompileArgs),
     Update(UpdateArgs),
-    Manifest(ManifestArgs),
     X(XArgs),
-    Query(QueryArgs),
 }
 
 impl Commands {
@@ -42,9 +39,7 @@ impl Commands {
             Self::Interface(cmd) => cmd.run(),
             Self::Compile(cmd) => cmd.run().await,
             Self::Update(cmd) => cmd.run().await,
-            Self::Manifest(cmd) => cmd.run(),
             Self::X(cmd) => cmd.run().await,
-            Self::Query(cmd) => cmd.run().await,
         }
     }
 }
@@ -150,37 +145,6 @@ impl UpdateArgs {
 }
 
 #[derive(Args)]
-struct ManifestArgs {
-    #[arg(value_name = "PATH")]
-    path: Option<String>,
-    #[arg(long)]
-    force: bool,
-    #[arg(long, required_unless_present = "library", conflicts_with = "library")]
-    album: bool,
-    #[arg(long, required_unless_present = "album", conflicts_with = "album")]
-    library: bool,
-    #[arg(long)]
-    stdout: bool,
-}
-
-impl ManifestArgs {
-    fn run(self) -> Result<()> {
-        let expanded = self.path.map(|p| expand_path(&p));
-        let mode = if self.album {
-            manifest::ManifestMode::Album
-        } else {
-            manifest::ManifestMode::Library
-        };
-        let options = manifest::ManifestOptions {
-            mode,
-            force: self.force,
-            stdout: self.stdout,
-        };
-        manifest::run(expanded.as_deref(), &options)
-    }
-}
-
-#[derive(Args)]
 struct XArgs {
     #[arg(value_name = "NAME", required = true)]
     name: String,
@@ -218,32 +182,6 @@ impl XArgs {
             x::DebugMode::Disabled
         };
         x::execute(self.name, target, debug, self.args).await
-    }
-}
-
-#[derive(Args)]
-struct QueryArgs {
-    #[arg(value_name = "QUERY")]
-    query_str: Option<String>,
-    #[arg(long)]
-    playing: bool,
-    #[arg(long)]
-    lock: bool,
-    #[arg(long)]
-    id: bool,
-    #[arg(long)]
-    json: bool,
-}
-
-impl QueryArgs {
-    async fn run(self) -> Result<()> {
-        let flags = query::QueryFlags {
-            playing: self.playing,
-            lock: self.lock,
-            id: self.id,
-            json: self.json,
-        };
-        query::run(self.query_str, flags).await
     }
 }
 

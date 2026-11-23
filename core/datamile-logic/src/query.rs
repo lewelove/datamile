@@ -1,9 +1,11 @@
 use roaring::RoaringBitmap;
 use serde_json::Value;
 
-use super::{LogicEngine, SortOrder};
+use crate::engine::{GrouperFormatter, LogicEngine};
+use crate::sort::SortOrder;
 
 impl LogicEngine {
+    #[must_use]
     pub fn request_view(
         &self,
         library: &str,
@@ -28,10 +30,10 @@ impl LogicEngine {
                 let needle = fv.to_lowercase();
                 let mut searched = RoaringBitmap::new();
                 for uid in &final_mask {
-                    if let Some(record) = self.albums.get(&uid) {
+                    if let Some(record) = self.entities.get(&uid) {
                         let title = record.title.to_lowercase();
-                        let artist = record.artist.to_lowercase();
-                        if title.contains(&needle) || artist.contains(&needle) {
+                        let subtitle = record.subtitle.to_lowercase();
+                        if title.contains(&needle) || subtitle.contains(&needle) {
                             searched.insert(uid);
                         }
                     }
@@ -46,13 +48,13 @@ impl LogicEngine {
             }
         }
 
-        let fallback_storage = self.albums.keys().copied().collect::<Vec<_>>();
+        let fallback_storage = self.entities.keys().copied().collect::<Vec<_>>();
         let sorted_uids = self.orders_cache.get(sort).unwrap_or(&fallback_storage);
 
         let mut res: Vec<String> = sorted_uids
             .iter()
             .filter(|uid| final_mask.contains(**uid))
-            .filter_map(|uid| self.albums.get(uid).map(|a| a.id.clone()))
+            .filter_map(|uid| self.entities.get(uid).map(|a| a.id.clone()))
             .collect();
 
         if order == SortOrder::Reverse {
@@ -61,6 +63,7 @@ impl LogicEngine {
         res
     }
 
+    #[must_use]
     pub fn request_shelf_view(
         &self,
         shelf_key: &str,
@@ -95,63 +98,59 @@ impl LogicEngine {
         }
 
         uids.iter()
-            .filter_map(|uid| self.albums.get(uid).map(|a| a.id.clone()))
+            .filter_map(|uid| self.entities.get(uid).map(|a| a.id.clone()))
             .collect()
     }
 
+    #[must_use]
     pub fn request_group(
         &self,
         library: &str,
         library_filter: Option<&str>,
         grouper: &str,
+        formatter: &GrouperFormatter<'_>,
     ) -> Vec<Value> {
         let view_mask = self.resolve_view_mask(library, library_filter);
         if view_mask.is_empty() {
             return Vec::new();
         }
 
-        let lua_engine = libdatamile::lua::LuaEngine::new().ok();
-        if let Some(ref engine) = lua_engine
-            && self.config_path.exists()
-        {
-            let _ = engine.evaluate_config(&self.config_path);
-        }
-
-        self.build_grouper_items(lua_engine.as_ref(), grouper, &view_mask)
+        self.build_grouper_items(formatter, grouper, &view_mask)
     }
 
+    #[must_use]
     pub fn find_ids(&self, query_str: &str) -> Vec<String> {
         let q = query_str.trim();
         if q.is_empty() {
-            return self.albums.values().map(|a| a.id.clone()).collect();
+            return self.entities.values().map(|a| a.id.clone()).collect();
         }
 
         if let Some(uids) = self.libraries_cache.get(q) {
             return uids
                 .iter()
-                .filter_map(|uid| self.albums.get(&uid).map(|a| a.id.clone()))
+                .filter_map(|uid| self.entities.get(&uid).map(|a| a.id.clone()))
                 .collect();
         }
         if let Some(uids) = self.filters_cache.get(q) {
             return uids
                 .iter()
-                .filter_map(|uid| self.albums.get(&uid).map(|a| a.id.clone()))
+                .filter_map(|uid| self.entities.get(&uid).map(|a| a.id.clone()))
                 .collect();
         }
         if let Some(uids) = self.shelves_cache.get(q) {
             return uids
                 .iter()
-                .filter_map(|uid| self.albums.get(uid).map(|a| a.id.clone()))
+                .filter_map(|uid| self.entities.get(uid).map(|a| a.id.clone()))
                 .collect();
         }
 
         let needle = q.to_lowercase();
-        self.albums
+        self.entities
             .values()
             .filter_map(|record| {
                 if record.id.to_lowercase().contains(&needle)
                     || record.title.to_lowercase().contains(&needle)
-                    || record.artist.to_lowercase().contains(&needle)
+                    || record.subtitle.to_lowercase().contains(&needle)
                 {
                     return Some(record.id.clone());
                 }

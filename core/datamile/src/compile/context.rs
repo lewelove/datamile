@@ -27,12 +27,8 @@ pub fn validate_config(config: &mut ResolvedConfig) -> Result<(), DatamileError>
     validate_audio_config(config)
 }
 
-/// Rejects unsupported `audio_extensions` from both config sections.
+/// Rejects unsupported `audio_extensions` from the compiler config section.
 fn validate_audio_config(config: &ResolvedConfig) -> Result<(), DatamileError> {
-    validate_section(
-        config.app.manifest.audio_extensions.as_deref(),
-        "manifest.audio_extensions",
-    )?;
     validate_section(
         config.app.compiler.audio_extensions.as_deref(),
         "compiler.audio_extensions",

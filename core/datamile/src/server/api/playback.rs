@@ -4,9 +4,9 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
+use datamile_mpd::MpdCommand;
 use serde_json::{Value, json};
 
-use crate::server::mpd::MpdCommand;
 use crate::server::state::AppState;
 
 pub async fn play_album(
@@ -96,8 +96,8 @@ async fn tracks_internal(
 
     let (json_str, album_dir) = {
         let logic = state.logic.read().await;
-        let json_opt = logic.album_json(id);
-        let path_opt = logic.album_path(id).map(StdPath::to_path_buf);
+        let json_opt = logic.entity_json(id);
+        let path_opt = logic.entity_path(id).map(StdPath::to_path_buf);
         drop(logic);
         (json_opt, path_opt)
     };

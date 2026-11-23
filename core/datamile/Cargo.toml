@@ -23,9 +23,10 @@ datamile-fs = { workspace = true }
 datamile-images = { workspace = true }
 datamile-lua = { workspace = true }
 datamile-lua-domain = { workspace = true }
+datamile-logic = { workspace = true }
+datamile-mpd = { workspace = true }
 libdatamile = { workspace = true }
 
-alphanumeric-sort = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true }

@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use datamile_lua_domain::{FormattedGrouperResult, GrouperFormatContext};
 use roaring::RoaringBitmap;
 use serde_json::{Value, json};
 
-use super::{AlbumRecord, LogicEngine, SortKey, SortOrder, value_to_sort_key};
+use crate::engine::{EntityRecord, GrouperFormatter, LogicEngine};
+use crate::sort::{SortKey, SortOrder, value_to_sort_key};
 
 fn value_to_display_string(val: &Value) -> String {
     val.as_str()
@@ -57,11 +57,11 @@ struct RawGrouperNode {
 
 fn calculate_mask_metrics(
     mask: &RoaringBitmap,
-    albums: &HashMap<u32, AlbumRecord>,
+    entities: &HashMap<u32, EntityRecord>,
 ) -> (u64, u64, u64) {
     let (mut dur, mut trk, mut dsc) = (0u64, 0u64, 0u64);
     for uid in mask {
-        if let Some(record) = albums.get(&uid) {
+        if let Some(record) = entities.get(&uid) {
             dur += record.duration_ms;
             trk += record.total_tracks;
             dsc += record.total_discs;
@@ -118,8 +118,8 @@ fn discover_parent_hierarchy(
     grouper_id: &str,
     node_bitmaps: &mut HashMap<String, RoaringBitmap>,
     view_total: f64,
-    albums: &HashMap<u32, AlbumRecord>,
-    lua_engine: Option<&libdatamile::lua::LuaEngine>,
+    entities: &HashMap<u32, EntityRecord>,
+    formatter: &GrouperFormatter<'_>,
 ) -> HashMap<String, String> {
     let mut parent_links: HashMap<String, String> = HashMap::new();
     let mut queue: Vec<String> = node_bitmaps.keys().cloned().collect();
@@ -133,9 +133,9 @@ fn discover_parent_hierarchy(
         let direct_mask = node_bitmaps.get(&current_val).cloned().unwrap_or_default();
         let count = direct_mask.len();
         let pct = calculate_pct(count, view_total);
-        let (dur, trk, dsc) = calculate_mask_metrics(&direct_mask, albums);
+        let (dur, trk, dsc) = calculate_mask_metrics(&direct_mask, entities);
 
-        let fmt_ctx = GrouperFormatContext {
+        let fmt_ctx = datamile_lua_domain::GrouperFormatContext {
             value: &current_val,
             count,
             pct,
@@ -144,15 +144,7 @@ fn discover_parent_hierarchy(
             total_discs: dsc,
         };
 
-        let fmt_res = lua_engine.map_or_else(
-            || FormattedGrouperResult {
-                label: current_val.clone(),
-                sublabel: None,
-                sort: json!(current_val),
-                parent: None,
-            },
-            |engine| engine.evaluate_grouper_format(grouper_id, &fmt_ctx),
-        );
+        let fmt_res = formatter(grouper_id, &fmt_ctx);
 
         if let Some(parent) = fmt_res.parent
             && parent != current_val
@@ -196,8 +188,8 @@ fn build_raw_grouper_nodes(
     grouper_id: &str,
     node_bitmaps: &HashMap<String, RoaringBitmap>,
     view_total: f64,
-    albums: &HashMap<u32, AlbumRecord>,
-    lua_engine: Option<&libdatamile::lua::LuaEngine>,
+    entities: &HashMap<u32, EntityRecord>,
+    formatter: &GrouperFormatter<'_>,
 ) -> Vec<RawGrouperNode> {
     let mut raw_nodes: Vec<RawGrouperNode> = Vec::new();
 
@@ -208,9 +200,9 @@ fn build_raw_grouper_nodes(
         }
 
         let pct = calculate_pct(count, view_total);
-        let (dur, trk, dsc) = calculate_mask_metrics(node_bm, albums);
+        let (dur, trk, dsc) = calculate_mask_metrics(node_bm, entities);
 
-        let fmt_ctx = GrouperFormatContext {
+        let fmt_ctx = datamile_lua_domain::GrouperFormatContext {
             value: node_val,
             count,
             pct,
@@ -219,15 +211,7 @@ fn build_raw_grouper_nodes(
             total_discs: dsc,
         };
 
-        let fmt_res = lua_engine.map_or_else(
-            || FormattedGrouperResult {
-                label: node_val.clone(),
-                sublabel: None,
-                sort: json!(node_val),
-                parent: None,
-            },
-            |engine| engine.evaluate_grouper_format(grouper_id, &fmt_ctx),
-        );
+        let fmt_res = formatter(grouper_id, &fmt_ctx);
 
         let sort_key = value_to_sort_key(&fmt_res.sort);
         let sort_str = sort_val_to_string(&fmt_res.sort);
@@ -280,7 +264,7 @@ fn assemble_grouper_tree(raw_nodes: Vec<RawGrouperNode>, order: SortOrder) -> Ve
 }
 
 impl LogicEngine {
-    pub fn build_cache(&mut self) {
+    pub fn build_cache(&mut self, formatter: &GrouperFormatter<'_>) {
         self.libraries_cache.clear();
         self.filters_cache.clear();
         self.groupers_cache.clear();
@@ -288,7 +272,7 @@ impl LogicEngine {
         self.shelves_cache.clear();
 
         self.populate_eval_caches();
-        self.populate_groupers_cache();
+        self.populate_groupers_cache(formatter);
         self.populate_shelves_cache();
         self.populate_orders_cache();
     }
@@ -354,14 +338,7 @@ impl LogicEngine {
         }
     }
 
-    fn propagate_global_parent_unions(
-        &mut self,
-        lua_engine: Option<&libdatamile::lua::LuaEngine>,
-    ) {
-        let Some(engine) = lua_engine else {
-            return;
-        };
-
+    fn propagate_global_parent_unions(&mut self, formatter: &GrouperFormatter<'_>) {
         for (grouper_id, group_map) in &mut self.groupers_cache {
             let mut parent_links: HashMap<String, String> = HashMap::new();
             let mut queue: Vec<String> = group_map.keys().cloned().collect();
@@ -372,7 +349,7 @@ impl LogicEngine {
                     continue;
                 }
 
-                let ctx = GrouperFormatContext {
+                let ctx = datamile_lua_domain::GrouperFormatContext {
                     value: &current_val,
                     count: 0,
                     pct: 0.0,
@@ -381,7 +358,7 @@ impl LogicEngine {
                     total_discs: 0,
                 };
 
-                let fmt_res = engine.evaluate_grouper_format(grouper_id, &ctx);
+                let fmt_res = formatter(grouper_id, &ctx);
 
                 if let Some(parent) = fmt_res.parent
                     && parent != current_val
@@ -423,7 +400,7 @@ impl LogicEngine {
         let empty_bitmap = RoaringBitmap::new();
         let library_mask = if self.manifest.libraries.is_empty() && library == "library" {
             let mut all_uids = RoaringBitmap::new();
-            for &uid in self.albums.keys() {
+            for &uid in self.entities.keys() {
                 all_uids.insert(uid);
             }
             all_uids
@@ -445,7 +422,7 @@ impl LogicEngine {
 
     pub(crate) fn build_grouper_items(
         &self,
-        lua_engine: Option<&libdatamile::lua::LuaEngine>,
+        formatter: &GrouperFormatter<'_>,
         grouper_id: &str,
         view_mask: &RoaringBitmap,
     ) -> Vec<Value> {
@@ -477,8 +454,8 @@ impl LogicEngine {
             grouper_id,
             &mut node_bitmaps,
             view_total,
-            &self.albums,
-            lua_engine,
+            &self.entities,
+            formatter,
         );
 
         propagate_child_bitmaps(&parent_links, &mut node_bitmaps);
@@ -487,79 +464,69 @@ impl LogicEngine {
             grouper_id,
             &node_bitmaps,
             view_total,
-            &self.albums,
-            lua_engine,
+            &self.entities,
+            formatter,
         );
 
         assemble_grouper_tree(raw_nodes, order)
     }
 
-    fn populate_groupers_cache(&mut self) {
+    fn populate_groupers_cache(&mut self, formatter: &GrouperFormatter<'_>) {
         self.collect_raw_groupers();
-
-        let lua_engine = libdatamile::lua::LuaEngine::new().ok();
-        if let Some(ref engine) = lua_engine
-            && self.config_path.exists()
-        {
-            let _ = engine.evaluate_config(&self.config_path);
-        }
-
-        self.propagate_global_parent_unions(lua_engine.as_ref());
+        self.propagate_global_parent_unions(formatter);
     }
 
     fn populate_shelves_cache(&mut self) {
-        for (shelf_key, shelf) in &self.manifest.shelves {
-            if let Some(shelf_uids) = self.shelves_cache.get_mut(shelf_key) {
-                let default_key = json!("");
-                let mut pairs: Vec<(u32, SortKey)> = shelf_uids
-                    .iter()
-                    .map(|&uid| {
-                        let raw_key = self
-                            .evaluated_logic
-                            .get(&uid)
-                            .and_then(|eval| eval.get("shelf_sorts"))
-                            .and_then(|sorts| sorts.get(shelf_key))
-                            .unwrap_or(&default_key);
-                        (uid, value_to_sort_key(raw_key))
-                    })
-                    .collect();
+        let shelves: Vec<(String, bool)> = self
+            .manifest
+            .shelves
+            .iter()
+            .map(|(key, def)| (key.clone(), def.reverse))
+            .collect();
 
-                pairs.sort_by(|a, b| (&a.1, a.0).cmp(&(&b.1, b.0)));
-                if shelf.reverse {
-                    pairs.reverse();
-                }
+        for (shelf_key, reverse) in shelves {
+            let Some(native) = self.shelves_cache.get(&shelf_key) else {
+                continue;
+            };
 
-                *shelf_uids = pairs.into_iter().map(|(uid, _)| uid).collect();
+            let mut pairs: Vec<(u32, SortKey)> = native
+                .iter()
+                .map(|&uid| (uid, self.sort_key_for(uid, "shelf_sorts", &shelf_key)))
+                .collect();
+
+            pairs.sort_by(|a, b| (&a.1, a.0).cmp(&(&b.1, b.0)));
+            if reverse {
+                pairs.reverse();
             }
+
+            self.shelves_cache
+                .insert(shelf_key, pairs.into_iter().map(|(uid, _)| uid).collect());
         }
     }
 
     fn populate_orders_cache(&mut self) {
-        for order_id in self.manifest.orders.keys() {
+        let orders: Vec<(String, bool)> = self
+            .manifest
+            .orders
+            .iter()
+            .map(|(key, def)| (key.clone(), def.reverse))
+            .collect();
+
+        for (order_id, reverse) in orders {
             let mut order_pairs: Vec<(u32, SortKey)> = Vec::new();
-            for (&uid, eval_res) in &self.evaluated_logic {
-                let default_key = json!("");
-                let raw_key = eval_res
-                    .get("orders")
-                    .and_then(|o| o.get(order_id))
-                    .unwrap_or(&default_key);
-                let sort_key = value_to_sort_key(raw_key);
+            for &uid in self.evaluated_logic.keys() {
+                let sort_key = self.sort_key_for(uid, "orders", &order_id);
                 order_pairs.push((uid, sort_key));
             }
 
             order_pairs.sort_by(|a, b| (&a.1, a.0).cmp(&(&b.1, b.0)));
-            let is_reverse = self
-                .manifest
-                .orders
-                .get(order_id)
-                .is_some_and(|o| o.reverse);
-            if is_reverse {
+            if reverse {
                 order_pairs.reverse();
             }
 
             let sorted_uids: Vec<u32> =
                 order_pairs.into_iter().map(|(uid, _)| uid).collect();
-            self.orders_cache.insert(order_id.clone(), sorted_uids);
+            self.orders_cache.insert(order_id, sorted_uids);
         }
     }
 }

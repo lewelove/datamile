@@ -92,7 +92,7 @@ async fn log_detected_events(
             .iter()
             .filter_map(|p| {
                 logic
-                    .album_id_by_path(p)
+                    .entity_id_by_path(p)
                     .map(ToString::to_string)
                     .or_else(|| {
                         let rel = datamile_fs::rel_path(p, &music_directory);
@@ -238,7 +238,7 @@ fn remove_vanished_albums(
     outcome: &mut IngestOutcome,
 ) {
     let dead_paths: Vec<PathBuf> = logic
-        .albums
+        .entities
         .values()
         .map(|a| a.path.clone())
         .filter(|path| {
@@ -250,7 +250,7 @@ fn remove_vanished_albums(
         .collect();
 
     for dead_path in dead_paths {
-        if let Some(dead_id) = logic.remove_album_by_path(&dead_path) {
+        if let Some(dead_id) = logic.remove_entity_by_path(&dead_path) {
             if origin == IngestOrigin::External {
                 log::info!("Removed album: {dead_id}");
             }
@@ -274,17 +274,28 @@ fn ingest_recompiled_items(
             .canonicalize()
             .unwrap_or_else(|_| album_path.clone());
         if let Some(eval) = eval_res {
-            match logic.ingest_pre_evaluated(
+            let parsed = crate::server::library::ingest::parse_album_lock(
                 &album_path,
                 &album_id,
                 &lock_json,
-                eval,
                 music_directory,
-            ) {
+            );
+            let ingest_result = parsed.and_then(|parsed| {
+                parsed.map_or(Ok(()), |parsed| {
+                    logic.upsert_entity(
+                        parsed.entity,
+                        parsed.playables,
+                        parsed.images,
+                        eval,
+                    )
+                })
+            });
+
+            match ingest_result {
                 Ok(()) => {
                     deps_graph.update_album_deps(album_path, dependencies);
                     outcome.deps_modified = true;
-                    if let Some(entry) = logic.album_dict(&album_id) {
+                    if let Some(entry) = logic.entity_dict(&album_id) {
                         outcome
                             .updated_dict_entries
                             .insert(album_id, entry.to_owned());
@@ -296,7 +307,7 @@ fn ingest_recompiled_items(
                 }
             }
         } else if !album_path.exists()
-            && let Some(dead_id) = logic.remove_album_by_path(&album_path)
+            && let Some(dead_id) = logic.remove_entity_by_path(&album_path)
         {
             if origin == IngestOrigin::External {
                 log::info!("Removed album: {dead_id}");
@@ -356,7 +367,7 @@ pub async fn ingest_and_broadcast_albums(
         }
 
         drop(deps_graph);
-        logic.build_cache();
+        crate::logic_bridge::rebuild_cache(&mut logic);
 
         let mut s = HashMap::new();
         for key in logic.manifest.shelves.keys() {
@@ -394,6 +405,7 @@ async fn handle_config_change(state: &Arc<AppState>) {
             let new_actions = new_config.actions.clone();
             let dependencies = new_config.dependencies.clone();
             let config_path = new_config.path.clone();
+            let new_manifest = new_config.manifest.clone();
 
             {
                 let mut config_guard = state.config.write().await;
@@ -405,9 +417,11 @@ async fn handle_config_change(state: &Arc<AppState>) {
 
             let manifest = {
                 let mut logic = state.logic.write().await;
-                if let Err(e) = logic.reload_manifest(&config_path) {
-                    log::error!("Failed to reload logic manifest: {e}");
-                }
+                crate::logic_bridge::reload_manifest(
+                    &mut logic,
+                    &config_path,
+                    new_manifest.clone(),
+                );
                 logic.manifest.clone()
             };
 

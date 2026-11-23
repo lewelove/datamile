@@ -1,14 +1,10 @@
-use std::sync::Arc;
-
 use mpd_client::Client;
 use mpd_client::client::{ConnectionEvent, Subsystem};
 use tokio::net::TcpStream;
-use tokio::sync::{RwLock, broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc};
 
-use crate::server::logic::LogicEngine;
-use crate::server::mpd::commands::{MpdCommand, handle_command};
-use crate::server::mpd::status::broadcast_status;
-use crate::server::state::AppConfig;
+use crate::commands::{MpdCommand, handle_command};
+use crate::status::{RawMpdStatus, broadcast_status};
 
 #[derive(Clone)]
 pub struct MpdEngine {
@@ -21,17 +17,15 @@ impl MpdEngine {
     }
 }
 
-pub fn start_actor(
-    broadcast_tx: broadcast::Sender<String>,
-    logic: Arc<RwLock<LogicEngine>>,
-    _app_config: Arc<AppConfig>,
-) -> MpdEngine {
+/// Starts the reconnecting MPD actor.
+///
+/// Returns the command handle plus the raw status feed. The feed is a
+/// broadcast channel so any number of consumers can enrich the same snapshot.
+#[must_use]
+pub fn start_actor(addr: String) -> (MpdEngine, broadcast::Sender<RawMpdStatus>) {
     let (tx, mut rx) = mpsc::channel::<MpdCommand>(32);
-    let engine_handle = MpdEngine { tx };
-
-    let mpd_host = std::env::var("MPD_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let mpd_port = std::env::var("MPD_PORT").unwrap_or_else(|_| "6600".to_string());
-    let addr = format!("{mpd_host}:{mpd_port}");
+    let (status_tx, _) = broadcast::channel::<RawMpdStatus>(64);
+    let status_feed = status_tx.clone();
 
     tokio::spawn(async move {
         loop {
@@ -43,7 +37,7 @@ pub fn start_actor(
                         let _ = client
                             .command(mpd_client::commands::SetBinaryLimit(131_072))
                             .await;
-                        let _ = broadcast_status(&client, &broadcast_tx, &logic).await;
+                        let _ = broadcast_status(&client, &status_feed).await;
 
                         loop {
                             tokio::select! {
@@ -56,7 +50,7 @@ pub fn start_actor(
                                                 Subsystem::Queue |
                                                 Subsystem::Options
                                             ) {
-                                                let _ = broadcast_status(&client, &broadcast_tx, &logic).await;
+                                                let _ = broadcast_status(&client, &status_feed).await;
                                             }
                                         }
                                         ConnectionEvent::ConnectionClosed(e) => {
@@ -67,12 +61,12 @@ pub fn start_actor(
                                 }
                                 Some(cmd) = rx.recv() => {
                                     if matches!(cmd, MpdCommand::Refresh) {
-                                        let _ = broadcast_status(&client, &broadcast_tx, &logic).await;
+                                        let _ = broadcast_status(&client, &status_feed).await;
                                     } else {
                                         if let Err(e) = handle_command(&client, cmd).await {
                                             log::error!("MPD Execution Error: {e}");
                                         }
-                                        let _ = broadcast_status(&client, &broadcast_tx, &logic).await;
+                                        let _ = broadcast_status(&client, &status_feed).await;
                                     }
                                 }
                             }
@@ -90,5 +84,5 @@ pub fn start_actor(
         }
     });
 
-    engine_handle
+    (MpdEngine { tx }, status_tx)
 }

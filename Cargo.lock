@@ -681,7 +681,6 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 name = "datamile"
 version = "0.1.0"
 dependencies = [
- "alphanumeric-sort",
  "anyhow",
  "axum",
  "clap 4.6.6",
@@ -689,8 +688,10 @@ dependencies = [
  "datamile-cache",
  "datamile-fs",
  "datamile-images",
+ "datamile-logic",
  "datamile-lua",
  "datamile-lua-domain",
+ "datamile-mpd",
  "futures",
  "indexmap",
  "libdatamile",
@@ -768,6 +769,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "datamile-logic"
+version = "0.1.0"
+dependencies = [
+ "alphanumeric-sort",
+ "anyhow",
+ "datamile-lua-domain",
+ "roaring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "datamile-lua"
 version = "0.1.0"
 dependencies = [
@@ -797,6 +810,18 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "datamile-mpd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "mpd_client",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

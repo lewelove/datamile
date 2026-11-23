@@ -3,10 +3,10 @@ use std::sync::Arc;
 use ax_ws::WebSocket;
 use axum::extract::{State, WebSocketUpgrade, ws as ax_ws};
 use axum::response::Response;
+use datamile_mpd::MpdCommand;
 use serde_json::{Value, json};
 
 use crate::server::logic::SortOrder;
-use crate::server::mpd::MpdCommand;
 use crate::server::state::AppState;
 
 pub async fn ws_handler(
@@ -28,7 +28,7 @@ async fn build_init_payload(state: &AppState) -> String {
         }
         (
             l.dict_snapshot(),
-            l.track_lookup.clone(),
+            l.playable_lookup.clone(),
             l.manifest.clone(),
             s,
         )
@@ -109,11 +109,10 @@ async fn handle_group_request(req: &Value, socket: &mut WebSocket, state: &AppSt
     let library_filter = req.get("library_filter").and_then(Value::as_str);
     let key = req.get("key").and_then(Value::as_str).unwrap_or("");
 
-    let result = state
-        .logic
-        .read()
-        .await
-        .request_group(library, library_filter, key);
+    let result = {
+        let logic = state.logic.read().await;
+        crate::logic_bridge::request_group(&logic, library, library_filter, key)
+    };
     let payload =
         json!({ "type": "GROUP_RESULT", "key": key, "result": result }).to_string();
     let _ = socket.send(ax_ws::Message::Text(payload.into())).await;

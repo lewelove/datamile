@@ -103,20 +103,43 @@ impl Library {
             .collect();
 
         logic_engine.clear();
+        ingest_evaluated(&self.root, evaluated_items, logic_engine);
 
-        for (album_dir, alb_id, content, eval_res) in evaluated_items {
-            let album_dir_canon = album_dir
-                .canonicalize()
-                .unwrap_or_else(|_| album_dir.clone());
-            if let Err(e) = logic_engine
-                .ingest_pre_evaluated(&album_dir, &alb_id, &content, eval_res, &self.root)
-            {
-                let album_dir_display = album_dir_canon.display();
-                log::error!("Dedup validation error for {album_dir_display}: {e}");
-            }
-        }
-
-        logic_engine.build_cache();
+        crate::logic_bridge::rebuild_cache(logic_engine);
         log::info!("Library Logic Engine Initialized.");
+    }
+}
+
+/// Registers every evaluated lock, logging and skipping the ones that fail.
+fn ingest_evaluated(
+    root: &std::path::Path,
+    items: Vec<(PathBuf, String, String, serde_json::Value)>,
+    logic_engine: &mut crate::server::logic::LogicEngine,
+) {
+    for (album_dir, alb_id, content, eval_res) in items {
+        let album_dir_canon = album_dir
+            .canonicalize()
+            .unwrap_or_else(|_| album_dir.clone());
+        let parsed = match crate::server::library::ingest::parse_album_lock(
+            &album_dir, &alb_id, &content, root,
+        ) {
+            Ok(Some(parsed)) => parsed,
+            Ok(None) => continue,
+            Err(e) => {
+                let album_dir_display = album_dir_canon.display();
+                log::error!("Failed to parse lock for {album_dir_display}: {e}");
+                continue;
+            }
+        };
+
+        if let Err(e) = logic_engine.upsert_entity(
+            parsed.entity,
+            parsed.playables,
+            parsed.images,
+            eval_res,
+        ) {
+            let album_dir_display = album_dir_canon.display();
+            log::error!("Dedup validation error for {album_dir_display}: {e}");
+        }
     }
 }

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use libdatamile::utils::tag_text;
+use datamile_logic::tag_text;
 use rayon::prelude::*;
 use serde_json::Value;
 

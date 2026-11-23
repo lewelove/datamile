@@ -7,6 +7,8 @@ members = [
   "core/datamile-images",
   "core/datamile-lua",
   "core/datamile-lua-domain",
+  "core/datamile-logic",
+  "core/datamile-mpd",
   "core/libdatamile",
   "core/datamile",
   "actions/rust/libactions",
@@ -45,6 +47,8 @@ datamile-audio = { path = "core/datamile-audio" }
 datamile-images = { path = "core/datamile-images" }
 datamile-lua = { path = "core/datamile-lua" }
 datamile-lua-domain = { path = "core/datamile-lua-domain" }
+datamile-logic = { path = "core/datamile-logic" }
+datamile-mpd = { path = "core/datamile-mpd" }
 libdatamile = { path = "core/libdatamile" }
 libactions = { path = "actions/rust/libactions" }
 

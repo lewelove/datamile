@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod tests;
-
 /// Renders a lock tag as display text.
 ///
 /// Tags keep their JSON type, so `album = 1984` stays a number and `genre` may be

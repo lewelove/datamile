@@ -21,11 +21,11 @@ async fn resolve_playing_target(state: &AppState) -> Option<String> {
     let logic = state.logic.read().await;
 
     if let Some(item) = logic
-        .track_lookup
+        .playable_lookup
         .get(clean_playing)
-        .or_else(|| logic.track_lookup.get(&playing_path))
+        .or_else(|| logic.playable_lookup.get(&playing_path))
     {
-        return Some(item.album_id.clone());
+        return Some(item.media_id.clone());
     }
 
     let music_dir = state.config.read().await.music_directory.clone();
@@ -33,7 +33,7 @@ async fn resolve_playing_target(state: &AppState) -> Option<String> {
         .await
         .ok()?;
     let canon = dir.canonicalize().unwrap_or(dir);
-    logic.album_id_by_path(&canon).map(ToString::to_string)
+    logic.entity_id_by_path(&canon).map(ToString::to_string)
 }
 
 async fn resolve_param_target(
@@ -56,7 +56,7 @@ async fn resolve_param_target(
             .map_or_else(|| music_dir, |dir| datamile_fs::expand_path(dir));
         let root_canon = root.canonicalize().unwrap_or(root);
         return logic
-            .albums
+            .entities
             .values()
             .filter(|a| a.path.starts_with(&root_canon))
             .map(|a| a.id.clone())
@@ -65,7 +65,7 @@ async fn resolve_param_target(
     if let Some(dir) = params.get("directory") {
         let p = datamile_fs::expand_path(dir);
         let p_canon = p.canonicalize().unwrap_or(p);
-        if let Some(id) = logic.album_id_by_path(&p_canon) {
+        if let Some(id) = logic.entity_id_by_path(&p_canon) {
             return vec![id.to_string()];
         }
     }
@@ -86,7 +86,7 @@ async fn resolve_target_entries(
     let logic = state.logic.read().await;
     let mut list = Vec::new();
     for target_id in target_ids {
-        if let Some(record) = logic.album_record(&target_id)
+        if let Some(record) = logic.entity_record(&target_id)
             && let Ok(lock_json) =
                 serde_json::from_str::<serde_json::Value>(&record.raw_json)
         {

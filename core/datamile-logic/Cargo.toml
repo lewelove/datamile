@@ -1,0 +1,19 @@
+[package]
+name = "datamile-logic"
+version = "0.1.0"
+edition = "2024"
+description = "Media-agnostic bitmap index and query engine for Datamile."
+license = "AGPL-3.0-only"
+repository = "https://github.com/lewelove/datamile"
+
+[lints]
+workspace = true
+
+[dependencies]
+datamile-lua-domain = { workspace = true }
+
+alphanumeric-sort = { workspace = true }
+anyhow = { workspace = true }
+roaring = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }

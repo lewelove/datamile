@@ -1,8 +1,7 @@
 pub mod api;
 pub mod inotify;
 pub mod library;
-pub mod logic;
-pub mod mpd;
+pub mod mpd_bridge;
 pub mod state;
 
 use std::net::SocketAddr;
@@ -11,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use datamile_fs::expand_path;
+pub use datamile_logic as logic;
 use tokio::sync::{RwLock, broadcast};
 use tower_http::cors::{Any, CorsLayer};
 
@@ -77,7 +77,7 @@ pub async fn run(port: u16) -> Result<()> {
     let actions = config.actions.clone();
     let resolved_dependencies = config.dependencies.clone();
 
-    let mut logic_engine = logic::LogicEngine::new()?;
+    let mut logic_engine = crate::logic_bridge::new_engine(&config.path)?;
 
     let server_config = ServerConfig {
         music_directory: music_directory.clone(),
@@ -99,11 +99,11 @@ pub async fn run(port: u16) -> Result<()> {
     let logic_arc = Arc::new(RwLock::new(logic_engine));
     let (tx, _) = broadcast::channel(1024);
 
-    let mpd_engine = mpd::start_actor(
-        tx.clone(),
-        Arc::clone(&logic_arc),
-        Arc::new(server_config.clone()),
-    );
+    let mpd_host = std::env::var("MPD_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let mpd_port = std::env::var("MPD_PORT").unwrap_or_else(|_| "6600".to_string());
+    let (mpd_engine, mpd_status_tx) =
+        datamile_mpd::start_actor(format!("{mpd_host}:{mpd_port}"));
+    mpd_bridge::start_status_bridge(&mpd_status_tx, Arc::clone(&logic_arc), tx.clone());
 
     let deps_json_path =
         crate::update::cache::deps_graph_path(&cache_root, &music_directory);

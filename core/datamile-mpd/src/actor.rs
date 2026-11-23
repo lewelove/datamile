@@ -12,6 +12,12 @@ pub struct MpdEngine {
 }
 
 impl MpdEngine {
+    /// Wraps a command channel, for callers that own the actor loop themselves.
+    #[must_use]
+    pub const fn new(tx: mpsc::Sender<MpdCommand>) -> Self {
+        Self { tx }
+    }
+
     pub async fn send(&self, command: MpdCommand) {
         let _ = self.tx.send(command).await;
     }

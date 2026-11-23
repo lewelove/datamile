@@ -1,0 +1,31 @@
+[package]
+name = "datamile-server"
+version = "0.1.0"
+edition = "2024"
+description = "Media-agnostic HTTP and WebSocket server for Datamile."
+license = "AGPL-3.0-only"
+repository = "https://github.com/lewelove/datamile"
+
+[lints]
+workspace = true
+
+[dependencies]
+datamile-fs = { workspace = true }
+datamile-images = { workspace = true }
+datamile-logic = { workspace = true }
+datamile-lua-domain = { workspace = true }
+datamile-mpd = { workspace = true }
+
+anyhow = { workspace = true }
+axum = { workspace = true }
+futures = { workspace = true }
+log = { workspace = true }
+notify = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = "0.5"

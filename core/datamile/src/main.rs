@@ -1,15 +1,11 @@
-mod compile;
-mod config;
 mod interface;
-mod logic_bridge;
-mod server;
-mod update;
-mod x;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use datamile_album_legacy::{AlbumLegacyBackend, compile, update, x};
 use datamile_fs::expand_path;
 
 #[derive(Parser)]
@@ -52,7 +48,8 @@ struct ServerArgs {
 
 impl ServerArgs {
     async fn run(self) -> Result<()> {
-        server::run(self.port).await
+        let backend = Arc::new(AlbumLegacyBackend::new());
+        datamile_server::run(backend, self.port).await
     }
 }
 
@@ -131,9 +128,9 @@ impl UpdateArgs {
     async fn run(self) -> Result<()> {
         let expanded = self.path.map(|p| expand_path(&p));
         let force_mode = if self.force {
-            update::client::ForceMode::Force
+            update::ForceMode::Force
         } else {
-            update::client::ForceMode::Preserve
+            update::ForceMode::Preserve
         };
         let verbosity = if self.silent {
             compile::LogVerbosity::Silent

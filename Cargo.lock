@@ -682,8 +682,22 @@ name = "datamile"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "axum",
  "clap 4.6.6",
+ "datamile-album-legacy",
+ "datamile-fs",
+ "datamile-lua-domain",
+ "datamile-server",
+ "log",
+ "serde_json",
+ "simple_logger",
+ "tokio",
+]
+
+[[package]]
+name = "datamile-album-legacy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "datamile-audio",
  "datamile-cache",
  "datamile-fs",
@@ -691,22 +705,18 @@ dependencies = [
  "datamile-logic",
  "datamile-lua",
  "datamile-lua-domain",
- "datamile-mpd",
- "futures",
- "indexmap",
- "libdatamile",
+ "datamile-server",
  "log",
+ "mlua",
  "mpd_client",
- "notify",
  "rayon",
  "reqwest 0.13.4",
- "roaring",
  "serde",
  "serde_json",
- "simple_logger",
+ "tempfile",
+ "thiserror",
  "tokio",
  "toml",
- "tower-http",
  "walkdir",
 ]
 
@@ -822,6 +832,28 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "datamile-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "datamile-fs",
+ "datamile-images",
+ "datamile-logic",
+ "datamile-lua-domain",
+ "datamile-mpd",
+ "futures",
+ "log",
+ "notify",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tower-http",
 ]
 
 [[package]]
@@ -1782,25 +1814,6 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
-
-[[package]]
-name = "libdatamile"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "datamile-cache",
- "datamile-fs",
- "datamile-lua",
- "datamile-lua-domain",
- "log",
- "mlua",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "toml",
- "walkdir",
-]
 
 [[package]]
 name = "libfuzzer-sys"

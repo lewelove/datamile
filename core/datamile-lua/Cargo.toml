@@ -1,0 +1,25 @@
+[package]
+name = "datamile-lua"
+version = "0.1.0"
+edition = "2024"
+description = "Pure Lua runtime and the media-agnostic d.* standard library."
+license = "AGPL-3.0-only"
+
+[lints]
+workspace = true
+
+[dependencies]
+datamile-cache = { workspace = true }
+datamile-fs = { workspace = true }
+
+anyhow = { workspace = true }
+dotenv-ng-core = { workspace = true }
+mlua = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+dirs = { workspace = true }
+tempfile = { workspace = true }

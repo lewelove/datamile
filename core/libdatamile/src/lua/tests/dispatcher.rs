@@ -16,6 +16,7 @@ fn dispatch_raw(
 ) -> Result<Value, String> {
     let engine = LuaEngine::new().expect("Failed to create LuaEngine");
     engine
+        .runtime()
         .lua
         .load(setup)
         .set_name("setup.lua")

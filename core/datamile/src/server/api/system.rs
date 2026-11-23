@@ -148,7 +148,7 @@ pub async fn trigger_full_reset(State(state): State<Arc<AppState>>) -> Response 
         (logic.albums.len(), logic.manifest.clone())
     })
     .await
-    .unwrap_or_else(|_| (0, libdatamile::lua::LogicManifest::default()));
+    .unwrap_or_else(|_| (0, datamile_lua_domain::LogicManifest::default()));
 
     let elapsed = start_time.elapsed().as_millis();
     log::info!("Updated {album_count} albums.");

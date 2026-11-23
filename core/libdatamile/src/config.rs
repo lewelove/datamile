@@ -1,3 +1,4 @@
+use datamile_lua_domain::ServerConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -10,36 +11,6 @@ pub struct AppConfig {
     pub compiler: CompilerConfig,
     #[serde(default)]
     pub server: ServerConfig,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(default)]
-pub struct ServerConfig {
-    pub host: String,
-    pub port: u16,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            host: "127.0.0.1".to_string(),
-            port: 8000,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-pub struct ActionDef {
-    pub label: String,
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-pub struct InterfaceDef {
-    pub label: String,
-    #[serde(default)]
-    pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

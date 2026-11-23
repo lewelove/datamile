@@ -264,7 +264,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if let Some(dir) = cli.config {
-        libdatamile::lua::set_config_dir(dir);
+        datamile_lua_domain::set_config_dir(dir);
     }
 
     cli.command.execute().await

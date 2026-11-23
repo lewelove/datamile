@@ -1,0 +1,23 @@
+[package]
+name = "datamile-lua-domain"
+version = "0.1.0"
+edition = "2024"
+description = "Media-agnostic Datamile Lua API, config models and logic manifest."
+license = "AGPL-3.0-only"
+
+[lints]
+workspace = true
+
+[dependencies]
+datamile-fs = { workspace = true }
+datamile-lua = { workspace = true }
+
+anyhow = { workspace = true }
+dirs = { workspace = true }
+indexmap = { workspace = true }
+mlua = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

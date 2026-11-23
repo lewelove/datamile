@@ -134,8 +134,9 @@ fn run_dispatcher_phase(
         })?;
 
     let mut dependencies = engine
+        .runtime()
         .lua
-        .app_data_ref::<libdatamile::lua::EngineContext>()
+        .app_data_ref::<datamile_lua::EngineContext>()
         .map_or_else(HashSet::new, |c| c.take_dependencies());
 
     dependencies.retain(|p| !p.starts_with(album_root));
@@ -189,7 +190,11 @@ pub fn build(
     config: &libdatamile::lua::ResolvedConfig,
     engine: &libdatamile::lua::LuaEngine,
 ) -> Result<BuildOutput, DatamileError> {
-    if let Some(ctx) = engine.lua.app_data_ref::<libdatamile::lua::EngineContext>() {
+    if let Some(ctx) = engine
+        .runtime()
+        .lua
+        .app_data_ref::<datamile_lua::EngineContext>()
+    {
         ctx.take_dependencies();
     }
 

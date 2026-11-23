@@ -21,6 +21,8 @@ datamile-audio = { workspace = true }
 datamile-cache = { workspace = true }
 datamile-fs = { workspace = true }
 datamile-images = { workspace = true }
+datamile-lua = { workspace = true }
+datamile-lua-domain = { workspace = true }
 libdatamile = { workspace = true }
 
 alphanumeric-sort = { workspace = true }

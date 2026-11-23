@@ -689,6 +689,8 @@ dependencies = [
  "datamile-cache",
  "datamile-fs",
  "datamile-images",
+ "datamile-lua",
+ "datamile-lua-domain",
  "futures",
  "indexmap",
  "libdatamile",
@@ -763,6 +765,38 @@ dependencies = [
  "qoi",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "datamile-lua"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "datamile-cache",
+ "datamile-fs",
+ "dirs",
+ "dotenv-ng-core",
+ "mlua",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "datamile-lua-domain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "datamile-fs",
+ "datamile-lua",
+ "dirs",
+ "indexmap",
+ "mlua",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1729,12 +1763,10 @@ name = "libdatamile"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "datamile-cache",
  "datamile-fs",
- "dirs",
- "dotenv-ng-core",
- "indexmap",
+ "datamile-lua",
+ "datamile-lua-domain",
  "log",
  "mlua",
  "serde",

@@ -1,3 +1,3 @@
-mod config_path;
+mod album_config;
+mod album_logic;
 mod dispatcher;
-mod nvim_parity;

@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use datamile_images::{FilterType, FitMode, parse_filter, parse_fit_mode};
+use datamile_lua_domain::LogicManifest;
 use libdatamile::error::DatamileError;
-use libdatamile::lua::{LogicManifest, with_evaluated_lua_vm};
+use libdatamile::lua::with_evaluated_lua_vm;
 use libdatamile::utils::tag_text;
 use roaring::RoaringBitmap;
 use serde::Serialize;
@@ -83,7 +84,7 @@ pub struct LogicEngine {
 
 impl LogicEngine {
     pub fn new() -> Result<Self> {
-        let config_path = libdatamile::lua::resolve_config_path().unwrap_or_default();
+        let config_path = datamile_lua_domain::resolve_config_path().unwrap_or_default();
         let manifest = with_evaluated_lua_vm(&config_path, |_, eval| Ok(eval.manifest))?;
 
         Ok(Self {

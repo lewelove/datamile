@@ -2,6 +2,16 @@ _G.datamile = _G.datamile or {}
 _G.d = _G.datamile
 _G.datamile.compile = _G.datamile.compile or {}
 
+-- The album compiler owns these registries; the domain core leaves them out.
+-- `id_fn` stays nil until `datamile.compile.album.id` registers it.
+REGISTRY.images_rules = REGISTRY.images_rules or {}
+REGISTRY.tags = REGISTRY.tags or {}
+REGISTRY.tags.album = REGISTRY.tags.album or {}
+REGISTRY.tags.tracks = REGISTRY.tags.tracks or {}
+REGISTRY.objects = REGISTRY.objects or {}
+REGISTRY.objects.album = REGISTRY.objects.album or {}
+REGISTRY.objects.tracks = REGISTRY.objects.tracks or {}
+
 local function is_scalar(v)
     local t = type(v)
     return t == "string" or t == "number" or t == "boolean"

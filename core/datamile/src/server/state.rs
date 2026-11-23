@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use libdatamile::config::{ActionDef, InterfaceDef};
+use datamile_lua_domain::{ActionDef, InterfaceDef};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast, watch};
 

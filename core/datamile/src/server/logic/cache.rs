@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use libdatamile::lua::{FormattedGrouperResult, GrouperFormatContext};
+use datamile_lua_domain::{FormattedGrouperResult, GrouperFormatContext};
 use roaring::RoaringBitmap;
 use serde_json::{Value, json};
 

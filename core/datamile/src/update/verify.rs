@@ -2,10 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use datamile_cache::FileStat;
 use rayon::prelude::*;
 
 use crate::server::state::DependencyGraph;
-use crate::update::cache::FileStat;
 use crate::update::client::ForceMode;
 
 pub fn find_missing_paths(
@@ -17,7 +17,7 @@ pub fn find_missing_paths(
     let mut missing_paths = Vec::new();
     let current_album_ids: HashSet<String> = all_albums
         .iter()
-        .map(|p| libdatamile::resolvers::rel_path(p, library_root))
+        .map(|p| datamile_fs::rel_path(p, library_root))
         .collect();
 
     let mut cached_album_ids = HashSet::new();
@@ -86,7 +86,7 @@ fn is_album_dirty(
         return true;
     }
 
-    let album_id = libdatamile::resolvers::rel_path(&album_root_canon, library_root);
+    let album_id = datamile_fs::rel_path(&album_root_canon, library_root);
     let prefix = if album_id.is_empty() {
         String::new()
     } else {
@@ -105,7 +105,7 @@ fn is_album_dirty(
                 };
                 let stat = FileStat::from(&m);
 
-                let rel_dep = libdatamile::resolvers::rel_path(dep_path, library_root);
+                let rel_dep = datamile_fs::rel_path(dep_path, library_root);
                 if cache.get(&rel_dep) != Some(&stat) {
                     return true;
                 }
@@ -132,7 +132,7 @@ fn deep_verify_dirty(
     {
         let p = entry.path();
         if p.is_file() {
-            let rel = libdatamile::resolvers::rel_path(p, library_root);
+            let rel = datamile_fs::rel_path(p, library_root);
             let Ok(m) = entry.metadata() else {
                 return true;
             };

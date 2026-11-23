@@ -129,7 +129,7 @@ impl DependencyGraph {
 
     pub fn save_to_file(&self, path: &Path) -> anyhow::Result<()> {
         let content = serde_json::to_string_pretty(self)?;
-        libdatamile::utils::write_atomic(path, &content)?;
+        datamile_fs::write_atomic(path, &content)?;
         Ok(())
     }
 }

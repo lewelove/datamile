@@ -48,7 +48,7 @@ pub fn master_path(cache_root: &Path, address: &str) -> PathBuf {
 pub fn save_qoi_atomic(path: &Path, img: &image::RgbImage) -> std::io::Result<()> {
     let encoded = qoi::encode_to_vec(img.as_raw(), img.width(), img.height())
         .map_err(std::io::Error::other)?;
-    crate::utils::write_atomic(path, &encoded)
+    datamile_fs::write_atomic(path, &encoded)
 }
 
 #[must_use]

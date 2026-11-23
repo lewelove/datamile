@@ -688,6 +688,8 @@ dependencies = [
  "blake3",
  "chrono",
  "clap 4.6.6",
+ "datamile-cache",
+ "datamile-fs",
  "dirs",
  "fast_image_resize",
  "futures",
@@ -707,6 +709,34 @@ dependencies = [
  "tokio",
  "toml",
  "tower-http",
+ "walkdir",
+]
+
+[[package]]
+name = "datamile-cache"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "datamile-fs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "datamile-fs"
+version = "0.1.0"
+dependencies = [
+ "alphanumeric-sort",
+ "anyhow",
+ "base64",
+ "blake3",
+ "dirs",
+ "serde_json",
+ "tempfile",
+ "toml",
  "walkdir",
 ]
 
@@ -1673,11 +1703,10 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 name = "libdatamile"
 version = "0.1.0"
 dependencies = [
- "alphanumeric-sort",
  "anyhow",
- "base64",
- "blake3",
  "chrono",
+ "datamile-cache",
+ "datamile-fs",
  "dirs",
  "dotenv-ng-core",
  "fast_image_resize",

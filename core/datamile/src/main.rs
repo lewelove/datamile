@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use libdatamile::utils::expand_path;
+use datamile_fs::expand_path;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]

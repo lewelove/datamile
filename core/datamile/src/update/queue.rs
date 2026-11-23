@@ -3,10 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use datamile_cache::{FileStat, hash_files};
 
 use crate::compile::LogVerbosity;
 use crate::server::state::{DependencyGraph, UpdateScope};
-use crate::update::cache::{FileStat, lua_config_hash};
 use crate::update::client::ForceMode;
 use crate::update::verify::{find_missing_paths, verify_albums_parallel};
 
@@ -129,8 +129,7 @@ pub fn update_cache_entries(
         let album_root_canon = album_root
             .canonicalize()
             .unwrap_or_else(|_| album_root.clone());
-        let album_id =
-            libdatamile::resolvers::rel_path(&album_root_canon, music_directory);
+        let album_id = datamile_fs::rel_path(&album_root_canon, music_directory);
         let prefix = if album_id.is_empty() {
             String::new()
         } else {
@@ -152,7 +151,7 @@ pub fn update_cache_entries(
         {
             let p = entry.path();
             if p.is_file() {
-                let rel = libdatamile::resolvers::rel_path(p, music_directory);
+                let rel = datamile_fs::rel_path(p, music_directory);
                 if let Ok(m) = entry.metadata() {
                     cache.insert(rel, FileStat::from(&m));
                 }
@@ -164,7 +163,7 @@ pub fn update_cache_entries(
                 if !dep_path.starts_with(&album_root_canon)
                     && let Ok(m) = dep_path.metadata()
                 {
-                    let rel = libdatamile::resolvers::rel_path(dep_path, music_directory);
+                    let rel = datamile_fs::rel_path(dep_path, music_directory);
                     cache.insert(rel, FileStat::from(&m));
                 }
             }
@@ -172,7 +171,7 @@ pub fn update_cache_entries(
     }
 
     for missing in missing_paths {
-        let album_id = libdatamile::resolvers::rel_path(missing, music_directory);
+        let album_id = datamile_fs::rel_path(missing, music_directory);
         let prefix = format!("{album_id}/");
 
         if verbosity == LogVerbosity::Verbose {
@@ -229,7 +228,7 @@ pub fn check_lua_config_changed(
     cache_root: &Path,
     verbosity: LogVerbosity,
 ) -> (bool, PathBuf, String) {
-    let lua_hash = lua_config_hash(dependencies);
+    let lua_hash = hash_files(dependencies);
     let lua_hash_file = cache_root.join("config.blake3");
     let previous_lua_hash = fs::read_to_string(&lua_hash_file).unwrap_or_default();
     let config_changed = lua_hash != previous_lua_hash;

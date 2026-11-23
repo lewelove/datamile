@@ -288,7 +288,7 @@ fn validate_audio_extensions(
 impl LuaEngine {
     pub fn new() -> Result<Self> {
         let lua = Lua::new();
-        let default_cache = crate::utils::expand_path("~/.cache/datamile");
+        let default_cache = datamile_fs::expand_path("~/.cache/datamile");
         lua.set_app_data(EngineContext::new(default_cache));
 
         register_native_functions(&lua)
@@ -347,9 +347,9 @@ impl LuaEngine {
 
         let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let resolved_cache = if app_config.storage.cache.is_empty() {
-            crate::utils::expand_path("~/.cache/datamile")
+            datamile_fs::expand_path("~/.cache/datamile")
         } else {
-            crate::utils::resolve_path(&app_config.storage.cache, config_dir)
+            datamile_fs::resolve_path(&app_config.storage.cache, config_dir)
         };
         if let Some(mut ctx) = self.lua.app_data_mut::<EngineContext>() {
             ctx.cache_root = resolved_cache;
@@ -369,7 +369,7 @@ impl LuaEngine {
 
         let mut dependencies = Vec::new();
         for d in deps_str {
-            let p = crate::utils::expand_path(&d);
+            let p = datamile_fs::expand_path(&d);
             dependencies.push(p.canonicalize().unwrap_or(p));
         }
 
@@ -718,7 +718,7 @@ impl ResolvedConfig {
         }
 
         if !evaluated.app.storage.music_directory.is_empty() {
-            evaluated.app.storage.music_directory = crate::utils::resolve_path(
+            evaluated.app.storage.music_directory = datamile_fs::resolve_path(
                 &evaluated.app.storage.music_directory,
                 config_dir,
             )
@@ -727,13 +727,13 @@ impl ResolvedConfig {
         }
         if !evaluated.app.storage.cache.is_empty() {
             evaluated.app.storage.cache =
-                crate::utils::resolve_path(&evaluated.app.storage.cache, config_dir)
+                datamile_fs::resolve_path(&evaluated.app.storage.cache, config_dir)
                     .to_string_lossy()
                     .to_string();
         }
         if !evaluated.app.storage.state.is_empty() {
             evaluated.app.storage.state =
-                crate::utils::resolve_path(&evaluated.app.storage.state, config_dir)
+                datamile_fs::resolve_path(&evaluated.app.storage.state, config_dir)
                     .to_string_lossy()
                     .to_string();
         }

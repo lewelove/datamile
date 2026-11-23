@@ -93,7 +93,7 @@ fn parse_single_manifest(
     expected_tracks: Option<usize>,
     cache_root: &Path,
 ) -> Result<Value, DatamileError> {
-    let mut json_val = crate::cache::read_object_cached(path, cache_root)?;
+    let mut json_val = datamile_cache::read_object_cached(path, cache_root)?;
 
     let album_obj = json_val.get("album").cloned().unwrap_or_else(|| json!({}));
 

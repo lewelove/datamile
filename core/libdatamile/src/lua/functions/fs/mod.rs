@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use mlua::serde::SerializeOptions;
 use mlua::{Lua, LuaSerdeExt, Table};
 
-use crate::error::DatamileError;
 use crate::lua::EngineContext;
 
 const LUA_FS: &str = include_str!("mod.lua");
@@ -18,7 +17,7 @@ fn parse_path_with_ctx(ctx: &EngineContext, path_str: Option<String>) -> Option<
     if raw_path.trim().is_empty() {
         return None;
     }
-    let path = crate::utils::expand_path(&raw_path);
+    let path = datamile_fs::expand_path(&raw_path);
     ctx.record_dependency(&path);
     Some(path)
 }
@@ -99,7 +98,7 @@ fn fs_scandir_native(
     lua: &Lua,
     (path_str, follow): (String, bool),
 ) -> mlua::Result<mlua::Function> {
-    let expanded = crate::utils::expand_path(&path_str);
+    let expanded = datamile_fs::expand_path(&path_str);
 
     let Ok(mut read_dir) = std::fs::read_dir(&expanded) else {
         return lua.create_function(|_, ()| Ok((None::<String>, None::<&str>)));
@@ -155,14 +154,16 @@ fn create_fs_reader(
         };
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if !ext.eq_ignore_ascii_case(expected_ext) {
-            return Err(mlua::Error::external(DatamileError::InvalidFileExtension {
-                path,
-                expected: expected_ext.to_string(),
-            }));
+            return Err(mlua::Error::external(
+                datamile_cache::CacheError::InvalidFileExtension {
+                    path,
+                    expected: expected_ext.to_string(),
+                },
+            ));
         }
-        match crate::cache::read_object_cached(&path, &ctx.cache_root) {
+        match datamile_cache::read_object_cached(&path, &ctx.cache_root) {
             Ok(json_val) => lua.to_value_with(&json_val, opts),
-            Err(DatamileError::ManifestIoError(err))
+            Err(datamile_cache::CacheError::Io(err))
                 if err.kind() == std::io::ErrorKind::NotFound =>
             {
                 Ok(mlua::Value::Nil)

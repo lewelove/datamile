@@ -6,9 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use datamile_fs::expand_path;
 use grouper::AnchorValidation;
 use libdatamile::harvest::{SUPPORTED_AUDIO_EXTENSIONS, harvest_file, is_audio_file};
-use libdatamile::utils::expand_path;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 

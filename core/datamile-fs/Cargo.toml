@@ -1,0 +1,20 @@
+[package]
+name = "datamile-fs"
+version = "0.1.0"
+edition = "2024"
+description = "Filesystem, path, atomic I/O and JSON/TOML conversion primitives."
+license = "AGPL-3.0-only"
+
+[lints]
+workspace = true
+
+[dependencies]
+alphanumeric-sort = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+dirs = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+toml = { workspace = true }
+walkdir = { workspace = true }

@@ -10,10 +10,10 @@ license = "AGPL-3.0-only"
 workspace = true
 
 [dependencies]
-alphanumeric-sort = { workspace = true }
+datamile-cache = { workspace = true }
+datamile-fs = { workspace = true }
+
 anyhow = { workspace = true }
-base64 = { workspace = true }
-blake3 = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
 dotenv-ng-core = { workspace = true }

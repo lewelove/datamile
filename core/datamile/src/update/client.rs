@@ -3,14 +3,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use libdatamile::utils::expand_path;
+use datamile_cache::{calculate_path_hash, load_stat_cache, save_stat_cache};
+use datamile_fs::expand_path;
 
 use crate::compile::{self, LogVerbosity};
 use crate::server::state::{DependencyGraph, UpdateScope};
-use crate::update::cache::{
-    calculate_path_hash, deps_graph_path, library_cache_dir, load_cache, save_cache,
-    validate_library_root,
-};
+use crate::update::cache::{deps_graph_path, library_cache_dir, validate_library_root};
 use crate::update::queue::{
     WorkQueueContext, check_lua_config_changed, resolve_work_queue, update_cache_entries,
 };
@@ -46,7 +44,7 @@ pub async fn run(
     let lib_hash = calculate_path_hash(&music_directory);
     validate_library_root(&base_cache_dir, &lib_hash).await?;
 
-    let mut cache = load_cache(&base_cache_dir.join("library.json"));
+    let mut cache = load_stat_cache(&base_cache_dir.join("library.json"));
     let deps_json_path = deps_graph_path(&cache_root, &music_directory);
     let mut deps_graph = DependencyGraph::load_from_file(&deps_json_path);
 
@@ -81,7 +79,7 @@ pub async fn run(
             log::info!("Library is up to date.");
         }
         let _ = fs::write(&lua_hash_file, &lua_hash);
-        save_cache(&cache, &base_cache_dir.join("library.json"))?;
+        save_stat_cache(&cache, &base_cache_dir.join("library.json"))?;
         deps_graph.prune();
         if let Err(e) = deps_graph.save_to_file(&deps_json_path) {
             log::error!("Failed to persist dependency graph: {e}");
@@ -120,7 +118,7 @@ pub async fn run(
     }
 
     let _ = fs::write(&lua_hash_file, &lua_hash);
-    save_cache(&cache, &base_cache_dir.join("library.json"))?;
+    save_stat_cache(&cache, &base_cache_dir.join("library.json"))?;
     deps_graph.prune();
     if let Err(e) = deps_graph.save_to_file(&deps_json_path) {
         log::error!("Failed to persist dependency graph: {e}");

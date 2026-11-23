@@ -1,5 +1,3 @@
-use std::path::Path;
-
 #[must_use]
 pub fn calculate_total_discs(tracks: &[serde_json::Value]) -> u32 {
     let mut discs = std::collections::HashSet::new();
@@ -38,12 +36,4 @@ pub fn format_ms(ms: u64) -> String {
     } else {
         format!("{m}:{s:02}")
     }
-}
-
-#[must_use]
-pub fn rel_path(target: &Path, base: &Path) -> String {
-    target.strip_prefix(base).map_or_else(
-        |_| target.to_string_lossy().to_string(),
-        |p| p.to_string_lossy().to_string(),
-    )
 }

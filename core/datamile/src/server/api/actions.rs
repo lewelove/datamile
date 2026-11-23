@@ -53,7 +53,7 @@ async fn resolve_param_target(
         let music_dir = state.config.read().await.music_directory.clone();
         let root = params
             .get("recursive")
-            .map_or_else(|| music_dir, |dir| libdatamile::utils::expand_path(dir));
+            .map_or_else(|| music_dir, |dir| datamile_fs::expand_path(dir));
         let root_canon = root.canonicalize().unwrap_or(root);
         return logic
             .albums
@@ -63,7 +63,7 @@ async fn resolve_param_target(
             .collect();
     }
     if let Some(dir) = params.get("directory") {
-        let p = libdatamile::utils::expand_path(dir);
+        let p = datamile_fs::expand_path(dir);
         let p_canon = p.canonicalize().unwrap_or(p);
         if let Some(id) = logic.album_id_by_path(&p_canon) {
             return vec![id.to_string()];

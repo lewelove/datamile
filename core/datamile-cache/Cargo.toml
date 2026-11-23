@@ -1,0 +1,21 @@
+[package]
+name = "datamile-cache"
+version = "0.1.0"
+edition = "2024"
+description = "Content-addressed object cache and stat cache for JSON and TOML files."
+license = "AGPL-3.0-only"
+
+[lints]
+workspace = true
+
+[dependencies]
+datamile-fs = { workspace = true }
+
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

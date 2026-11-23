@@ -88,8 +88,7 @@ fn build_dispatcher_context(
         .unwrap_or_else(|_| input.album_root.to_path_buf());
     let album_root_str = album_root_canon.to_string_lossy().into_owned();
     let music_directory_str = input.music_directory.to_string_lossy().into_owned();
-    let rel_path_str =
-        libdatamile::resolvers::rel_path(&album_root_canon, input.music_directory);
+    let rel_path_str = datamile_fs::rel_path(&album_root_canon, input.music_directory);
 
     let ctx = json!({
         "config": config_json,
@@ -198,7 +197,7 @@ pub fn build(
         .canonicalize()
         .unwrap_or_else(|_| album_root.to_path_buf());
 
-    let cache_root = libdatamile::utils::expand_path(&config.app.storage.cache);
+    let cache_root = datamile_fs::expand_path(&config.app.storage.cache);
     let build_data = load_primary_and_files(&album_root_canon, config, &cache_root)?;
 
     // Cheapest check first: no Lua dispatch or image I/O for an album that

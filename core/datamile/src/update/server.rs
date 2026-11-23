@@ -4,14 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
+use datamile_cache::{calculate_path_hash, load_stat_cache, save_stat_cache};
 
 use crate::compile::{self, LogVerbosity};
 use crate::server::inotify::handler::IngestOrigin;
 use crate::server::state::{AppState, PendingUpdateParams, UpdateScope};
-use crate::update::cache::{
-    calculate_path_hash, deps_graph_path, library_cache_dir, load_cache, save_cache,
-    validate_library_root,
-};
+use crate::update::cache::{deps_graph_path, library_cache_dir, validate_library_root};
 use crate::update::client::ForceMode;
 use crate::update::queue::{
     WorkQueueContext, check_lua_config_changed, resolve_work_queue,
@@ -242,7 +240,7 @@ async fn run_server_update_pass(
     let lib_hash = calculate_path_hash(&music_directory);
     validate_library_root(&base_cache_dir, &lib_hash).await?;
 
-    let mut cache = load_cache(&base_cache_dir.join("library.json"));
+    let mut cache = load_stat_cache(&base_cache_dir.join("library.json"));
 
     let (config_changed, lua_hash_file, lua_hash) =
         check_lua_config_changed(&dependencies, &cache_root, verbosity);
@@ -278,7 +276,7 @@ async fn run_server_update_pass(
     if work_queue.is_empty() && missing_paths.is_empty() {
         emit_log("Library is up to date.", verbosity, &log_txs);
         let _ = fs::write(&lua_hash_file, &lua_hash);
-        save_cache(&cache, &base_cache_dir.join("library.json"))?;
+        save_stat_cache(&cache, &base_cache_dir.join("library.json"))?;
         let deps_json_path = deps_graph_path(&cache_root, &music_directory);
         let deps_graph_arc = Arc::clone(&state.deps_graph);
         tokio::task::spawn_blocking(move || {
@@ -331,7 +329,7 @@ async fn run_server_update_pass(
     );
 
     let _ = fs::write(&lua_hash_file, &lua_hash);
-    save_cache(&cache, &base_cache_dir.join("library.json"))?;
+    save_stat_cache(&cache, &base_cache_dir.join("library.json"))?;
 
     Ok(())
 }
@@ -345,7 +343,7 @@ async fn process_missing_and_compile(
         spawn_server_ingest_handler(Arc::clone(state), ctx.verbosity, log_txs.to_vec());
 
     for missing in ctx.missing_paths {
-        let album_id = libdatamile::resolvers::rel_path(missing, ctx.music_directory);
+        let album_id = datamile_fs::rel_path(missing, ctx.music_directory);
         emit_log(
             &format!("Removed album: {album_id}"),
             ctx.verbosity,

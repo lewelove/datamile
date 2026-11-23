@@ -1,40 +1,13 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use datamile_cache::calculate_path_hash;
 use serde::{Deserialize, Serialize};
-
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
-pub struct FileStat {
-    pub mtime: u128,
-    pub size: u64,
-}
-
-impl From<&std::fs::Metadata> for FileStat {
-    fn from(m: &std::fs::Metadata) -> Self {
-        let mtime = m
-            .modified()
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        Self {
-            mtime,
-            size: m.len(),
-        }
-    }
-}
 
 #[derive(Serialize, Deserialize)]
 struct CurrentState {
     pub hash: String,
-}
-
-pub fn calculate_path_hash(path: &Path) -> String {
-    blake3::hash(path.as_os_str().as_encoded_bytes())
-        .to_hex()
-        .to_string()
 }
 
 pub fn library_cache_dir(cache_root: &Path, music_directory: &Path) -> PathBuf {
@@ -44,33 +17,6 @@ pub fn library_cache_dir(cache_root: &Path, music_directory: &Path) -> PathBuf {
 
 pub fn deps_graph_path(cache_root: &Path, music_directory: &Path) -> PathBuf {
     library_cache_dir(cache_root, music_directory).join("dependencies.json")
-}
-
-pub fn lua_config_hash(dependencies: &[PathBuf]) -> String {
-    let mut sorted_deps = dependencies.to_vec();
-    sorted_deps.sort();
-    let mut hasher = blake3::Hasher::new();
-    for dep in &sorted_deps {
-        if let Ok(content) = fs::read(dep) {
-            hasher.update(&content);
-        }
-    }
-    hasher.finalize().to_hex().to_string()
-}
-
-pub fn load_cache(path: &Path) -> HashMap<String, FileStat> {
-    if let Ok(content) = fs::read_to_string(path)
-        && let Ok(cache) = serde_json::from_str::<HashMap<String, FileStat>>(&content)
-    {
-        return cache;
-    }
-    HashMap::new()
-}
-
-pub fn save_cache(cache: &HashMap<String, FileStat>, path: &Path) -> Result<()> {
-    let content = serde_json::to_string_pretty(cache)?;
-    fs::write(path, content)?;
-    Ok(())
 }
 
 pub async fn validate_library_root(cache_dir: &Path, current_hash: &str) -> Result<()> {

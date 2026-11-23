@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use datamile_fs::HashMode;
 use libdatamile::error::DatamileError;
-use libdatamile::utils::HashMode;
 use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,8 +64,7 @@ pub fn generate_lock_manifests(
         }
         let file_name = format!("{name}.toml");
         let abs_p = album_root.join(&file_name);
-        if let Ok(info) =
-            libdatamile::utils::read_file_info(&abs_p, &file_name, HashMode::Skip)
+        if let Ok(info) = datamile_fs::read_file_info(&abs_p, &file_name, HashMode::Skip)
         {
             lock_manifests.insert(name.clone(), json!({ "file": info }));
         }

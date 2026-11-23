@@ -1,8 +1,8 @@
 use std::path::Path;
 
+use datamile_fs::HashMode;
 use libdatamile::compiler::validation::validate_track_indices;
 use libdatamile::error::DatamileError;
-use libdatamile::utils::HashMode;
 use serde_json::{Value, json};
 
 use crate::compile::album::AlbumKind;
@@ -43,9 +43,9 @@ pub fn build_ctx_tracks(
                     source,
                 },
             )?;
-            let rel_path = libdatamile::resolvers::rel_path(file_path, album_root);
+            let rel_path = datamile_fs::rel_path(file_path, album_root);
             let file_info =
-                libdatamile::utils::read_file_info(file_path, &rel_path, HashMode::Skip)
+                datamile_fs::read_file_info(file_path, &rel_path, HashMode::Skip)
                     .unwrap_or_else(|_| json!({}));
 
             ctx_tracks.push(json!({

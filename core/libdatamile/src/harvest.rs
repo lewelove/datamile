@@ -18,16 +18,12 @@ pub const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
 
 #[must_use]
 pub fn is_matching_extension<S: AsRef<str>>(ext: &str, candidates: &[S]) -> bool {
-    candidates
-        .iter()
-        .any(|c| c.as_ref().eq_ignore_ascii_case(ext))
+    datamile_fs::is_matching_extension(ext, candidates)
 }
 
 #[must_use]
 pub fn is_audio_file<S: AsRef<str>>(path: &Path, candidates: &[S]) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| is_matching_extension(ext, candidates))
+    datamile_fs::has_extension(path, candidates)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -98,36 +94,7 @@ pub fn harvest_file(path: &Path) -> Result<TrackJson> {
 }
 
 pub fn harvest_file_cached(path: &Path, cache_root: &Path) -> Result<TrackJson> {
-    let metadata = fs::metadata(path)?;
-    let mtime = metadata
-        .modified()
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let size = metadata.len();
-    let canon_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-
-    let cache_key_str = format!("{}:{size}:{mtime}", canon_path.display());
-    let key = blake3::hash(cache_key_str.as_bytes()).to_hex().to_string();
-
-    let cache_dir = cache_root.join("harvest");
-    let cache_file = cache_dir.join(format!("{key}.json"));
-
-    if let Ok(content) = fs::read_to_string(&cache_file) {
-        if let Ok(cached_track) = serde_json::from_str::<TrackJson>(&content) {
-            return Ok(cached_track);
-        }
-        let _ = fs::remove_file(&cache_file);
-    }
-
-    let harvested = harvest_file(path)?;
-
-    if let Ok(json_str) = serde_json::to_string(&harvested) {
-        let _ = crate::utils::write_atomic(&cache_file, &json_str);
-    }
-
-    Ok(harvested)
+    datamile_cache::read_or_compute_cached(path, cache_root, "harvest", harvest_file)
 }
 
 fn extract_physics(

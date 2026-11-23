@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use libdatamile::utils::expand_path;
+use datamile_fs::expand_path;
 
 use crate::x::{TargetFlags, resolve_target_albums};
 

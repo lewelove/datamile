@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use libdatamile::utils::expand_path;
+use datamile_fs::expand_path;
 use tokio::sync::{RwLock, broadcast};
 use tower_http::cors::{Any, CorsLayer};
 

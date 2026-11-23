@@ -17,6 +17,8 @@ name = "datamile"
 path = "src/main.rs"
 
 [dependencies]
+datamile-cache = { workspace = true }
+datamile-fs = { workspace = true }
 libdatamile = { workspace = true }
 
 alphanumeric-sort = { workspace = true }

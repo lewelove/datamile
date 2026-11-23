@@ -6,12 +6,12 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use datamile_fs::write_atomic;
 use libdatamile::images::{
     FilterType, ImageWireFormat, decode_qoi_to_rgb, encode_rgb_image, filter_type_to_str,
     master_dir, master_path, parse_filter, parse_wire_format, read_qoi_dimensions,
     resize_image_fit, resize_image_max_edge, save_qoi_atomic,
 };
-use libdatamile::utils::write_atomic;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::fs::File;

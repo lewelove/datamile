@@ -1,6 +1,8 @@
 [workspace]
 
 members = [
+  "core/datamile-fs",
+  "core/datamile-cache",
   "core/libdatamile",
   "core/datamile",
   "actions/rust/libactions",
@@ -33,6 +35,8 @@ allow_attributes_without_reason = "deny"
 
 [workspace.dependencies]
 
+datamile-fs = { path = "core/datamile-fs" }
+datamile-cache = { path = "core/datamile-cache" }
 libdatamile = { path = "core/libdatamile" }
 libactions = { path = "actions/rust/libactions" }
 

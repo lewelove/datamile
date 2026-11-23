@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use datamile_cache::CacheError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -121,4 +122,23 @@ pub enum DatamileError {
         namespace: String,
         found: String,
     },
+}
+
+/// Keeps manifest error text identical to the cache crate's wording.
+impl From<CacheError> for DatamileError {
+    fn from(err: CacheError) -> Self {
+        match err {
+            CacheError::InvalidFileExtension { path, expected } => {
+                Self::InvalidFileExtension { path, expected }
+            }
+            CacheError::Io(err) => Self::ManifestIoError(err),
+            CacheError::JsonParse { path, source } => {
+                Self::JsonParseError { path, source }
+            }
+            CacheError::TomlParse { path, source } => {
+                Self::ManifestParseError { path, source }
+            }
+            CacheError::JsonSerialize(err) => Self::JsonError(err),
+        }
+    }
 }

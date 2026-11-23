@@ -232,7 +232,7 @@ fn build_command(cmd_args: &[String], opts: &SystemOpts) -> Command {
         }
     }
     if let Some(ref cwd) = opts.cwd {
-        command.current_dir(crate::utils::expand_path(cwd));
+        command.current_dir(datamile_fs::expand_path(cwd));
     }
     command
 }

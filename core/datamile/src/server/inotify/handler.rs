@@ -95,7 +95,7 @@ async fn log_detected_events(
                     .album_id_by_path(p)
                     .map(ToString::to_string)
                     .or_else(|| {
-                        let rel = libdatamile::resolvers::rel_path(p, &music_directory);
+                        let rel = datamile_fs::rel_path(p, &music_directory);
                         if rel.is_empty() { None } else { Some(rel) }
                     })
             })

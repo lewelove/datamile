@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use base64::Engine as _;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use datamile_fs::ResolvedFileLocation;
 use libdatamile::error::DatamileError;
 use libdatamile::images::{
     FitMode, calculate_rendered_dimensions, filter_type_to_str, master_path,
@@ -200,25 +200,18 @@ fn resolve_source_target(
     album_root_canon: &Path,
     dependencies: &mut HashSet<PathBuf>,
 ) -> Option<(PathBuf, String)> {
-    let raw_path = Path::new(src_str);
-    let target = if raw_path.is_absolute() {
-        raw_path.to_path_buf()
-    } else {
-        album_root.join(raw_path)
-    };
-
-    let canon = target.canonicalize().ok()?;
-    if !canon.is_file() {
-        return None;
-    }
-
-    if let Ok(rel) = canon.strip_prefix(album_root_canon) {
-        let rel_str = rel.to_string_lossy().to_string();
-        Some((canon, rel_str))
-    } else {
-        dependencies.insert(canon.clone());
-        let abs_str = canon.to_string_lossy().to_string();
-        Some((canon, abs_str))
+    match datamile_fs::resolve_file_location(src_str, album_root, album_root_canon)? {
+        ResolvedFileLocation::InsideBase {
+            canonical,
+            rel_path,
+        } => Some((canonical, rel_path)),
+        ResolvedFileLocation::OutsideBase {
+            canonical,
+            abs_path,
+        } => {
+            dependencies.insert(canonical.clone());
+            Some((canonical, abs_path))
+        }
     }
 }
 
@@ -256,17 +249,12 @@ pub fn process_images(
             };
 
             let raw_hash = blake3::hash(&bytes);
-            let hash_str = format!("blake3-{}", STANDARD.encode(raw_hash.as_bytes()));
+            let hash_str = datamile_fs::format_blake3_string(raw_hash.as_bytes());
 
             let meta =
                 fs::metadata(&canon_path).map_err(DatamileError::ManifestIoError)?;
-            let mtime = meta
-                .modified()
-                .unwrap_or(SystemTime::UNIX_EPOCH)
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let byte_size = meta.len();
+            let file_meta =
+                datamile_fs::file_meta(&meta).map_err(DatamileError::ManifestIoError)?;
 
             let Ok(img) = image::load_from_memory(&bytes) else {
                 continue;
@@ -328,8 +316,8 @@ pub fn process_images(
                     "file": {
                         "path": path_for_json,
                         "hash": hash_str,
-                        "mtime": mtime,
-                        "byte_size": byte_size
+                        "mtime": file_meta.mtime,
+                        "byte_size": file_meta.byte_size
                     },
                     "info": {
                         "width": src_w,

@@ -2,31 +2,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use datamile_lua_domain::{FormattedGrouperResult, GrouperFormatContext, LogicManifest};
+use datamile_lua_domain::LogicManifest;
 use roaring::RoaringBitmap;
 use serde::Serialize;
 use serde_json::Value;
 use serde_json::value::RawValue;
-
-use crate::sort::SortKey;
-
-/// Grouper formatter supplied by the caller, so this crate stays free of Lua.
-pub type GrouperFormatter<'a> =
-    dyn Fn(&str, &GrouperFormatContext<'_>) -> FormattedGrouperResult + 'a;
-
-/// Fallback used when no Lua engine is available: the raw value is the label.
-#[must_use]
-pub fn plain_grouper_formatter(
-    _grouper: &str,
-    ctx: &GrouperFormatContext<'_>,
-) -> FormattedGrouperResult {
-    FormattedGrouperResult {
-        label: ctx.value.to_string(),
-        sublabel: None,
-        sort: serde_json::json!(ctx.value),
-        parent: None,
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct ImageLookupItem {
@@ -44,14 +24,10 @@ pub struct EntityRecord {
     pub media_type: String,
     pub id: String,
     pub path: PathBuf,
-    pub title: String,
-    pub subtitle: String,
-    pub main_image_path: Option<String>,
     pub raw_json: Arc<str>,
     pub dict_raw: Box<RawValue>,
-    pub total_discs: u64,
-    pub total_tracks: u64,
-    pub duration_ms: u64,
+    /// Lowercased strings the search filter matches against.
+    pub search_texts: Vec<String>,
     pub playable_uris: Vec<String>,
     pub image_namespaces: Vec<(String, String)>,
 }
@@ -60,35 +36,38 @@ pub struct EntityRecord {
 #[derive(Clone, Debug, Serialize)]
 pub struct PlayableLookupItem {
     pub media_type: String,
-    #[serde(rename = "albumId")]
     pub media_id: String,
-    #[serde(rename = "trackIndex")]
     pub node_index: usize,
-    pub track_no: u32,
-    pub disc_no: u32,
-    pub title: String,
-    pub artist: String,
-    pub duration: String,
-    #[serde(rename = "durationMs")]
-    pub duration_ms: u64,
+    /// Schema path from the root, e.g. `[("track", 0)]`.
+    pub node_path: Vec<(String, usize)>,
     pub path: String,
+    /// Node tags plus `objects.info`, so consumers need no lock parsing.
+    pub meta: serde_json::Value,
+}
+
+/// Everything the engine knows about one media type. Ids, paths, bitmaps and
+/// Lua results never leak across types.
+#[derive(Default)]
+pub struct TypeIndex {
+    pub media_type: String,
+    pub entities: HashMap<u32, EntityRecord>,
+    pub id_to_uid: HashMap<String, u32>,
+    pub path_to_uid: HashMap<PathBuf, u32>,
+    pub libraries_cache: HashMap<String, RoaringBitmap>,
+    pub filters_cache: HashMap<String, RoaringBitmap>,
+    pub groupers_cache: HashMap<String, HashMap<String, RoaringBitmap>>,
+    pub orders_cache: HashMap<String, Vec<u32>>,
+    pub shelves_cache: HashMap<String, Vec<u32>>,
+    pub evaluated_logic: HashMap<u32, Value>,
 }
 
 pub struct LogicEngine {
     pub config_path: PathBuf,
     pub manifest: LogicManifest,
-    pub(crate) libraries_cache: HashMap<String, RoaringBitmap>,
-    pub(crate) filters_cache: HashMap<String, RoaringBitmap>,
-    pub(crate) groupers_cache: HashMap<String, HashMap<String, RoaringBitmap>>,
-    pub(crate) orders_cache: HashMap<String, Vec<u32>>,
-    pub(crate) shelves_cache: HashMap<String, Vec<u32>>,
-    pub(crate) next_uid: u32,
-    pub entities: HashMap<u32, EntityRecord>,
-    pub id_to_uid: HashMap<String, u32>,
-    pub path_to_uid: HashMap<PathBuf, u32>,
+    pub types: HashMap<String, TypeIndex>,
     pub image_lookup: HashMap<String, ImageLookupItem>,
     pub playable_lookup: HashMap<String, PlayableLookupItem>,
-    pub(crate) evaluated_logic: HashMap<u32, Value>,
+    pub(crate) next_uid: u32,
 }
 
 impl LogicEngine {
@@ -97,18 +76,10 @@ impl LogicEngine {
         Self {
             config_path,
             manifest,
-            libraries_cache: HashMap::new(),
-            filters_cache: HashMap::new(),
-            groupers_cache: HashMap::new(),
-            orders_cache: HashMap::new(),
-            shelves_cache: HashMap::new(),
-            next_uid: 1,
-            entities: HashMap::new(),
-            id_to_uid: HashMap::new(),
-            path_to_uid: HashMap::new(),
+            types: HashMap::new(),
             image_lookup: HashMap::new(),
             playable_lookup: HashMap::new(),
-            evaluated_logic: HashMap::new(),
+            next_uid: 1,
         }
     }
 
@@ -120,56 +91,80 @@ impl LogicEngine {
         &mut self,
         config_path: &Path,
         manifest: LogicManifest,
-        evaluate: &dyn Fn(&Value) -> anyhow::Result<Value>,
-        formatter: &GrouperFormatter<'_>,
+        evaluate: &dyn Fn(&str, &Value) -> anyhow::Result<Value>,
     ) {
-        let mut new_evaluated = HashMap::new();
-        for (&uid, record) in &self.entities {
-            if let Ok(parsed) = serde_json::from_str::<Value>(&record.raw_json)
-                && let Ok(res) = evaluate(&parsed)
-            {
-                new_evaluated.insert(uid, res);
+        for (media_type, index) in &mut self.types {
+            let mut new_evaluated = HashMap::new();
+            for (&uid, record) in &index.entities {
+                if let Ok(parsed) = serde_json::from_str::<Value>(&record.raw_json)
+                    && let Ok(res) = evaluate(media_type, &parsed)
+                {
+                    new_evaluated.insert(uid, res);
+                }
             }
+            index.evaluated_logic = new_evaluated;
         }
 
-        self.evaluated_logic = new_evaluated;
         self.config_path = config_path.to_path_buf();
         self.manifest = manifest;
-        self.build_cache(formatter);
+        self.build_cache();
     }
 
     pub fn clear(&mut self) {
-        self.libraries_cache.clear();
-        self.filters_cache.clear();
-        self.groupers_cache.clear();
-        self.orders_cache.clear();
-        self.shelves_cache.clear();
-        self.id_to_uid.clear();
-        self.path_to_uid.clear();
-        self.entities.clear();
+        self.types.clear();
         self.image_lookup.clear();
-        self.next_uid = 1;
         self.playable_lookup.clear();
-        self.evaluated_logic.clear();
+        self.next_uid = 1;
+    }
+
+    #[must_use]
+    pub fn media_types(&self) -> Vec<(String, usize)> {
+        let mut types: Vec<(String, usize)> = self
+            .types
+            .iter()
+            .map(|(media_type, index)| (media_type.clone(), index.entities.len()))
+            .collect();
+        types.sort();
+        types
+    }
+
+    /// Every entity across every media type, for whole-library payloads.
+    pub fn all_entities(&self) -> impl Iterator<Item = &EntityRecord> {
+        self.types
+            .values()
+            .flat_map(|index| index.entities.values())
+    }
+
+    #[must_use]
+    pub fn entity_count(&self) -> usize {
+        self.types.values().map(|index| index.entities.len()).sum()
     }
 
     pub fn remove_entity_by_path(&mut self, path: &Path) -> Option<String> {
         let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let uid = self.path_to_uid.remove(&canon)?;
-        let id = self.entities.get(&uid)?.id.clone();
-        self.remove_entity_by_id(&id);
-        Some(id)
+
+        let found = self.types.iter().find_map(|(media_type, index)| {
+            let uid = *index.path_to_uid.get(&canon)?;
+            let id = index.entities.get(&uid)?.id.clone();
+            Some((media_type.clone(), id))
+        })?;
+
+        self.remove_entity_by_id(&found.0, &found.1);
+        Some(found.1)
     }
 
-    pub fn remove_entity_by_id(&mut self, id: &str) {
-        let Some(uid) = self.id_to_uid.remove(id) else {
+    pub fn remove_entity_by_id(&mut self, media_type: &str, id: &str) {
+        let Some(index) = self.types.get_mut(media_type) else {
+            return;
+        };
+        let Some(uid) = index.id_to_uid.remove(id) else {
             return;
         };
 
-        self.evaluated_logic.remove(&uid);
+        index.evaluated_logic.remove(&uid);
 
-        if let Some(record) = self.entities.remove(&uid) {
-            self.path_to_uid.remove(&record.path);
+        if let Some(record) = index.entities.remove(&uid) {
+            index.path_to_uid.remove(&record.path);
 
             for uri in &record.playable_uris {
                 self.playable_lookup.remove(uri);
@@ -184,32 +179,45 @@ impl LogicEngine {
     /// Drops any record that would collide with the incoming id or path.
     fn validate_and_cleanup_paths(
         &mut self,
+        media_type: &str,
         entity_dir_canon: &Path,
         id: &str,
     ) -> anyhow::Result<()> {
-        if let Some(existing_record) = self.entity_record(id)
-            && existing_record.path != entity_dir_canon
+        let existing_path = self.types.get(media_type).and_then(|index| {
+            index
+                .id_to_uid
+                .get(id)
+                .and_then(|uid| index.entities.get(uid))
+                .map(|record| record.path.clone())
+        });
+
+        if let Some(existing_path) = existing_path
+            && existing_path != entity_dir_canon
         {
-            if existing_record.path.exists() {
+            if existing_path.exists() {
                 anyhow::bail!(
-                    "Duplicate media id '{id}': defined in both {} and {}",
-                    existing_record.path.display(),
+                    "Duplicate media id '{id}' for '{media_type}': defined in both {} and {}",
+                    existing_path.display(),
                     entity_dir_canon.display()
                 );
             }
-            let old_path = existing_record.path.clone();
-            self.remove_entity_by_path(&old_path);
+            self.remove_entity_by_path(&existing_path);
         }
 
-        if let Some(old_uid) = self.path_to_uid.get(entity_dir_canon)
-            && let Some(old_record) = self.entities.get(old_uid)
-            && old_record.id != id
+        let old_id = self.types.get(media_type).and_then(|index| {
+            index
+                .path_to_uid
+                .get(entity_dir_canon)
+                .and_then(|uid| index.entities.get(uid))
+                .map(|record| record.id.clone())
+        });
+        if let Some(old_id) = old_id
+            && old_id != id
         {
-            let old_id = old_record.id.clone();
-            self.remove_entity_by_id(&old_id);
+            self.remove_entity_by_id(media_type, &old_id);
         }
 
-        self.remove_entity_by_id(id);
+        self.remove_entity_by_id(media_type, id);
 
         Ok(())
     }
@@ -225,7 +233,8 @@ impl LogicEngine {
         images: Vec<(String, ImageLookupItem)>,
         eval_res: Value,
     ) -> anyhow::Result<()> {
-        self.validate_and_cleanup_paths(&entity.path, &entity.id)?;
+        let media_type = entity.media_type.clone();
+        self.validate_and_cleanup_paths(&media_type, &entity.path, &entity.id)?;
 
         let uid = self.next_uid;
         self.next_uid += 1;
@@ -237,60 +246,65 @@ impl LogicEngine {
             self.image_lookup.insert(address, item);
         }
 
-        self.id_to_uid.insert(entity.id.clone(), uid);
-        self.path_to_uid.insert(entity.path.clone(), uid);
-        self.evaluated_logic.insert(uid, eval_res);
-        self.entities.insert(uid, entity);
+        let index = self
+            .types
+            .entry(media_type.clone())
+            .or_insert_with(|| TypeIndex {
+                media_type: media_type.clone(),
+                ..TypeIndex::default()
+            });
+        index.id_to_uid.insert(entity.id.clone(), uid);
+        index.path_to_uid.insert(entity.path.clone(), uid);
+        index.evaluated_logic.insert(uid, eval_res);
+        index.entities.insert(uid, entity);
 
         Ok(())
     }
 
     #[must_use]
-    pub fn entity_record(&self, id: &str) -> Option<&EntityRecord> {
-        let uid = self.id_to_uid.get(id)?;
-        self.entities.get(uid)
+    pub fn entity_record(&self, media_type: &str, id: &str) -> Option<&EntityRecord> {
+        let index = self.types.get(media_type)?;
+        let uid = index.id_to_uid.get(id)?;
+        index.entities.get(uid)
     }
 
     #[must_use]
-    pub fn entity_path(&self, id: &str) -> Option<&Path> {
-        self.entity_record(id).map(|r| r.path.as_path())
+    pub fn entity_path(&self, media_type: &str, id: &str) -> Option<&Path> {
+        self.entity_record(media_type, id).map(|r| r.path.as_path())
     }
 
     #[must_use]
-    pub fn entity_id_by_path(&self, path: &Path) -> Option<&str> {
+    pub fn entity_id_by_path(&self, media_type: &str, path: &Path) -> Option<&str> {
         let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let uid = self.path_to_uid.get(&canon)?;
-        self.entities.get(uid).map(|r| r.id.as_str())
+        let index = self.types.get(media_type)?;
+        let uid = index.path_to_uid.get(&canon)?;
+        index.entities.get(uid).map(|r| r.id.as_str())
     }
 
     #[must_use]
-    pub fn entity_dict(&self, id: &str) -> Option<&RawValue> {
-        self.entity_record(id).map(|r| &*r.dict_raw)
+    pub fn entity_dict(&self, media_type: &str, id: &str) -> Option<&RawValue> {
+        self.entity_record(media_type, id).map(|r| &*r.dict_raw)
     }
 
     #[must_use]
-    pub fn dict_snapshot(&self) -> HashMap<String, Box<RawValue>> {
-        self.entities
-            .values()
-            .map(|a| (a.id.clone(), a.dict_raw.clone()))
-            .collect()
+    pub fn dict_snapshot_by_type(
+        &self,
+        media_type: &str,
+    ) -> HashMap<String, Box<RawValue>> {
+        self.types
+            .get(media_type)
+            .map_or_else(HashMap::new, |index| {
+                index
+                    .entities
+                    .values()
+                    .map(|record| (record.id.clone(), record.dict_raw.clone()))
+                    .collect()
+            })
     }
 
     #[must_use]
-    pub fn entity_json(&self, id: &str) -> Option<Arc<str>> {
-        let record = self.entity_record(id)?;
+    pub fn entity_json(&self, media_type: &str, id: &str) -> Option<Arc<str>> {
+        let record = self.entity_record(media_type, id)?;
         Some(Arc::clone(&record.raw_json))
-    }
-
-    /// Sort key of a shelf/order entry, defaulting to an empty string.
-    pub(crate) fn sort_key_for(&self, uid: u32, section: &str, key: &str) -> SortKey {
-        let default_key = serde_json::json!("");
-        let raw_key = self
-            .evaluated_logic
-            .get(&uid)
-            .and_then(|eval| eval.get(section))
-            .and_then(|sorts| sorts.get(key))
-            .unwrap_or(&default_key);
-        crate::sort::value_to_sort_key(raw_key)
     }
 }

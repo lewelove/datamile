@@ -8,8 +8,7 @@ mod text;
 mod tests;
 
 pub use engine::{
-    EntityRecord, GrouperFormatter, ImageLookupItem, LogicEngine, PlayableLookupItem,
-    plain_grouper_formatter,
+    EntityRecord, ImageLookupItem, LogicEngine, PlayableLookupItem, TypeIndex,
 };
 pub use sort::{SortKey, SortOrder, value_to_sort_key};
 pub use text::tag_text;

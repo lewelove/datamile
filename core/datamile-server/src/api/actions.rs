@@ -37,7 +37,7 @@ pub async fn execute_action(
         Some(playing.as_str())
     };
 
-    let albums = {
+    let items = {
         let logic = state.logic.read().await;
         state
             .backend
@@ -45,7 +45,7 @@ pub async fn execute_action(
     };
 
     let payload = json!({
-        "albums": albums,
+        "items": items,
         "options": query.options_string(),
         "isatty": false
     });

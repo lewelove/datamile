@@ -5,7 +5,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use datamile_logic::LogicEngine;
-use datamile_lua_domain::{FormattedGrouperResult, GrouperFormatContext};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -42,6 +41,8 @@ impl PlaybackSlice {
 
 #[derive(Debug, Clone, Default)]
 pub struct ActionTargetQuery {
+    /// Media type the action targets, from the  query parameter.
+    pub media_type: Option<String>,
     pub playing: bool,
     pub id: Option<String>,
     pub query: Option<String>,
@@ -67,6 +68,7 @@ impl ActionTargetQuery {
         }
 
         Self {
+            media_type: params.get("type").filter(|s| !s.is_empty()).cloned(),
             playing: params.get("playing").is_some_and(|v| v == "true"),
             id: params.get("id").filter(|s| !s.is_empty()).cloned(),
             query: params.get("query").cloned(),
@@ -96,6 +98,8 @@ impl ActionTargetQuery {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateRequest {
     pub path: Option<String>,
+    #[serde(default)]
+    pub media_type: Option<String>,
     pub force: bool,
     pub jobs: Option<usize>,
     pub silent: bool,
@@ -141,11 +145,6 @@ pub trait MediaBackend: Send + Sync + 'static {
         playing_file: Option<&str>,
     ) -> Vec<Value>;
     fn execute_action(&self, name: &str, payload: &Value) -> anyhow::Result<()>;
-    fn format_grouper(
-        &self,
-        grouper: &str,
-        ctx: &GrouperFormatContext<'_>,
-    ) -> FormattedGrouperResult;
     fn handle_fs_events<'a>(
         &'a self,
         paths: &'a [PathBuf],

@@ -76,10 +76,16 @@ pub async fn run(backend: Arc<dyn MediaBackend>, port: u16) -> Result<()> {
     let logic = Arc::new(RwLock::new(logic_engine));
     let (tx, _) = broadcast::channel(1024);
 
-    let mpd_host = std::env::var("MPD_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let mpd_port = std::env::var("MPD_PORT").unwrap_or_else(|_| "6600".to_string());
-    let (mpd_engine, mpd_status_tx) =
-        datamile_mpd::start_actor(format!("{mpd_host}:{mpd_port}"));
+    let mpd_enabled = config.mpd.enabled;
+    let (mpd_engine, mpd_status_tx) = if mpd_enabled {
+        datamile_mpd::start_actor(config.mpd.addr())
+    } else {
+        // A disabled MPD still needs a command sink; the receiver is dropped, so
+        // every command is a no-op.
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let (status_tx, _) = broadcast::channel(1);
+        (datamile_mpd::MpdEngine::new(tx), status_tx)
+    };
 
     let state = Arc::new(ServerState {
         logic,
@@ -92,7 +98,9 @@ pub async fn run(backend: Arc<dyn MediaBackend>, port: u16) -> Result<()> {
         backend: Arc::clone(&backend),
     });
 
-    mpd_bridge::start_status_bridge(&mpd_status_tx, Arc::clone(&state));
+    if mpd_enabled {
+        mpd_bridge::start_status_bridge(&mpd_status_tx, Arc::clone(&state));
+    }
     watcher::start(Arc::clone(&state));
 
     if let Err(e) =

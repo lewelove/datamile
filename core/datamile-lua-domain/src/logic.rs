@@ -1,31 +1,17 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct GrouperFormatContext<'a> {
-    pub value: &'a str,
-    pub count: u64,
-    pub pct: f64,
-    pub duration_millis: u64,
-    pub total_tracks: u64,
-    pub total_discs: u64,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct FormattedGrouperResult {
-    pub label: String,
-    pub sublabel: Option<String>,
-    pub sort: serde_json::Value,
-    pub parent: Option<String>,
-}
-
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct FilterDef {
+    #[serde(default)]
+    pub media: String,
     pub label: String,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct GrouperDef {
+    #[serde(default)]
+    pub media: String,
     pub label: String,
     #[serde(default)]
     pub index: Option<bool>,
@@ -37,6 +23,8 @@ pub struct GrouperDef {
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct OrderDef {
+    #[serde(default)]
+    pub media: String,
     pub label: String,
     #[serde(default)]
     pub reverse: bool,
@@ -44,6 +32,8 @@ pub struct OrderDef {
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct LibraryDef {
+    #[serde(default)]
+    pub media: String,
     pub label: String,
     #[serde(default)]
     pub filters: Vec<String>,
@@ -61,6 +51,8 @@ pub struct LibraryDef {
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct ShelfDef {
+    #[serde(default)]
+    pub media: String,
     pub label: String,
     #[serde(default)]
     pub reverse: bool,
@@ -68,6 +60,8 @@ pub struct ShelfDef {
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct CabinetDef {
+    #[serde(default)]
+    pub media: String,
     pub label: String,
     #[serde(default)]
     pub shelves: Vec<String>,

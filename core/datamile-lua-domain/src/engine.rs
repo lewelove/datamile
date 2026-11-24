@@ -4,10 +4,10 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use datamile_lua::LuaRuntime;
-use mlua::{LuaSerdeExt, Table};
+use mlua::Table;
 
 use crate::config::{ActionDef, DomainConfig, InterfaceDef};
-use crate::logic::{FormattedGrouperResult, GrouperFormatContext, LogicManifest};
+use crate::logic::LogicManifest;
 
 const LUA_CORE: &str = include_str!("core.lua");
 const LUA_CONFIG: &str = include_str!("config.lua");
@@ -93,7 +93,9 @@ impl DomainLuaEngine {
             .exec_chunk(&content, &name)
             .context("Failed to execute init.lua")?;
 
-        let config: DomainConfig = self.runtime.call_global("__DATAMILE_GET_CONFIG")?;
+        let mut config: DomainConfig =
+            self.runtime.call_global("__DATAMILE_GET_CONFIG")?;
+        config.mpd = config.mpd.with_env_overrides();
 
         let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let resolved_cache = if config.storage.cache.is_empty() {
@@ -170,6 +172,7 @@ impl DomainLuaEngine {
 
     pub fn evaluate_logic(
         &self,
+        media_type: &str,
         entity: &serde_json::Value,
     ) -> Result<serde_json::Value> {
         let eval_fn: mlua::Function = self
@@ -181,93 +184,10 @@ impl DomainLuaEngine {
 
         let lua_entity = self.runtime.to_value(entity)?;
         let res: mlua::Table = eval_fn
-            .call(lua_entity)
+            .call((media_type, lua_entity))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
         self.runtime.from_value(mlua::Value::Table(res))
-    }
-
-    #[must_use]
-    pub fn evaluate_grouper_format(
-        &self,
-        grouper_id: &str,
-        ctx: &GrouperFormatContext<'_>,
-    ) -> FormattedGrouperResult {
-        let lua = &self.runtime.lua;
-        let format_fn: Option<mlua::Function> = (|| {
-            let globals = lua.globals();
-            let registry = globals.get::<Table>("REGISTRY").ok()?;
-            let groupers = registry.get::<Table>("groupers").ok()?;
-            let grouper_tbl = groupers.get::<Table>(grouper_id).ok()?;
-            grouper_tbl.get::<mlua::Function>("format").ok()
-        })();
-
-        if let Some(f) = format_fn
-            && let Ok(g_tbl) = lua.create_table()
-        {
-            let _ = g_tbl.set("value", ctx.value);
-            let _ = g_tbl.set("count", ctx.count);
-            let _ = g_tbl.set("pct", ctx.pct);
-            let _ = g_tbl.set("duration_millis", ctx.duration_millis);
-            let _ = g_tbl.set("total_tracks", ctx.total_tracks);
-            let _ = g_tbl.set("total_discs", ctx.total_discs);
-
-            if let Ok(res) = f.call::<mlua::Value>(g_tbl) {
-                match res {
-                    mlua::Value::Table(tbl) => {
-                        let label: String =
-                            tbl.get("label").unwrap_or_else(|_| ctx.value.to_string());
-                        let sublabel: Option<String> = match tbl
-                            .get::<Option<mlua::Value>>("sublabel")
-                            .ok()
-                            .flatten()
-                        {
-                            Some(mlua::Value::String(s)) => {
-                                s.to_str().ok().as_deref().map(ToString::to_string)
-                            }
-                            Some(mlua::Value::Integer(i)) => Some(i.to_string()),
-                            Some(mlua::Value::Number(n)) => Some(n.to_string()),
-                            _ => None,
-                        };
-                        let sort: serde_json::Value = tbl
-                            .get("sort")
-                            .ok()
-                            .and_then(|v| lua.from_value::<serde_json::Value>(v).ok())
-                            .unwrap_or_else(|| serde_json::json!(label));
-                        let parent: Option<String> = tbl
-                            .get::<Option<String>>("parent")
-                            .ok()
-                            .flatten()
-                            .filter(|p| !p.is_empty());
-                        return FormattedGrouperResult {
-                            label,
-                            sublabel,
-                            sort,
-                            parent,
-                        };
-                    }
-                    mlua::Value::String(s) => {
-                        if let Ok(str_val) = s.to_str() {
-                            let s_owned = str_val.to_string();
-                            return FormattedGrouperResult {
-                                label: s_owned.clone(),
-                                sublabel: None,
-                                sort: serde_json::json!(s_owned),
-                                parent: None,
-                            };
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        FormattedGrouperResult {
-            label: ctx.value.to_string(),
-            sublabel: None,
-            sort: serde_json::json!(ctx.value),
-            parent: None,
-        }
     }
 
     fn registry(&self) -> Result<Table> {

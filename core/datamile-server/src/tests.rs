@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use datamile_logic::{EntityRecord, LogicEngine};
-use datamile_lua_domain::{FormattedGrouperResult, GrouperFormatContext, LogicManifest};
+use datamile_lua_domain::LogicManifest;
 use datamile_mpd::MpdEngine;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
@@ -14,7 +14,10 @@ use tower::ServiceExt;
 use crate::backend::{ActionTargetQuery, MediaBackend, PlaybackSlice, UpdateRequest};
 use crate::state::{ImageClaim, ImageTaskRegistry, ServerConfig, ServerState};
 
-fn lock_json(id: &str, tracks: &[(&str, Value)]) -> Value {
+const ALBUM: &str = "album";
+const BOOK: &str = "book";
+
+fn lock_json(media_type: &str, id: &str, tracks: &[(&str, Value)]) -> Value {
     let track_nodes: Vec<Value> = tracks
         .iter()
         .map(|(path, extra)| {
@@ -32,7 +35,7 @@ fn lock_json(id: &str, tracks: &[(&str, Value)]) -> Value {
         .collect();
 
     json!({
-        "album": {
+        (media_type): {
             "id": id,
             "location": { "kind": "dir", "path": ".", "mtime": 1 },
             "tags": {},
@@ -43,39 +46,81 @@ fn lock_json(id: &str, tracks: &[(&str, Value)]) -> Value {
     })
 }
 
-fn record(id: &str, lock: &Value) -> EntityRecord {
+fn record(media_type: &str, id: &str, lock: &Value) -> EntityRecord {
     EntityRecord {
-        media_type: "album".to_string(),
+        media_type: media_type.to_string(),
         id: id.to_string(),
-        path: PathBuf::from("/library").join(id),
-        title: id.to_string(),
-        subtitle: String::new(),
-        main_image_path: None,
+        path: PathBuf::from("/library").join(media_type).join(id),
         raw_json: Arc::from(lock.to_string()),
         dict_raw: RawValue::from_string(
             json!({ "id": id, "tags": {}, "objects": {}, "images": {} }).to_string(),
         )
         .expect("raw dict"),
-        total_discs: 1,
-        total_tracks: 1,
-        duration_ms: 0,
+        search_texts: vec![id.to_lowercase()],
         playable_uris: Vec::new(),
         image_namespaces: Vec::new(),
     }
 }
 
-fn engine_with(ids: &[(&str, Value)]) -> LogicEngine {
-    let mut engine =
-        LogicEngine::new(PathBuf::from("/config/init.lua"), LogicManifest::default());
-    for (id, lock) in ids {
+fn manifest() -> LogicManifest {
+    let mut manifest: LogicManifest = serde_json::from_value(json!({
+        "filters": { "owned": { "media": "album", "label": "Owned" } },
+        "groupers": { "genre": { "media": "album", "label": "Genre" } },
+        "orders": { "alpha": { "media": "album", "label": "A-Z" } },
+        "libraries": {
+            "all": { "media": "album", "label": "All" },
+            "books": { "media": "book", "label": "Books" }
+        },
+        "shelves": { "recent": { "media": "album", "label": "Recent" } },
+        "cabinets": {}
+    }))
+    .expect("manifest fixture");
+    manifest.normalize();
+    manifest
+}
+
+fn engine_with(entries: &[(&str, &str, Value)]) -> LogicEngine {
+    let mut engine = LogicEngine::new(PathBuf::from("/config/init.lua"), manifest());
+    for (media_type, id, eval) in entries {
         engine
-            .upsert_entity(record(id, lock), Vec::new(), Vec::new(), json!({}))
+            .upsert_entity(
+                record(
+                    media_type,
+                    id,
+                    &lock_json(media_type, id, &[("01.flac", json!({}))]),
+                ),
+                Vec::new(),
+                Vec::new(),
+                eval.clone(),
+            )
             .expect("entity ingests");
     }
+    engine.build_cache();
     engine
 }
 
-struct MockBackend;
+fn album_eval() -> Value {
+    json!({
+        "libraries": { "all": true },
+        "filters": { "owned": true },
+        "shelves": { "recent": true },
+        "groupers": { "genre": ["Rock"] },
+        "orders": { "alpha": "a" },
+        "shelf_sorts": { "recent": "a" }
+    })
+}
+
+struct MockBackend {
+    payloads: Arc<Mutex<Vec<Value>>>,
+}
+
+impl MockBackend {
+    fn new() -> Self {
+        Self {
+            payloads: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
 
 impl MediaBackend for MockBackend {
     fn scan_library(&self, _logic: &mut LogicEngine) {}
@@ -85,7 +130,8 @@ impl MediaBackend for MockBackend {
         _logic: &mut LogicEngine,
     ) -> anyhow::Result<ServerConfig> {
         Ok(ServerConfig {
-            music_directory: PathBuf::from("/library"),
+            watch_roots: Vec::new(),
+            mpd: datamile_mpd::MpdConfig::default(),
             cache_root: PathBuf::from("/cache"),
             state_root: PathBuf::from("/state"),
             resolved_dependencies: Vec::new(),
@@ -115,28 +161,30 @@ impl MediaBackend for MockBackend {
 
     fn resolve_action_targets(
         &self,
-        _query: &ActionTargetQuery,
+        query: &ActionTargetQuery,
         _logic: &LogicEngine,
         _playing_file: Option<&str>,
     ) -> Vec<Value> {
-        Vec::new()
+        let media_type = query
+            .media_type
+            .clone()
+            .unwrap_or_else(|| ALBUM.to_string());
+        query.id.as_ref().map_or_else(Vec::new, |id| {
+            vec![json!({
+                "type": media_type,
+                "id": id,
+                "path": format!("/library/{media_type}/{id}"),
+                "lock": {}
+            })]
+        })
     }
 
-    fn execute_action(&self, _name: &str, _payload: &Value) -> anyhow::Result<()> {
+    fn execute_action(&self, _name: &str, payload: &Value) -> anyhow::Result<()> {
+        self.payloads
+            .lock()
+            .expect("payloads")
+            .push(payload.clone());
         Ok(())
-    }
-
-    fn format_grouper(
-        &self,
-        _grouper: &str,
-        ctx: &GrouperFormatContext<'_>,
-    ) -> FormattedGrouperResult {
-        FormattedGrouperResult {
-            label: ctx.value.to_string(),
-            sublabel: None,
-            sort: json!(ctx.value),
-            parent: None,
-        }
     }
 
     fn handle_fs_events<'a>(
@@ -175,6 +223,13 @@ impl MediaBackend for MockBackend {
 }
 
 async fn test_state(logic: LogicEngine) -> Arc<ServerState> {
+    test_state_with_backend(logic, Arc::new(MockBackend::new())).await
+}
+
+async fn test_state_with_backend(
+    logic: LogicEngine,
+    backend: Arc<MockBackend>,
+) -> Arc<ServerState> {
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let (broadcast_tx, _) = tokio::sync::broadcast::channel(1);
 
@@ -183,7 +238,7 @@ async fn test_state(logic: LogicEngine) -> Arc<ServerState> {
         ui_state: tokio::sync::RwLock::new(json!({})),
         tx: broadcast_tx,
         config: tokio::sync::RwLock::new(
-            MockBackend
+            MockBackend::new()
                 .reload_config_and_logic(&mut LogicEngine::new(
                     PathBuf::new(),
                     LogicManifest::default(),
@@ -192,8 +247,8 @@ async fn test_state(logic: LogicEngine) -> Arc<ServerState> {
         ),
         mpd_engine: MpdEngine::new(tx),
         image_tasks: Arc::new(ImageTaskRegistry::default()),
-        now_playing: tokio::sync::RwLock::new(String::new()),
-        backend: Arc::new(MockBackend),
+        now_playing: tokio::sync::RwLock::new("Artist/Album/01.flac".to_string()),
+        backend,
     })
 }
 
@@ -207,10 +262,10 @@ async fn body_json(response: axum::response::Response) -> Value {
 /// `None` keeps the file verbatim.
 #[test]
 fn depth_none_keeps_the_full_tree() {
-    let mut lock = lock_json("a", &[("01.flac", json!({}))]);
+    let mut lock = lock_json(ALBUM, "a", &[("01.flac", json!({}))]);
     let before = lock.clone();
 
-    crate::api::tree::apply_depth(&mut lock, "album", None);
+    crate::api::tree::apply_depth(&mut lock, ALBUM, None);
 
     assert_eq!(lock, before);
 }
@@ -218,32 +273,33 @@ fn depth_none_keeps_the_full_tree() {
 /// `depth=0` drops the root's nodes.
 #[test]
 fn depth_zero_drops_root_nodes() {
-    let mut lock = lock_json("a", &[("01.flac", json!({}))]);
+    let mut lock = lock_json(ALBUM, "a", &[("01.flac", json!({}))]);
 
-    crate::api::tree::apply_depth(&mut lock, "album", Some(0));
+    crate::api::tree::apply_depth(&mut lock, ALBUM, Some(0));
 
-    assert!(lock["album"].get("nodes").is_none());
-    assert_eq!(lock["album"]["id"], json!("a"));
+    assert!(lock[ALBUM].get("nodes").is_none());
+    assert_eq!(lock[ALBUM]["id"], json!("a"));
 }
 
 /// `depth=1` keeps `nodes.track` and drops their children.
 #[test]
 fn depth_one_keeps_track_nodes() {
-    let mut lock = lock_json("a", &[("01.flac", json!({}))]);
+    let mut lock = lock_json(ALBUM, "a", &[("01.flac", json!({}))]);
 
-    crate::api::tree::apply_depth(&mut lock, "album", Some(1));
+    crate::api::tree::apply_depth(&mut lock, ALBUM, Some(1));
 
     assert_eq!(
-        lock["album"]["nodes"]["track"][0]["location"]["path"],
+        lock[ALBUM]["nodes"]["track"][0]["location"]["path"],
         json!("01.flac")
     );
-    assert!(lock["album"]["nodes"]["track"][0].get("nodes").is_none());
+    assert!(lock[ALBUM]["nodes"]["track"][0].get("nodes").is_none());
 }
 
 /// `depth=2` keeps one more level of children.
 #[test]
 fn depth_two_keeps_grandchildren() {
     let mut lock = lock_json(
+        ALBUM,
         "a",
         &[(
             "01.flac",
@@ -251,10 +307,10 @@ fn depth_two_keeps_grandchildren() {
         )],
     );
 
-    crate::api::tree::apply_depth(&mut lock, "album", Some(2));
+    crate::api::tree::apply_depth(&mut lock, ALBUM, Some(2));
 
     assert!(
-        lock["album"]["nodes"]["track"][0]["nodes"]["chapter"][0]
+        lock[ALBUM]["nodes"]["track"][0]["nodes"]["chapter"][0]
             .get("nodes")
             .is_none()
     );
@@ -265,7 +321,7 @@ fn depth_two_keeps_grandchildren() {
 fn missing_nodes_is_a_no_op() {
     let mut lock = json!({ "album": { "id": "a" } });
 
-    crate::api::tree::apply_depth(&mut lock, "album", Some(3));
+    crate::api::tree::apply_depth(&mut lock, ALBUM, Some(3));
 
     assert_eq!(lock, json!({ "album": { "id": "a" } }));
 }
@@ -276,7 +332,7 @@ fn missing_media_key_is_a_no_op() {
     let mut lock = json!({ "other": { "nodes": {} } });
     let before = lock.clone();
 
-    crate::api::tree::apply_depth(&mut lock, "album", Some(0));
+    crate::api::tree::apply_depth(&mut lock, ALBUM, Some(0));
 
     assert_eq!(lock, before);
 }
@@ -303,11 +359,7 @@ fn image_registry_singleflights_and_notifies() {
 
 #[tokio::test]
 async fn router_lists_media_types_and_items() {
-    let state = test_state(engine_with(&[(
-        "a",
-        lock_json("a", &[("01.flac", json!({}))]),
-    )]))
-    .await;
+    let state = test_state(engine_with(&[(ALBUM, "a", album_eval())])).await;
     let app = crate::api::router(state);
 
     let response = app
@@ -332,11 +384,7 @@ async fn router_lists_media_types_and_items() {
 
 #[tokio::test]
 async fn router_returns_the_literal_lock_with_depth() {
-    let state = test_state(engine_with(&[(
-        "a",
-        lock_json("a", &[("01.flac", json!({}))]),
-    )]))
-    .await;
+    let state = test_state(engine_with(&[(ALBUM, "a", album_eval())])).await;
     let app = crate::api::router(state);
 
     let response = app
@@ -350,8 +398,93 @@ async fn router_returns_the_literal_lock_with_depth() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert!(body["album"].get("nodes").is_none());
-    assert_eq!(body["album"]["location"]["kind"], json!("dir"));
+    assert!(body[ALBUM].get("nodes").is_none());
+    assert_eq!(body[ALBUM]["location"]["kind"], json!("dir"));
+}
+
+/// The same id under two media types resolves to each type's own lock.
+#[tokio::test]
+async fn router_scopes_media_by_type() {
+    let state = test_state(engine_with(&[
+        (ALBUM, "Dune", album_eval()),
+        (BOOK, "Dune", json!({ "libraries": { "books": true } })),
+    ]))
+    .await;
+    let app = crate::api::router(state);
+
+    let album = app
+        .clone()
+        .oneshot(
+            Request::get("/api/media/album/Dune")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(album.status(), StatusCode::OK);
+    assert!(body_json(album).await.get(ALBUM).is_some());
+
+    let book = app
+        .oneshot(
+            Request::get("/api/media/book/Dune")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(book.status(), StatusCode::OK);
+    assert!(body_json(book).await.get(BOOK).is_some());
+}
+
+/// The current file is exposed so the CLI never needs an MPD client.
+#[tokio::test]
+async fn router_reports_current_playback() {
+    let state = test_state(engine_with(&[])).await;
+    let app = crate::api::router(state);
+
+    let response = app
+        .oneshot(
+            Request::get("/api/playback/current")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(response).await["file"],
+        json!("Artist/Album/01.flac")
+    );
+}
+
+/// Actions receive `{ items, options, isatty }`, scoped by the `type` param.
+#[tokio::test]
+async fn router_passes_items_and_type_to_actions() {
+    let backend = Arc::new(MockBackend::new());
+    let payloads = Arc::clone(&backend.payloads);
+    let state = test_state_with_backend(
+        engine_with(&[(ALBUM, "a", album_eval())]),
+        Arc::clone(&backend),
+    )
+    .await;
+    let app = crate::api::router(state);
+
+    let response = app
+        .oneshot(
+            Request::post("/api/actions/open_folder?type=album&id=a")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let recorded = payloads.lock().expect("payloads");
+    let payload = recorded.first().expect("payload recorded");
+    assert_eq!(payload["items"][0]["type"], json!(ALBUM));
+    assert_eq!(payload["items"][0]["id"], json!("a"));
+    assert_eq!(payload["isatty"], json!(false));
 }
 
 #[tokio::test]
@@ -389,4 +522,73 @@ async fn router_returns_404_for_an_unknown_action() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// INIT carries both media types, even when they share an id.
+#[tokio::test]
+async fn init_payload_groups_media_by_type() {
+    let state = test_state(engine_with(&[
+        (ALBUM, "Dune", album_eval()),
+        (BOOK, "Dune", json!({ "libraries": { "books": true } })),
+    ]))
+    .await;
+
+    let payload: Value =
+        serde_json::from_str(&crate::api::websocket::init_payload(&state).await)
+            .expect("init payload");
+
+    assert_eq!(payload["type"], json!("INIT"));
+    assert_eq!(payload["media"][ALBUM]["Dune"]["id"], json!("Dune"));
+    assert_eq!(payload["media"][BOOK]["Dune"]["id"], json!("Dune"));
+    assert_eq!(payload["shelves"]["recent"], json!(["Dune"]));
+}
+
+/// View, group and shelf responses are scoped by `media_type` and omit
+/// `sublabel`.
+#[tokio::test]
+async fn websocket_requests_are_scoped_by_media_type() {
+    let state = test_state(engine_with(&[
+        (ALBUM, "Dune", album_eval()),
+        (BOOK, "Dune", json!({ "libraries": { "books": true } })),
+    ]))
+    .await;
+
+    let album_view = crate::api::websocket::view_response(
+        &state,
+        &json!({ "type": "VIEW_REQUEST", "media_type": "album", "library": "all" }),
+    )
+    .await;
+    assert_eq!(album_view["media_type"], json!(ALBUM));
+    assert_eq!(album_view["ids"], json!(["Dune"]));
+
+    let book_view = crate::api::websocket::view_response(
+        &state,
+        &json!({ "type": "VIEW_REQUEST", "media_type": "book", "library": "books" }),
+    )
+    .await;
+    assert_eq!(book_view["media_type"], json!(BOOK));
+    assert_eq!(book_view["ids"], json!(["Dune"]));
+
+    let group = crate::api::websocket::group_response(
+        &state,
+        &json!({
+            "type": "GROUP_REQUEST",
+            "media_type": "album",
+            "library": "all",
+            "key": "genre"
+        }),
+    )
+    .await;
+    assert_eq!(group["media_type"], json!(ALBUM));
+    assert_eq!(group["result"][0]["value"], json!("Rock"));
+    assert_eq!(group["result"][0]["children"], json!([]));
+    assert!(group["result"][0].get("sublabel").is_none());
+
+    let shelf = crate::api::websocket::shelf_response(
+        &state,
+        &json!({ "type": "SHELF_REQUEST", "media_type": "album", "shelf": "recent" }),
+    )
+    .await;
+    assert_eq!(shelf["media_type"], json!(ALBUM));
+    assert_eq!(shelf["ids"], json!(["Dune"]));
 }

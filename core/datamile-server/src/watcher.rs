@@ -74,19 +74,19 @@ async fn sync_watches(
     watched_dirs: &mut HashSet<PathBuf>,
     state: &Arc<ServerState>,
 ) {
-    let (config_dir, music_directory, dependencies) = {
+    let (config_dir, watch_roots, dependencies) = {
         let guard = state.config.read().await;
         (
             guard.config_dir.clone(),
-            guard.music_directory.clone(),
+            guard.watch_roots.clone(),
             guard.resolved_dependencies.clone(),
         )
     };
 
     let (extra_recursive, extra_non_recursive) = state.backend.extra_watch_dirs(state);
 
-    let mut needed_recursive: HashSet<PathBuf> =
-        HashSet::from([config_dir, music_directory]);
+    let mut needed_recursive: HashSet<PathBuf> = HashSet::from([config_dir]);
+    needed_recursive.extend(watch_roots);
     needed_recursive.extend(extra_recursive);
 
     let mut needed_non_recursive: HashSet<PathBuf> =

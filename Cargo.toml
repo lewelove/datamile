@@ -10,7 +10,7 @@ members = [
   "core/datamile-logic",
   "core/datamile-mpd",
   "core/datamile-server",
-  "core/datamile-album-legacy",
+  "core/datamile-media",
   "core/datamile",
   "actions/rust/libactions",
   "actions/rust/calculate_cover_metrics",
@@ -51,7 +51,7 @@ datamile-lua-domain = { path = "core/datamile-lua-domain" }
 datamile-logic = { path = "core/datamile-logic" }
 datamile-mpd = { path = "core/datamile-mpd" }
 datamile-server = { path = "core/datamile-server" }
-datamile-album-legacy = { path = "core/datamile-album-legacy" }
+datamile-media = { path = "core/datamile-media" }
 libactions = { path = "actions/rust/libactions" }
 
 alphanumeric-sort = "1.5.5"

@@ -271,6 +271,7 @@ export class ViewState {
 
       sync.send({
         type: "SHELF_REQUEST",
+        media_type: "album",
         shelf: shelfKey,
         order: this.activeShelfOrder === "original" ? null : this.activeShelfOrder,
         reverse: this.activeShelfOrderReverse
@@ -404,7 +405,7 @@ export class ViewState {
           tags: dictEntry?.tags,
           objects: dictEntry?.objects,
           images: dictEntry?.images || {},
-          nodes: { track: [] }
+          nodes: { tracks: [] }
         }
       };
 

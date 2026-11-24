@@ -14,7 +14,7 @@ let leftColumnWidth = $derived(Math.round(0.36 * windowWidth));
 
 let albumData = $derived(album.album || {});
 let albumId = $derived(albumData.id || "");
-let albumTracks = $derived(albumData.nodes?.track || []);
+let albumTracks = $derived(albumData.nodes?.tracks || []);
 let infoData = $derived(albumData.objects?.info || {});
 
 let imageHash = $derived(albumData.images?.main?.[0]?.address || "");

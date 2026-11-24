@@ -22,16 +22,9 @@ pub struct ListQuery {
 }
 
 pub async fn list_types(State(state): State<Arc<ServerState>>) -> Response {
-    let types = {
+    let types: HashMap<String, usize> = {
         let logic = state.logic.read().await;
-
-        let mut types: HashMap<String, usize> = HashMap::new();
-        for record in logic.entities.values() {
-            *types.entry(record.media_type.clone()).or_default() += 1;
-        }
-
-        drop(logic);
-        types
+        logic.media_types().into_iter().collect()
     };
 
     Json(json!({ "types": types })).into_response()
@@ -44,22 +37,11 @@ pub async fn list_media(
 ) -> Response {
     let logic = state.logic.read().await;
 
-    let ids = query.q.as_deref().map_or_else(
-        || {
-            logic
-                .entities
-                .values()
-                .filter(|record| record.media_type == media_type)
-                .map(|record| record.id.clone())
-                .collect()
-        },
-        |needle| logic.find_ids(needle),
-    );
+    let ids = logic.find_ids(&media_type, query.q.as_deref().unwrap_or(""));
 
     let items: Vec<serde_json::Value> = ids
         .into_iter()
-        .filter_map(|id| logic.entity_record(&id))
-        .filter(|record| record.media_type == media_type)
+        .filter_map(|id| logic.entity_record(&media_type, &id))
         .map(|record| {
             json!({
                 "type": record.media_type,
@@ -69,17 +51,18 @@ pub async fn list_media(
         })
         .collect();
 
+    drop(logic);
     Json(items).into_response()
 }
 
-pub async fn get_media(
+pub async fn media_by_id(
     Path((media_type, id)): Path<(String, String)>,
     Query(query): Query<DepthQuery>,
     State(state): State<Arc<ServerState>>,
 ) -> Response {
     let raw = {
         let logic = state.logic.read().await;
-        logic.entity_json(&id)
+        logic.entity_json(&media_type, &id)
     };
 
     let Some(raw) = raw else {

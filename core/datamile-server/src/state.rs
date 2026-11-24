@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use datamile_logic::LogicEngine;
 use datamile_lua_domain::{ActionDef, InterfaceDef};
-use datamile_mpd::MpdEngine;
+use datamile_mpd::{MpdConfig, MpdEngine};
 use tokio::sync::{RwLock, broadcast, watch};
 
 use crate::backend::MediaBackend;
@@ -62,7 +62,9 @@ impl Drop for ImageTaskGuard {
 
 #[derive(Clone)]
 pub struct ServerConfig {
-    pub music_directory: PathBuf,
+    /// Every registered `d.media.root` `init` directory, watched recursively.
+    pub watch_roots: Vec<PathBuf>,
+    pub mpd: MpdConfig,
     pub cache_root: PathBuf,
     pub state_root: PathBuf,
     pub resolved_dependencies: Vec<PathBuf>,

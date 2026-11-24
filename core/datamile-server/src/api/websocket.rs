@@ -5,12 +5,13 @@ use ax_ws::WebSocket;
 use axum::extract::{State, WebSocketUpgrade, ws as ax_ws};
 use axum::response::Response;
 use datamile_logic::SortOrder;
-use datamile_lua_domain::GrouperFormatContext;
 use datamile_mpd::MpdCommand;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 use crate::state::ServerState;
+
+const DEFAULT_MEDIA_TYPE: &str = "album";
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -19,12 +20,12 @@ pub async fn ws_handler(
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
-async fn build_init_payload(state: &ServerState) -> String {
+pub(crate) async fn init_payload(state: &ServerState) -> String {
     let (media, manifest, shelves) = {
         let logic = state.logic.read().await;
 
         let mut media: HashMap<String, HashMap<String, Box<RawValue>>> = HashMap::new();
-        for record in logic.entities.values() {
+        for record in logic.all_entities() {
             media
                 .entry(record.media_type.clone())
                 .or_default()
@@ -32,10 +33,10 @@ async fn build_init_payload(state: &ServerState) -> String {
         }
 
         let mut shelves = HashMap::new();
-        for key in logic.manifest.shelves.keys() {
+        for (key, def) in &logic.manifest.shelves {
             shelves.insert(
                 key.clone(),
-                logic.request_shelf_view(key, None, SortOrder::Forward),
+                logic.request_shelf_view(&def.media, key, None, SortOrder::Forward),
             );
         }
 
@@ -62,7 +63,36 @@ async fn send_json(socket: &mut WebSocket, payload: Value) {
         .await;
 }
 
-async fn handle_view_request(req: &Value, socket: &mut WebSocket, state: &ServerState) {
+fn requested_media_type(req: &Value) -> Option<String> {
+    req.get("media_type")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
+
+/// Falls back to the declaring unit's `media`, then to `album` for clients
+/// that predate the field.
+async fn resolve_library_media(req: &Value, state: &ServerState) -> String {
+    if let Some(media_type) = requested_media_type(req) {
+        return media_type;
+    }
+
+    let library = req
+        .get("library")
+        .and_then(Value::as_str)
+        .unwrap_or("library");
+    let logic = state.logic.read().await;
+    logic
+        .manifest
+        .libraries
+        .get(library)
+        .map(|def| def.media.clone())
+        .filter(|media| !media.is_empty())
+        .unwrap_or_else(|| DEFAULT_MEDIA_TYPE.to_string())
+}
+
+pub(crate) async fn view_response(state: &ServerState, req: &Value) -> Value {
+    let media_type = resolve_library_media(req, state).await;
     let library = req
         .get("library")
         .and_then(Value::as_str)
@@ -86,6 +116,7 @@ async fn handle_view_request(req: &Value, socket: &mut WebSocket, state: &Server
     };
 
     let ids = state.logic.read().await.request_view(
+        &media_type,
         library,
         library_filter,
         sort,
@@ -94,10 +125,10 @@ async fn handle_view_request(req: &Value, socket: &mut WebSocket, state: &Server
         order,
     );
 
-    send_json(socket, json!({ "type": "VIEW_DATA", "ids": ids })).await;
+    json!({ "type": "VIEW_DATA", "media_type": media_type, "ids": ids })
 }
 
-async fn handle_shelf_request(req: &Value, socket: &mut WebSocket, state: &ServerState) {
+pub(crate) async fn shelf_response(state: &ServerState, req: &Value) -> Value {
     let shelf = req.get("shelf").and_then(Value::as_str).unwrap_or("");
     let order = req.get("order").and_then(Value::as_str);
     let reverse = req.get("reverse").and_then(Value::as_bool).unwrap_or(false);
@@ -108,16 +139,30 @@ async fn handle_shelf_request(req: &Value, socket: &mut WebSocket, state: &Serve
         SortOrder::Forward
     };
 
-    let ids = state
-        .logic
-        .read()
-        .await
-        .request_shelf_view(shelf, order, sort_order);
+    let ids = {
+        let logic = state.logic.read().await;
+        let media_type = requested_media_type(req).unwrap_or_else(|| {
+            logic
+                .manifest
+                .shelves
+                .get(shelf)
+                .map(|def| def.media.clone())
+                .filter(|media| !media.is_empty())
+                .unwrap_or_else(|| DEFAULT_MEDIA_TYPE.to_string())
+        });
 
-    send_json(socket, json!({ "type": "SHELF_DATA", "ids": ids })).await;
+        let ids = logic.request_shelf_view(&media_type, shelf, order, sort_order);
+        drop(logic);
+        (media_type, ids)
+    };
+
+    let (media_type, ids) = ids;
+
+    json!({ "type": "SHELF_DATA", "media_type": media_type, "ids": ids })
 }
 
-async fn handle_group_request(req: &Value, socket: &mut WebSocket, state: &ServerState) {
+pub(crate) async fn group_response(state: &ServerState, req: &Value) -> Value {
+    let media_type = resolve_library_media(req, state).await;
     let library = req
         .get("library")
         .and_then(Value::as_str)
@@ -125,19 +170,19 @@ async fn handle_group_request(req: &Value, socket: &mut WebSocket, state: &Serve
     let library_filter = req.get("library_filter").and_then(Value::as_str);
     let key = req.get("key").and_then(Value::as_str).unwrap_or("");
 
-    let result = {
-        let logic = state.logic.read().await;
-        let formatter = |grouper: &str, ctx: &GrouperFormatContext<'_>| {
-            state.backend.format_grouper(grouper, ctx)
-        };
-        logic.request_group(library, library_filter, key, &formatter)
-    };
+    let result =
+        state
+            .logic
+            .read()
+            .await
+            .request_group(&media_type, library, library_filter, key);
 
-    send_json(
-        socket,
-        json!({ "type": "GROUP_RESULT", "key": key, "result": result }),
-    )
-    .await;
+    json!({
+        "type": "GROUP_RESULT",
+        "media_type": media_type,
+        "key": key,
+        "result": result
+    })
 }
 
 async fn process_client_msg(text: &str, socket: &mut WebSocket, state: &ServerState) {
@@ -147,11 +192,14 @@ async fn process_client_msg(text: &str, socket: &mut WebSocket, state: &ServerSt
     let Some(req_type) = req.get("type").and_then(Value::as_str) else {
         return;
     };
-    match req_type {
-        "VIEW_REQUEST" => handle_view_request(&req, socket, state).await,
-        "SHELF_REQUEST" => handle_shelf_request(&req, socket, state).await,
-        "GROUP_REQUEST" => handle_group_request(&req, socket, state).await,
-        _ => {}
+    let response = match req_type {
+        "VIEW_REQUEST" => Some(view_response(state, &req).await),
+        "SHELF_REQUEST" => Some(shelf_response(state, &req).await),
+        "GROUP_REQUEST" => Some(group_response(state, &req).await),
+        _ => None,
+    };
+    if let Some(response) = response {
+        send_json(socket, response).await;
     }
 }
 
@@ -190,7 +238,7 @@ async fn handle_broadcast_msg(
 async fn handle_socket(mut socket: WebSocket, state: Arc<ServerState>) {
     log::info!("Client connected");
 
-    let init_payload = build_init_payload(&state).await;
+    let init_payload = init_payload(&state).await;
     if socket
         .send(ax_ws::Message::Text(init_payload.into()))
         .await

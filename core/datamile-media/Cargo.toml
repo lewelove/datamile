@@ -1,8 +1,8 @@
 [package]
-name = "datamile-album-legacy"
+name = "datamile-media"
 version = "0.1.0"
 edition = "2024"
-description = "Album domain backend for Datamile, quarantined from the media-agnostic core."
+description = "Schema-driven media engine: d.media roots, compilation and hot reload."
 license = "AGPL-3.0-only"
 repository = "https://github.com/lewelove/datamile"
 
@@ -17,20 +17,20 @@ datamile-images = { workspace = true }
 datamile-logic = { workspace = true }
 datamile-lua = { workspace = true }
 datamile-lua-domain = { workspace = true }
+datamile-mpd = { workspace = true }
 datamile-server = { workspace = true }
 
 anyhow = { workspace = true }
 log = { workspace = true }
 mlua = { workspace = true }
-mpd_client = { workspace = true }
 rayon = { workspace = true }
-reqwest = { workspace = true, features = ["query"] }
+reqwest = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-toml = { workspace = true }
 walkdir = { workspace = true }
 
 [dev-dependencies]
+image = { workspace = true }
 tempfile = { workspace = true }

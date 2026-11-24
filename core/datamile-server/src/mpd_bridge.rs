@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use datamile_logic::PlayableLookupItem;
 use datamile_mpd::{RawMpdStatus, RawQueueSong};
+use serde_json::Value;
 use tokio::sync::broadcast;
 
 use crate::state::ServerState;
@@ -17,42 +18,71 @@ fn track_meta<'a>(
         .or_else(|| logic.playable_lookup.get(file))
 }
 
+fn meta_str(meta: Option<&Value>, keys: &[&str]) -> Option<String> {
+    let meta = meta?;
+    for key in keys {
+        match meta.get(*key) {
+            Some(Value::String(s)) if !s.is_empty() => return Some(s.clone()),
+            Some(Value::Number(n)) => return Some(n.to_string()),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn meta_u64(meta: Option<&Value>, keys: &[&str], fallback: u64) -> u64 {
+    let Some(meta) = meta else {
+        return fallback;
+    };
+    for key in keys {
+        if let Some(value) = meta.get(*key) {
+            if let Some(n) = value.as_u64() {
+                return n;
+            }
+            if let Some(s) = value.as_str()
+                && let Ok(n) = s.parse()
+            {
+                return n;
+            }
+        }
+    }
+    fallback
+}
+
 fn queue_item(
     song: &RawQueueSong,
-    meta: Option<&PlayableLookupItem>,
+    item: Option<&PlayableLookupItem>,
 ) -> serde_json::Value {
-    meta.map_or_else(
-        || {
-            serde_json::json!({
-                "id": song.id,
-                "file": song.file,
-                "title": song.title,
-                "artist": song.artist,
-                "media_type": serde_json::Value::Null,
-                "media_id": serde_json::Value::Null,
-                "node_index": serde_json::Value::Null,
-                "track_no": serde_json::Value::Null,
-                "disc_no": 1,
-                "duration": "",
-                "duration_ms": 0,
-            })
-        },
-        |m| {
-            serde_json::json!({
-                "id": song.id,
-                "file": song.file,
-                "title": song.title.clone().or_else(|| Some(m.title.clone())),
-                "artist": song.artist.clone().or_else(|| Some(m.artist.clone())),
-                "media_type": m.media_type,
-                "media_id": m.media_id,
-                "node_index": m.node_index,
-                "track_no": m.track_no,
-                "disc_no": m.disc_no,
-                "duration": m.duration,
-                "duration_ms": m.duration_ms,
-            })
-        },
-    )
+    let Some(item) = item else {
+        return serde_json::json!({
+            "id": song.id,
+            "file": song.file,
+            "title": song.title,
+            "artist": song.artist,
+            "media_type": serde_json::Value::Null,
+            "media_id": serde_json::Value::Null,
+            "node_index": serde_json::Value::Null,
+            "track_no": serde_json::Value::Null,
+            "disc_no": 1,
+            "duration": "",
+            "duration_ms": 0,
+        });
+    };
+
+    let meta = Some(&item.meta);
+    serde_json::json!({
+        "id": song.id,
+        "file": song.file,
+        "title": song.title.clone().or_else(|| meta_str(meta, &["title"])),
+        "artist": song.artist.clone().or_else(|| meta_str(meta, &["artist", "albumartist"])),
+        "media_type": item.media_type,
+        "media_id": item.media_id,
+        "node_index": item.node_index,
+        "track_no": meta_u64(meta, &["track_no", "tracknumber"], 0),
+        "disc_no": meta_u64(meta, &["disc_no", "discnumber"], 1),
+        "duration": meta_str(meta, &["duration"]).unwrap_or_default(),
+        "duration_ms": meta_u64(meta, &["duration_ms", "duration_milliseconds"], 0),
+    })
 }
 
 /// Adds Datamile identifiers to a raw MPD snapshot and publishes it on `/ws`.

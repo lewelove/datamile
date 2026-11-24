@@ -84,7 +84,7 @@ pub async fn trigger_reset(State(state): State<Arc<ServerState>>) -> Response {
     let (count, manifest) = tokio::task::spawn_blocking(move || {
         let mut logic = logic_arc.blocking_write();
         backend.scan_library(&mut logic);
-        (logic.entities.len(), logic.manifest.clone())
+        (logic.entity_count(), logic.manifest.clone())
     })
     .await
     .unwrap_or_else(|_| (0, datamile_lua_domain::LogicManifest::default()));
@@ -93,10 +93,12 @@ pub async fn trigger_reset(State(state): State<Arc<ServerState>>) -> Response {
     log::info!("Updated {count} media items.");
     log::info!("Rebuilt Logic Engine in {elapsed}ms.");
 
+    let actions = state.config.read().await.actions.clone();
     let _ = state.tx.send(
         json!({
             "type": "LOGIC_UPDATE",
-            "manifest": manifest
+            "manifest": manifest,
+            "actions": actions
         })
         .to_string(),
     );

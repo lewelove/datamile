@@ -68,6 +68,12 @@ pub async fn queue_media(
     send_play(&state, MpdCommand::Queue { tracks }).await
 }
 
+/// The file MPD is playing right now, so CLI callers need no MPD client.
+pub async fn current_playback(State(state): State<Arc<ServerState>>) -> Response {
+    let file = state.now_playing.read().await.clone();
+    Json(json!({ "file": file })).into_response()
+}
+
 pub async fn jump_to_index(
     Path(index): Path<usize>,
     State(state): State<Arc<ServerState>>,

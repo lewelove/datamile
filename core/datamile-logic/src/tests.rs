@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use datamile_lua_domain::{GrouperFormatContext, LogicManifest};
+use datamile_lua_domain::LogicManifest;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
@@ -9,13 +9,16 @@ use crate::engine::{EntityRecord, ImageLookupItem, LogicEngine, PlayableLookupIt
 use crate::sort::{SortKey, SortOrder, value_to_sort_key};
 use crate::text::tag_text;
 
+const ALBUM: &str = "album";
+const BOOK: &str = "book";
+
 fn manifest() -> LogicManifest {
     let mut manifest: LogicManifest = serde_json::from_value(json!({
-        "filters": { "owned": { "label": "Owned" } },
-        "groupers": { "genre": { "label": "Genre" } },
-        "orders": { "alpha": { "label": "A-Z" } },
-        "libraries": { "all": { "label": "All" } },
-        "shelves": { "recent": { "label": "Recent" } },
+        "filters": { "owned": { "media": "album", "label": "Owned" } },
+        "groupers": { "genre": { "media": "album", "label": "Genre" } },
+        "orders": { "alpha": { "media": "album", "label": "A-Z" } },
+        "libraries": { "all": { "media": "album", "label": "All" } },
+        "shelves": { "recent": { "media": "album", "label": "Recent" } },
         "cabinets": {}
     }))
     .expect("manifest fixture parses");
@@ -23,22 +26,17 @@ fn manifest() -> LogicManifest {
     manifest
 }
 
-fn record(id: &str, path: &str, title: &str, subtitle: &str) -> EntityRecord {
-    let lock = json!({ "album": { "id": id, "tags": { "album": title } } });
+fn record(media_type: &str, id: &str, path: &str) -> EntityRecord {
+    let lock = json!({ media_type: { "id": id } });
     let dict = json!({ "id": id, "tags": {}, "objects": {}, "images": {} });
 
     EntityRecord {
-        media_type: "album".to_string(),
+        media_type: media_type.to_string(),
         id: id.to_string(),
         path: PathBuf::from(path),
-        title: title.to_string(),
-        subtitle: subtitle.to_string(),
-        main_image_path: None,
         raw_json: Arc::from(lock.to_string()),
         dict_raw: RawValue::from_string(dict.to_string()).expect("raw value"),
-        total_discs: 1,
-        total_tracks: 2,
-        duration_ms: 1000,
+        search_texts: vec![id.to_lowercase()],
         playable_uris: vec![format!("{id}/01.flac")],
         image_namespaces: vec![("main".to_string(), format!("{id}-img"))],
     }
@@ -57,20 +55,16 @@ fn eval(library: &str, filter: &str, shelf: &str, genre: &str, title: &str) -> V
 
 fn playable(media_id: &str, index: usize, uri: &str) -> PlayableLookupItem {
     PlayableLookupItem {
-        media_type: "album".to_string(),
+        media_type: ALBUM.to_string(),
         media_id: media_id.to_string(),
         node_index: index,
-        track_no: u32::try_from(index + 1).unwrap_or(1),
-        disc_no: 1,
-        title: "Track".to_string(),
-        artist: "Artist".to_string(),
-        duration: "1:00".to_string(),
-        duration_ms: 60_000,
+        node_path: vec![("track".to_string(), index)],
         path: uri.to_string(),
+        meta: json!({ "title": "Track" }),
     }
 }
 
-fn image(_address: &str) -> ImageLookupItem {
+fn image() -> ImageLookupItem {
     ImageLookupItem {
         entity_dir: PathBuf::from("/library/a"),
         path: "cover.jpg".to_string(),
@@ -86,21 +80,21 @@ fn engine_with_two_entities() -> LogicEngine {
 
     engine
         .upsert_entity(
-            record("a", "/library/a", "Beta", "Zed"),
+            record(ALBUM, "a", "/library/a"),
             vec![playable("a", 0, "a/01.flac")],
-            vec![("a-img".to_string(), image("a-img"))],
+            vec![("a-img".to_string(), image())],
             eval("all", "owned", "recent", "Rock", "Beta"),
         )
         .expect("first entity ingests");
     engine
         .upsert_entity(
-            record("b", "/library/b", "Alpha", "Aaa"),
+            record(ALBUM, "b", "/library/b"),
             vec![playable("b", 0, "b/01.flac")],
-            vec![("b-img".to_string(), image("b-img"))],
+            vec![("b-img".to_string(), image())],
             eval("all", "owned", "recent", "Jazz", "Alpha"),
         )
         .expect("second entity ingests");
-    engine.build_cache(&crate::engine::plain_grouper_formatter);
+    engine.build_cache();
 
     engine
 }
@@ -157,15 +151,15 @@ fn sort_keys_order_by_kind_and_value() {
 fn upsert_entity_registers_lookups() {
     let engine = engine_with_two_entities();
 
-    assert!(engine.entity_record("a").is_some());
+    assert!(engine.entity_record(ALBUM, "a").is_some());
     assert_eq!(
-        engine.entity_id_by_path(&PathBuf::from("/library/a")),
+        engine.entity_id_by_path(ALBUM, &PathBuf::from("/library/a")),
         Some("a")
     );
     assert!(engine.playable_lookup.contains_key("a/01.flac"));
     assert!(engine.image_lookup.contains_key("a-img"));
 
-    let dict = engine.entity_dict("a").expect("dict exists");
+    let dict = engine.entity_dict(ALBUM, "a").expect("dict exists");
     let parsed: Value = serde_json::from_str(dict.get()).expect("dict parses");
     assert_eq!(parsed["id"], json!("a"));
 }
@@ -176,26 +170,28 @@ fn request_view_filters_sorts_and_reverses() {
     let engine = engine_with_two_entities();
 
     assert_eq!(
-        engine.request_view("all", None, "alpha", None, None, SortOrder::Forward),
+        engine.request_view(ALBUM, "all", None, "alpha", None, None, SortOrder::Forward),
         vec!["b".to_string(), "a".to_string()]
     );
     assert_eq!(
-        engine.request_view("all", None, "alpha", None, None, SortOrder::Reverse),
+        engine.request_view(ALBUM, "all", None, "alpha", None, None, SortOrder::Reverse),
         vec!["a".to_string(), "b".to_string()]
     );
     assert_eq!(
         engine.request_view(
+            ALBUM,
             "all",
             None,
             "alpha",
             Some("search"),
-            Some("zed"),
+            Some("a"),
             SortOrder::Forward
         ),
         vec!["a".to_string()]
     );
     assert_eq!(
         engine.request_view(
+            ALBUM,
             "all",
             None,
             "alpha",
@@ -207,45 +203,77 @@ fn request_view_filters_sorts_and_reverses() {
     );
 }
 
+/// Search matches any indexed text, not only the id.
+#[test]
+fn search_uses_indexed_texts() {
+    let mut engine = engine_with_two_entities();
+    if let Some(index) = engine.types.get_mut(ALBUM)
+        && let Some(uid) = index.id_to_uid.get("a").copied()
+        && let Some(record) = index.entities.get_mut(&uid)
+    {
+        record.search_texts = vec!["beta artist".to_string()];
+    }
+
+    assert_eq!(
+        engine.request_view(
+            ALBUM,
+            "all",
+            None,
+            "alpha",
+            Some("search"),
+            Some("artist"),
+            SortOrder::Forward
+        ),
+        vec!["a".to_string()]
+    );
+}
+
 /// Shelves keep their native order unless a named order is applied.
 #[test]
 fn request_shelf_view_honours_named_order() {
     let engine = engine_with_two_entities();
 
     assert_eq!(
-        engine.request_shelf_view("recent", None, SortOrder::Forward),
+        engine.request_shelf_view(ALBUM, "recent", None, SortOrder::Forward),
         vec!["b".to_string(), "a".to_string()]
     );
     assert_eq!(
-        engine.request_shelf_view("recent", Some("alpha"), SortOrder::Forward),
+        engine.request_shelf_view(ALBUM, "recent", Some("alpha"), SortOrder::Forward),
         vec!["b".to_string(), "a".to_string()]
     );
     assert_eq!(
-        engine.request_shelf_view("recent", None, SortOrder::Reverse),
+        engine.request_shelf_view(ALBUM, "recent", None, SortOrder::Reverse),
         vec!["a".to_string(), "b".to_string()]
     );
 }
 
-/// The grouper formatter is caller-supplied, so a custom label and parent flow
-/// straight into the tree.
+/// Groupers are flat buckets: `{ value, label, count, children: [] }`, sorted
+/// by the group key and reversed on demand.
 #[test]
-fn request_group_uses_custom_formatter() {
+fn request_group_is_flat_and_sorted() {
     let engine = engine_with_two_entities();
 
-    let formatter = |_: &str, ctx: &GrouperFormatContext<'_>| {
-        datamile_lua_domain::FormattedGrouperResult {
-            label: format!("{}!", ctx.value),
-            sublabel: None,
-            sort: json!(ctx.value),
-            parent: None,
-        }
-    };
-
-    let result = engine.request_group("all", None, "genre", &formatter);
+    let result = engine.request_group(ALBUM, "all", None, "genre");
 
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0]["label"], json!("Jazz!"));
-    assert_eq!(result[1]["label"], json!("Rock!"));
+    assert_eq!(result[0]["value"], json!("Jazz"));
+    assert_eq!(result[0]["label"], json!("Jazz"));
+    assert_eq!(result[0]["count"], json!(1));
+    assert_eq!(result[0]["children"], json!([]));
+    assert!(result[0].get("sublabel").is_none());
+
+    let mut reversed_manifest = manifest();
+    reversed_manifest
+        .groupers
+        .get_mut("genre")
+        .expect("grouper")
+        .reverse = true;
+    let mut reversed = engine_with_two_entities();
+    reversed.manifest = reversed_manifest;
+    reversed.build_cache();
+
+    let reversed_result = reversed.request_group(ALBUM, "all", None, "genre");
+    assert_eq!(reversed_result[0]["value"], json!("Rock"));
 }
 
 /// Removing by path or id also drops the playable and image lookups.
@@ -260,7 +288,112 @@ fn removal_clears_lookups() {
     assert!(!engine.playable_lookup.contains_key("a/01.flac"));
     assert!(!engine.image_lookup.contains_key("a-img"));
 
-    engine.remove_entity_by_id("b");
-    assert!(engine.entity_record("b").is_none());
+    engine.remove_entity_by_id(ALBUM, "b");
+    assert!(engine.entity_record(ALBUM, "b").is_none());
     assert!(!engine.playable_lookup.contains_key("b/01.flac"));
+}
+
+/// Two media types may share an id, path lookup and removal stay isolated, and
+/// one type's logic never sees the other's entities.
+#[test]
+fn media_types_are_partitioned() {
+    let mut engine = LogicEngine::new(PathBuf::from("/config/init.lua"), manifest());
+
+    engine
+        .upsert_entity(
+            record(ALBUM, "Dune", "/library/Dune"),
+            Vec::new(),
+            Vec::new(),
+            eval("all", "owned", "recent", "Rock", "Dune"),
+        )
+        .expect("album ingests");
+    engine
+        .upsert_entity(
+            record(BOOK, "Dune", "/books/Dune"),
+            Vec::new(),
+            Vec::new(),
+            json!({ "libraries": { "all": true } }),
+        )
+        .expect("book ingests");
+    engine.build_cache();
+
+    assert_eq!(
+        engine.entity_record(ALBUM, "Dune").expect("album").path,
+        PathBuf::from("/library/Dune")
+    );
+    assert_eq!(
+        engine.entity_record(BOOK, "Dune").expect("book").path,
+        PathBuf::from("/books/Dune")
+    );
+
+    assert_eq!(
+        engine.entity_id_by_path(BOOK, &PathBuf::from("/books/Dune")),
+        Some("Dune")
+    );
+    assert!(
+        engine
+            .request_view(BOOK, "all", None, "alpha", None, None, SortOrder::Forward)
+            .is_empty()
+    );
+
+    engine.remove_entity_by_id(BOOK, "Dune");
+    assert!(engine.entity_record(BOOK, "Dune").is_none());
+    assert!(engine.entity_record(ALBUM, "Dune").is_some());
+}
+
+/// Library caches only accept entities of the library's own media type.
+#[test]
+fn libraries_do_not_leak_across_types() {
+    let mut engine = LogicEngine::new(PathBuf::from("/config/init.lua"), manifest());
+
+    engine
+        .upsert_entity(
+            record(BOOK, "b1", "/books/b1"),
+            Vec::new(),
+            Vec::new(),
+            json!({ "libraries": { "all": true }, "filters": { "owned": true } }),
+        )
+        .expect("book ingests");
+    engine.build_cache();
+
+    assert!(
+        engine
+            .request_view(BOOK, "all", None, "alpha", None, None, SortOrder::Forward)
+            .is_empty(),
+        "an album library must not match a book"
+    );
+    assert_eq!(
+        engine.request_view(
+            BOOK,
+            "library",
+            None,
+            "alpha",
+            None,
+            None,
+            SortOrder::Forward
+        ),
+        vec!["b1".to_string()],
+        "the fallback library only contains the requested type"
+    );
+}
+
+/// `find_ids` is scoped by media type as well.
+#[test]
+fn find_ids_is_scoped() {
+    let mut engine = engine_with_two_entities();
+    engine
+        .upsert_entity(
+            record(BOOK, "a", "/books/a"),
+            Vec::new(),
+            Vec::new(),
+            json!({}),
+        )
+        .expect("book ingests");
+
+    assert_eq!(engine.find_ids(ALBUM, "a"), vec!["a".to_string()]);
+    assert_eq!(engine.find_ids(BOOK, "a"), vec!["a".to_string()]);
+    assert_eq!(
+        engine.media_types(),
+        vec![(ALBUM.to_string(), 2), (BOOK.to_string(), 1)]
+    );
 }

@@ -1,3 +1,4 @@
+use datamile_mpd::MpdConfig;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_CACHE_DIR: &str = "~/.cache/datamile";
@@ -12,6 +13,8 @@ pub struct DomainConfig {
     pub storage: StorageConfig,
     #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
+    pub mpd: MpdConfig,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }

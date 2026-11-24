@@ -73,7 +73,7 @@ export interface AlbumLockData {
   tags?: AlbumTags;
   objects?: AlbumObjects;
   images?: Record<string, AlbumImageEntry[]>;
-  nodes?: { track?: TrackItem[]; [key: string]: TrackItem[] | undefined };
+  nodes?: { tracks?: TrackItem[]; [key: string]: TrackItem[] | undefined };
 }
 
 export interface TrackPhysicsInfo {

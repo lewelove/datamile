@@ -683,41 +683,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap 4.6.6",
- "datamile-album-legacy",
  "datamile-fs",
+ "datamile-logic",
  "datamile-lua-domain",
+ "datamile-media",
+ "datamile-mpd",
  "datamile-server",
  "log",
+ "reqwest 0.13.4",
  "serde_json",
  "simple_logger",
  "tokio",
-]
-
-[[package]]
-name = "datamile-album-legacy"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "datamile-audio",
- "datamile-cache",
- "datamile-fs",
- "datamile-images",
- "datamile-logic",
- "datamile-lua",
- "datamile-lua-domain",
- "datamile-server",
- "log",
- "mlua",
- "mpd_client",
- "rayon",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
- "walkdir",
 ]
 
 [[package]]
@@ -769,11 +745,13 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "datamile-cache",
  "datamile-fs",
  "fast_image_resize",
  "image",
  "log",
  "qoi",
+ "serde",
  "tempfile",
  "thiserror",
 ]
@@ -794,6 +772,7 @@ dependencies = [
 name = "datamile-lua"
 version = "0.1.0"
 dependencies = [
+ "alphanumeric-sort",
  "anyhow",
  "chrono",
  "datamile-cache",
@@ -805,6 +784,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "walkdir",
 ]
 
 [[package]]
@@ -814,12 +794,40 @@ dependencies = [
  "anyhow",
  "datamile-fs",
  "datamile-lua",
+ "datamile-mpd",
  "dirs",
  "indexmap",
  "mlua",
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "datamile-media"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "datamile-audio",
+ "datamile-cache",
+ "datamile-fs",
+ "datamile-images",
+ "datamile-logic",
+ "datamile-lua",
+ "datamile-lua-domain",
+ "datamile-mpd",
+ "datamile-server",
+ "image",
+ "log",
+ "mlua",
+ "rayon",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "walkdir",
 ]
 
 [[package]]
@@ -2833,7 +2841,6 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
- "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -3091,7 +3098,6 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
- "indexmap",
  "itoa",
  "memchr",
  "serde",

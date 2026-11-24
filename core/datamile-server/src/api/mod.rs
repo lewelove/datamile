@@ -18,7 +18,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/ws", get(websocket::ws_handler))
         .route("/api/media", get(media::list_types))
         .route("/api/media/{media_type}", get(media::list_media))
-        .route("/api/media/{media_type}/{*id}", get(media::get_media))
+        .route("/api/media/{media_type}/{*id}", get(media::media_by_id))
         .route(
             "/api/media/{media_type}/update/{*id}",
             post(media::update_media),
@@ -31,6 +31,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
             "/api/media/{media_type}/queue/{*id}",
             post(playback::queue_media),
         )
+        .route("/api/playback/current", get(playback::current_playback))
         .route("/api/playback/jump/{index}", post(playback::jump_to_index))
         .route("/api/playback/next", post(playback::next_track))
         .route("/api/playback/prev", post(playback::prev_track))

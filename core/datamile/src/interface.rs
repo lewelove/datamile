@@ -1,26 +1,33 @@
 use anyhow::{Context, Result};
-use datamile_album_legacy::config;
-use datamile_album_legacy::lua::LuaEngine;
+use datamile_lua_domain::DomainLuaEngine;
+use datamile_media::state::{COMPILE_ROOT_LUA, MEDIA_LUA};
 use serde_json::json;
 
 pub fn execute(name: Option<String>) -> Result<()> {
     let raw_name = name.unwrap_or_else(|| "default".to_string());
     let name = raw_name.replace('-', "_");
-    let config = config::load().context("Failed to load config")?;
 
-    if !config.interfaces.contains_key(&name) {
+    let config_path = datamile_lua_domain::resolve_config_path()
+        .context("Failed to resolve init.lua")?;
+    let engine = DomainLuaEngine::new()?;
+    engine.load_extension("media.lua", MEDIA_LUA)?;
+    engine.load_extension("compile_root.lua", COMPILE_ROOT_LUA)?;
+    datamile_media::lua_bridge::register_native_helpers(&engine.runtime)?;
+
+    let evaluated = engine.evaluate_config(&config_path)?;
+    if !evaluated.interfaces.contains_key(&name) {
         anyhow::bail!("Interface '{raw_name}' is not declared in configuration.");
     }
 
-    let host = if config.app.server.host.is_empty() {
+    let host = if evaluated.config.server.host.is_empty() {
         "127.0.0.1".to_string()
     } else {
-        config.app.server.host.clone()
+        evaluated.config.server.host.clone()
     };
-    let port = if config.app.server.port == 0 {
+    let port = if evaluated.config.server.port == 0 {
         8000
     } else {
-        config.app.server.port
+        evaluated.config.server.port
     };
 
     let url = format!("http://{host}:{port}");
@@ -35,9 +42,5 @@ pub fn execute(name: Option<String>) -> Result<()> {
         }
     });
 
-    let engine = LuaEngine::new()?;
-    engine.evaluate_config(&config.path)?;
-    engine.execute_interface(&name, &ctx)?;
-
-    Ok(())
+    engine.execute_interface(&name, &ctx)
 }

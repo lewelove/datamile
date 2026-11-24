@@ -17,14 +17,17 @@ name = "datamile"
 path = "src/main.rs"
 
 [dependencies]
-datamile-album-legacy = { workspace = true }
 datamile-fs = { workspace = true }
+datamile-logic = { workspace = true }
 datamile-lua-domain = { workspace = true }
+datamile-media = { workspace = true }
+datamile-mpd = { workspace = true }
 datamile-server = { workspace = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true }
 log = { workspace = true }
+reqwest = { workspace = true }
 serde_json = { workspace = true }
 simple_logger = { workspace = true }
 tokio = { workspace = true }

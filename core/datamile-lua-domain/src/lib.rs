@@ -11,6 +11,5 @@ pub use engine::{
     set_config_dir, with_evaluated_domain_vm,
 };
 pub use logic::{
-    CabinetDef, FilterDef, FormattedGrouperResult, GrouperDef, GrouperFormatContext,
-    LibraryDef, LogicManifest, OrderDef, ShelfDef,
+    CabinetDef, FilterDef, GrouperDef, LibraryDef, LogicManifest, OrderDef, ShelfDef,
 };

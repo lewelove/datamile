@@ -1,5 +1,18 @@
 _G.dl = _G.dl or {}
 
+-- A logic unit without `media` predates the single-root rule; during the
+-- transition it is treated as an album definition.
+local function unit_media(def)
+    if def.media == nil or def.media == "" then
+        return "album"
+    end
+    return def.media
+end
+
+local function applies(def, media_type)
+    return unit_media(def) == media_type
+end
+
 function __DATAMILE_GET_LOGIC_MANIFEST()
     local manifest = {
         filters = {},
@@ -16,10 +29,11 @@ function __DATAMILE_GET_LOGIC_MANIFEST()
         cabinets_order = REGISTRY.cabinets_order or {}
     }
     for k, v in pairs(REGISTRY.filters or {}) do
-        manifest.filters[k] = { label = v.label or k }
+        manifest.filters[k] = { media = unit_media(v), label = v.label or k }
     end
     for k, v in pairs(REGISTRY.groupers or {}) do
         manifest.groupers[k] = {
+            media = unit_media(v),
             label = v.label or k,
             index = v.index,
             count = v.count,
@@ -28,12 +42,14 @@ function __DATAMILE_GET_LOGIC_MANIFEST()
     end
     for k, v in pairs(REGISTRY.orders or {}) do
         manifest.orders[k] = {
+            media = unit_media(v),
             label = v.label or k,
             reverse = v.reverse or false
         }
     end
     for k, v in pairs(REGISTRY.libraries or {}) do
         manifest.libraries[k] = {
+            media = unit_media(v),
             label = v.label or k,
             filters = v.filters or {},
             groupers = v.groupers or {},
@@ -42,12 +58,14 @@ function __DATAMILE_GET_LOGIC_MANIFEST()
     end
     for k, v in pairs(REGISTRY.shelves or {}) do
         manifest.shelves[k] = {
+            media = unit_media(v),
             label = v.label or k,
             reverse = v.reverse or false
         }
     end
     for k, v in pairs(REGISTRY.cabinets or {}) do
         manifest.cabinets[k] = {
+            media = unit_media(v),
             label = v.label or k,
             shelves = v.shelves or {},
             orders = v.orders or {}
@@ -56,7 +74,9 @@ function __DATAMILE_GET_LOGIC_MANIFEST()
     return manifest
 end
 
-function __DATAMILE_EVALUATE_LOGIC(album)
+-- Evaluates only the units declared for `media_type`, so two media types can
+-- reuse ids without leaking matches into each other.
+function __DATAMILE_EVALUATE_LOGIC(media_type, entity)
     local res = {
         filters = {},
         groupers = {},
@@ -67,8 +87,8 @@ function __DATAMILE_EVALUATE_LOGIC(album)
     }
 
     for k, v in pairs(REGISTRY.filters or {}) do
-        if type(v.match) == "function" then
-            local ok, match_res = pcall(v.match, album)
+        if applies(v, media_type) and type(v.match) == "function" then
+            local ok, match_res = pcall(v.match, entity)
             if ok and match_res then
                 res.filters[k] = true
             elseif not ok then
@@ -78,8 +98,8 @@ function __DATAMILE_EVALUATE_LOGIC(album)
     end
 
     for k, v in pairs(REGISTRY.groupers or {}) do
-        if type(v.select) == "function" then
-            local ok, sel_res = pcall(v.select, album)
+        if applies(v, media_type) and type(v.select) == "function" then
+            local ok, sel_res = pcall(v.select, entity)
             if ok and sel_res ~= nil then
                 if type(sel_res) == "table" then
                     local items = {}
@@ -99,8 +119,8 @@ function __DATAMILE_EVALUATE_LOGIC(album)
     end
 
     for k, v in pairs(REGISTRY.orders or {}) do
-        if type(v.sort) == "function" then
-            local ok, sort_res = pcall(v.sort, album)
+        if applies(v, media_type) and type(v.sort) == "function" then
+            local ok, sort_res = pcall(v.sort, entity)
             if ok and sort_res ~= nil then
                 res.orders[k] = sort_res
             elseif not ok then
@@ -110,8 +130,8 @@ function __DATAMILE_EVALUATE_LOGIC(album)
     end
 
     for k, v in pairs(REGISTRY.libraries or {}) do
-        if type(v.match) == "function" then
-            local ok, match_res = pcall(v.match, album)
+        if applies(v, media_type) and type(v.match) == "function" then
+            local ok, match_res = pcall(v.match, entity)
             if ok and match_res then
                 res.libraries[k] = true
             elseif not ok then
@@ -121,20 +141,22 @@ function __DATAMILE_EVALUATE_LOGIC(album)
     end
 
     for k, v in pairs(REGISTRY.shelves or {}) do
-        if type(v.match) == "function" then
-            local ok, match_res = pcall(v.match, album)
-            if ok and match_res then
-                res.shelves[k] = true
-            elseif not ok then
-                error(string.format("Error evaluating shelf match '%s': %s", k, tostring(match_res)))
+        if applies(v, media_type) then
+            if type(v.match) == "function" then
+                local ok, match_res = pcall(v.match, entity)
+                if ok and match_res then
+                    res.shelves[k] = true
+                elseif not ok then
+                    error(string.format("Error evaluating shelf match '%s': %s", k, tostring(match_res)))
+                end
             end
-        end
-        if type(v.sort) == "function" then
-            local ok, sort_res = pcall(v.sort, album)
-            if ok and sort_res ~= nil then
-                res.shelf_sorts[k] = sort_res
-            elseif not ok then
-                error(string.format("Error evaluating shelf sort '%s': %s", k, tostring(sort_res)))
+            if type(v.sort) == "function" then
+                local ok, sort_res = pcall(v.sort, entity)
+                if ok and sort_res ~= nil then
+                    res.shelf_sorts[k] = sort_res
+                elseif not ok then
+                    error(string.format("Error evaluating shelf sort '%s': %s", k, tostring(sort_res)))
+                end
             end
         end
     end

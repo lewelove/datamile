@@ -11,7 +11,7 @@ let mappedTracks = $derived(
     const fullAlbum = item.media_id ? collection.fullAlbumCache[item.media_id] : null;
     const meta =
       item.node_index !== null && item.node_index !== undefined
-        ? fullAlbum?.album?.nodes?.track?.[item.node_index] ?? null
+        ? fullAlbum?.album?.nodes?.tracks?.[item.node_index] ?? null
         : null;
 
     return {

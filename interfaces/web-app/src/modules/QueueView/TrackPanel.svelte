@@ -13,7 +13,7 @@ let activeTrackIdx = $derived(player.currentNodeIndex);
 let fullAlbum = $derived(activeId ? collection.fullAlbumCache[activeId] : null);
 let currentTrackFull = $derived(
   activeTrackIdx !== null
-    ? fullAlbum?.album?.nodes?.track?.[activeTrackIdx] ?? null
+    ? fullAlbum?.album?.nodes?.tracks?.[activeTrackIdx] ?? null
     : null
 );
 

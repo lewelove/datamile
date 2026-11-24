@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 datamile-fs = { workspace = true }
 datamile-lua = { workspace = true }
+datamile-mpd = { workspace = true }
 
 anyhow = { workspace = true }
 dirs = { workspace = true }

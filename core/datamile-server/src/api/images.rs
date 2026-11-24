@@ -356,7 +356,7 @@ fn collect_matching_addresses(
         .filter(|arr| !arr.is_empty())
         .map(|arr| arr.iter().map(String::as_str).collect());
 
-    for record in logic.entities.values() {
+    for record in logic.all_entities() {
         for (ns, addr) in &record.image_namespaces {
             if let Some(ref nf) = name_filter
                 && !nf.contains(ns.as_str())

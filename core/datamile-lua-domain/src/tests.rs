@@ -8,7 +8,6 @@ use serde_json::json;
 use tempfile::TempDir;
 
 use crate::engine::DomainLuaEngine;
-use crate::logic::GrouperFormatContext;
 
 /// Writes `init.lua` into a fresh temp dir and returns a ready engine.
 fn setup(init: &str) -> (TempDir, DomainLuaEngine, PathBuf) {
@@ -199,7 +198,7 @@ fn evaluate_logic_accepts_any_entity_table() {
     engine.evaluate_config(&path).expect("evaluate config");
 
     let res = engine
-        .evaluate_logic(&json!({ "n": 3 }))
+        .evaluate_logic("album", &json!({ "n": 3 }))
         .expect("evaluate logic");
 
     assert_eq!(res["filters"]["odd"], json!(true));
@@ -208,33 +207,6 @@ fn evaluate_logic_accepts_any_entity_table() {
     assert_eq!(res["libraries"]["small"], json!(true));
     assert_eq!(res["shelves"]["three"], json!(true));
     assert_eq!(res["shelf_sorts"]["three"], json!(3));
-}
-
-#[test]
-fn evaluate_grouper_format_reads_the_registered_format() {
-    let (_dir, engine, path) = setup(
-        r#"
-        datamile.grouper("letter", {
-            label = "Letter",
-            select = function(e) return e.letter end,
-            format = function(g)
-                return { label = "L:" .. g.value, sublabel = g.count }
-            end
-        })
-        "#,
-    );
-
-    engine.evaluate_config(&path).expect("evaluate config");
-
-    let ctx = GrouperFormatContext {
-        value: "a",
-        count: 2,
-        ..Default::default()
-    };
-    let formatted = engine.evaluate_grouper_format("letter", &ctx);
-
-    assert_eq!(formatted.label, "L:a");
-    assert_eq!(formatted.sublabel.as_deref(), Some("2"));
 }
 
 #[test]
@@ -266,4 +238,54 @@ fn d_and_datamile_are_the_same_table() {
         .expect("evaluate comparison");
 
     assert!(same, "d and datamile must alias one table");
+}
+
+/// Logic units only evaluate for their declared `media` type; a missing one
+/// keeps the legacy album behaviour during the transition.
+#[test]
+fn logic_is_scoped_by_media_type() {
+    let (_dir, engine, path) = setup(
+        r#"
+        datamile.library("albums", { media = "album", match = function() return true end })
+        datamile.library("books", { media = "book", match = function() return true end })
+        datamile.filter("legacy", { match = function() return true end })
+        "#,
+    );
+
+    let eval = engine.evaluate_config(&path).expect("evaluate config");
+    assert_eq!(eval.manifest.libraries["books"].media, "book");
+    assert_eq!(eval.manifest.filters["legacy"].media, "album");
+
+    let album = engine
+        .evaluate_logic("album", &json!({}))
+        .expect("album logic");
+    assert_eq!(album["libraries"]["albums"], json!(true));
+    assert_eq!(album["libraries"]["books"], json!(null));
+    assert_eq!(album["filters"]["legacy"], json!(true));
+
+    let book = engine
+        .evaluate_logic("book", &json!({}))
+        .expect("book logic");
+    assert_eq!(book["libraries"]["books"], json!(true));
+    assert_eq!(book["libraries"]["albums"], json!(null));
+    assert_eq!(book["filters"]["legacy"], json!(null));
+}
+
+/// The `mpd` block is part of the domain config, not an opaque extra.
+#[test]
+fn config_reads_the_mpd_block() {
+    let (_dir, engine, path) = setup(
+        r#"
+        datamile.config({
+            mpd = { enabled = false, host = "mpd.local", port = 7000, music_directory = "/music" }
+        })
+        "#,
+    );
+
+    let eval = engine.evaluate_config(&path).expect("evaluate config");
+
+    assert!(!eval.config.mpd.enabled);
+    assert_eq!(eval.config.mpd.host, "mpd.local");
+    assert_eq!(eval.config.mpd.port, 7000);
+    assert_eq!(eval.config.mpd.music_directory.as_deref(), Some("/music"));
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { TrackItem } from "../../types.ts";
+import type { TrackItem, TrackTags } from "../../types.ts";
 
 let {
   track = null,
@@ -11,13 +11,28 @@ let {
 
 let scrollEl: HTMLDivElement | undefined = $state();
 
+// LRC headers (`[ar:...]`, `[offset:...]`) carry no text; timestamps prefix each line.
+const LRC_HEADER = /^\s*\[[a-z]+:[^\]]*\]\s*$/gim;
+const LRC_TIMESTAMP = /^\s*(?:\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\])+/gm;
+
+/** Synced `lyrics` wins over plain `unsynced_lyrics`, as in every other player. */
+function rawLyrics(tags: TrackTags | undefined): string {
+  if (typeof tags?.lyrics === "string") {
+    return tags.lyrics;
+  }
+  if (typeof tags?.unsynced_lyrics === "string") {
+    return tags.unsynced_lyrics;
+  }
+  return "";
+}
+
 let isInstrumental = $derived(track?.tags?.instrumental === true);
 
 let lyricsText = $derived.by(() => {
   if (!track || track.tags?.instrumental === true) {
     return "";
   }
-  return typeof track.tags?.lyrics === "string" ? track.tags.lyrics : "";
+  return rawLyrics(track.tags).replace(LRC_HEADER, "").replace(LRC_TIMESTAMP, "").trim();
 });
 
 $effect(() => {

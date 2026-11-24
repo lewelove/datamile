@@ -51,6 +51,7 @@ export interface TrackTags {
   title?: string;
   artist?: string;
   lyrics?: string;
+  unsynced_lyrics?: string;
   instrumental?: boolean;
   [key: string]: unknown;
 }

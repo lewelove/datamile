@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ax_ws::WebSocket;
@@ -24,7 +24,8 @@ pub(crate) async fn init_payload(state: &ServerState) -> String {
     let (media, manifest, shelves) = {
         let logic = state.logic.read().await;
 
-        let mut media: HashMap<String, HashMap<String, Box<RawValue>>> = HashMap::new();
+        let mut media: BTreeMap<String, BTreeMap<String, Box<RawValue>>> =
+            BTreeMap::new();
         for record in logic.all_entities() {
             media
                 .entry(record.media_type.clone())
@@ -32,18 +33,28 @@ pub(crate) async fn init_payload(state: &ServerState) -> String {
                 .insert(record.id.clone(), record.dict_raw.clone());
         }
 
-        let mut shelves = HashMap::new();
+        // Inserted in manifest order so shelves keep the order the user declared.
+        let mut shelves = serde_json::Map::new();
         for (key, def) in &logic.manifest.shelves {
             shelves.insert(
                 key.clone(),
-                logic.request_shelf_view(&def.media, key, None, SortOrder::Forward),
+                logic
+                    .request_shelf_view(&def.media, key, None, SortOrder::Forward)
+                    .into(),
             );
         }
 
         (media, logic.manifest.clone(), shelves)
     };
 
-    let actions = state.config.read().await.actions.clone();
+    let actions: BTreeMap<_, _> = state
+        .config
+        .read()
+        .await
+        .actions
+        .clone()
+        .into_iter()
+        .collect();
     let ui_data = state.ui_state.read().await.clone();
 
     json!({

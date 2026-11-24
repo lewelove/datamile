@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
@@ -8,15 +8,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::MediaState;
 
-/// External file dependencies of each compiled root.
+/// External file dependencies of each compiled root. Sorted maps and sets keep
+/// the persisted graph byte-stable across runs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DependencyGraph {
-    pub file_to_roots: HashMap<PathBuf, HashSet<PathBuf>>,
-    pub root_to_files: HashMap<PathBuf, HashSet<PathBuf>>,
+    pub file_to_roots: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    pub root_to_files: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
 }
 
 impl DependencyGraph {
-    pub fn update_root_deps(&mut self, root: PathBuf, new_deps: HashSet<PathBuf>) {
+    pub fn update_root_deps(&mut self, root: PathBuf, new_deps: BTreeSet<PathBuf>) {
         self.remove_root(&root);
 
         for dep in &new_deps {
@@ -48,7 +49,7 @@ impl DependencyGraph {
             return false;
         }
 
-        let mut rebuilt: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
+        let mut rebuilt: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
         for (root, deps) in &self.root_to_files {
             for dep in deps {
                 rebuilt.entry(dep.clone()).or_default().insert(root.clone());

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
@@ -73,7 +73,9 @@ pub fn save_stat_cache<S: BuildHasher>(
     cache: &HashMap<String, FileStat, S>,
     path: &Path,
 ) -> Result<(), CacheError> {
-    let content = serde_json::to_string_pretty(cache)?;
+    // Sorted view: the caller's map order is a hash order, not a stable one.
+    let sorted: BTreeMap<&String, &FileStat> = cache.iter().collect();
+    let content = serde_json::to_string_pretty(&sorted)?;
     datamile_fs::write_atomic(path, &content)?;
 
     Ok(())

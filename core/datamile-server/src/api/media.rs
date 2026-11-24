@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::Json;
@@ -22,7 +22,7 @@ pub struct ListQuery {
 }
 
 pub async fn list_types(State(state): State<Arc<ServerState>>) -> Response {
-    let types: HashMap<String, usize> = {
+    let types: BTreeMap<String, usize> = {
         let logic = state.logic.read().await;
         logic.media_types().into_iter().collect()
     };

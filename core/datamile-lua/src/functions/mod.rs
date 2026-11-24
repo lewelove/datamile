@@ -12,6 +12,26 @@ pub mod toml;
 
 use mlua::serde::SerializeOptions;
 use mlua::{Lua, Table};
+use serde_json::Value;
+
+/// Sorts every object key in `value` so encoded output is byte-stable: Lua
+/// iterates table pairs in hash order, which differs between VMs.
+pub(crate) fn sort_json_keys(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for v in map.values_mut() {
+                sort_json_keys(v);
+            }
+            map.sort_keys();
+        }
+        Value::Array(items) => {
+            for v in items {
+                sort_json_keys(v);
+            }
+        }
+        _ => {}
+    }
+}
 
 pub fn register_all(
     lua: &Lua,

@@ -117,7 +117,8 @@ pub fn register(
     json_table.set(
         "encode",
         lua.create_function(|_, val: Value| {
-            let json_val = lua_value_to_json(val)?;
+            let mut json_val = lua_value_to_json(val)?;
+            super::sort_json_keys(&mut json_val);
             serde_json::to_string(&json_val).map_err(mlua::Error::external)
         })?,
     )?;

@@ -24,6 +24,31 @@ fn test_d_json_encode_decode() {
     assert!(encoded.contains("\"year\":2024"));
 }
 
+/// Verify that `d.json.encode` sorts keys, so the same table encodes to the same
+/// bytes even though each VM iterates its pairs in a different hash order.
+#[test]
+fn test_d_json_encode_sorts_keys() {
+    let encode = || {
+        let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
+        engine
+            .lua
+            .load(
+                "return d.json.encode({ title = 'Album', year = 2024, artist = 'X', nested = { b = 1, a = 2 } })",
+            )
+            .eval::<String>()
+            .expect("Execution failed")
+    };
+
+    let first = encode();
+    assert_eq!(
+        first,
+        r#"{"artist":"X","nested":{"a":2,"b":1},"title":"Album","year":2024}"#
+    );
+    for _ in 0..4 {
+        assert_eq!(encode(), first, "encode order must not depend on the VM");
+    }
+}
+
 /// Verify that `d.json.decode` returns an error when the JSON format is invalid.
 #[test]
 fn test_d_json_decode_invalid() {

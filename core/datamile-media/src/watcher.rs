@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -533,7 +533,7 @@ async fn ingest_and_broadcast(
             for root in &compiled {
                 graph.update_root_deps(
                     root.dir.clone(),
-                    root.dependencies.iter().cloned().collect::<HashSet<_>>(),
+                    root.dependencies.iter().cloned().collect::<BTreeSet<_>>(),
                 );
             }
             for (_, dir) in &removed_roots {

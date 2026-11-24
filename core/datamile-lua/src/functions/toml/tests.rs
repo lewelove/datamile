@@ -24,6 +24,26 @@ title = "Demo""#;
     assert!(encoded.contains("title = \"Demo\""));
 }
 
+/// Verify that `d.toml.encode` sorts keys, so the same table encodes to the same
+/// bytes even though each VM iterates its pairs in a different hash order.
+#[test]
+fn test_d_toml_encode_sorts_keys() {
+    let encode = || {
+        let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
+        engine
+            .lua
+            .load("return d.toml.encode({ title = 'Demo', year = 2024, artist = 'X' })")
+            .eval::<String>()
+            .expect("Execution failed")
+    };
+
+    let first = encode();
+    assert_eq!(first, "artist = \"X\"\ntitle = \"Demo\"\nyear = 2024\n");
+    for _ in 0..4 {
+        assert_eq!(encode(), first, "encode order must not depend on the VM");
+    }
+}
+
 /// Verify that `d.toml.decode` returns an error when the TOML format is invalid.
 #[test]
 fn test_d_toml_decode_invalid() {

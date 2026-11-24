@@ -23,7 +23,8 @@ pub fn register(
     toml_table.set(
         "encode",
         lua.create_function(|lua, val: mlua::Value| {
-            let json_val: serde_json::Value = lua.from_value(val)?;
+            let mut json_val: serde_json::Value = lua.from_value(val)?;
+            super::sort_json_keys(&mut json_val);
             let toml_val = datamile_fs::json_to_toml(json_val);
             toml::to_string_pretty(&toml_val).map_err(mlua::Error::external)
         })?,

@@ -259,6 +259,16 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).expect("json body")
 }
 
+/// Object keys in the order the payload serialized them.
+fn object_keys(value: &Value) -> Vec<&str> {
+    value
+        .as_object()
+        .expect("object")
+        .keys()
+        .map(String::as_str)
+        .collect()
+}
+
 /// `None` keeps the file verbatim.
 #[test]
 fn depth_none_keeps_the_full_tree() {
@@ -400,6 +410,27 @@ async fn router_returns_the_literal_lock_with_depth() {
     let body = body_json(response).await;
     assert!(body[ALBUM].get("nodes").is_none());
     assert_eq!(body[ALBUM]["location"]["kind"], json!("dir"));
+}
+
+/// The whole-library snapshot and the type listing sort their keys, so the same
+/// state always serializes to the same bytes instead of HashMap iteration order.
+#[tokio::test]
+async fn init_payload_and_type_list_sort_keys() {
+    let state = test_state(engine_with(&[
+        (ALBUM, "b", album_eval()),
+        (ALBUM, "a", album_eval()),
+        (BOOK, "c", json!({ "libraries": { "books": true } })),
+    ]))
+    .await;
+
+    let init = crate::api::websocket::init_payload(&state).await;
+    let init: Value = serde_json::from_str(&init).expect("init json");
+    assert_eq!(object_keys(&init["media"]), [ALBUM, BOOK]);
+    assert_eq!(object_keys(&init["media"][ALBUM]), ["a", "b"]);
+
+    let response = crate::api::media::list_types(axum::extract::State(state)).await;
+    let body = body_json(response).await;
+    assert_eq!(object_keys(&body["types"]), [ALBUM, BOOK]);
 }
 
 /// The same id under two media types resolves to each type's own lock.

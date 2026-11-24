@@ -17,7 +17,9 @@ use crate::compiler::compile_root;
 use crate::deps::UpdateScope;
 use crate::lua_bridge::register_native_helpers;
 use crate::schema::{discover_roots, read_media_manifest, validate_media_schema};
-use crate::state::{COMPILE_ROOT_LUA, MEDIA_LUA, MediaState};
+use crate::state::{
+    COMPILE_ROOT_LUA, MEDIA_LUA, MediaState, deps_graph_path, stat_cache_path,
+};
 use crate::update::{ForceMode, Verbosity, run_pass};
 
 fn engine_and_data(
@@ -719,6 +721,44 @@ async fn nested_edit_recompiles_the_ancestor_root() {
             .unwrap_or(0)
             > 0
     );
+}
+
+/// The stat and dependency caches are sorted, so a pass that changes nothing
+/// rewrites them with identical bytes instead of a fresh hash order.
+#[tokio::test]
+async fn cache_files_are_byte_stable_across_passes() {
+    let server = make_server().await;
+    let shared = server.backend.shared();
+
+    let (stat_path, deps_path) = {
+        let guard = shared.state.read().expect("state");
+        let state = guard.as_ref().expect("state");
+        let inits = state.init_dirs();
+
+        (
+            stat_cache_path(&state.cache_root, &inits),
+            deps_graph_path(&state.cache_root, &inits),
+        )
+    };
+    let cache_bytes = || {
+        (
+            std::fs::read(&stat_path).expect("stat cache"),
+            std::fs::read(&deps_path).expect("dependency graph"),
+        )
+    };
+    let before = cache_bytes();
+
+    run_pass(
+        &shared,
+        &UpdateScope::All,
+        None,
+        ForceMode::Preserve,
+        None,
+        Verbosity::Silent,
+    )
+    .expect("second pass");
+
+    assert_eq!(cache_bytes(), before);
 }
 
 #[tokio::test]

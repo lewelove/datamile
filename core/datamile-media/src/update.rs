@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -23,9 +23,11 @@ struct CachedRoot {
     dir: PathBuf,
 }
 
+/// Persisted between passes, so the files map and the root list are kept sorted:
+/// a pass that changes nothing must not rewrite the file with new bytes.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct LibraryCache {
-    files: HashMap<String, FileStat>,
+    files: BTreeMap<String, FileStat>,
     roots: Vec<CachedRoot>,
 }
 
@@ -328,6 +330,7 @@ pub fn run_pass(
             dir: root.dir.clone(),
         })
         .collect();
+    cache.roots.sort_by(|a, b| a.dir.cmp(&b.dir));
 
     deps_graph.prune();
     save_cache(&cache, &cache_path)?;
@@ -661,6 +664,7 @@ pub(crate) fn sync_cache(
             dir: record.path.clone(),
         })
         .collect();
+    cache.roots.sort_by(|a, b| a.dir.cmp(&b.dir));
 
     if let Err(e) = save_cache(&cache, &cache_path) {
         log::error!("Failed to persist the stat cache: {e}");

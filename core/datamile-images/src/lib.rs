@@ -19,6 +19,6 @@ pub use derivative::{
 };
 pub use error::ImageError;
 pub use master::{
-    ImageSpec, RenderedMaster, compute_image_address, master_dir, master_path,
-    render_master_from_file, write_master_qoi,
+    ImageSourceProbe, ImageSpec, RenderedMaster, compute_image_address, master_dir,
+    master_path, render_master_cached, render_master_from_file, write_master_qoi,
 };

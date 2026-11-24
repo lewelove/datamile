@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde::{Deserialize, Serialize};
 
 use crate::codec::{
     FilterType, FitMode, calculate_rendered_dimensions, filter_type_to_str,
@@ -28,19 +29,35 @@ pub struct ImageSpec {
     pub filter_type: FilterType,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderedMaster {
     pub address: String,
     pub rendered_width: u32,
     pub rendered_height: u32,
-    pub fit: &'static str,
-    pub filter: &'static str,
+    pub fit: String,
+    pub filter: String,
     pub source_width: u32,
     pub source_height: u32,
     pub source_format: String,
+    /// Content digest of the source, kept internal so a warm recompile can
+    /// reuse the address without decoding the image.
     pub source_hash: String,
     pub source_mtime: u64,
     pub source_byte_size: u64,
+}
+
+/// What a source image looks like, cached by `(canon_path, size, mtime)`.
+///
+/// Computing it is the only step that decodes bytes; a warm render reads this
+/// probe, derives the address, and touches `master.qoi` only if it exists.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSourceProbe {
+    pub raw_hash: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub format: String,
+    pub mtime: u64,
+    pub byte_size: u64,
 }
 
 /// Single source of truth for where master and derivative images live on disk.
@@ -85,6 +102,10 @@ pub fn render_master_from_file(
     spec: &ImageSpec,
     cache_root: &Path,
 ) -> Result<RenderedMaster, ImageError> {
+    render_master_cached(source_path, spec, cache_root)
+}
+
+fn probe_source(source_path: &Path) -> Result<ImageSourceProbe, ImageError> {
     let bytes = fs::read(source_path).map_err(|source| ImageError::SourceRead {
         path: source_path.to_path_buf(),
         source,
@@ -92,31 +113,52 @@ pub fn render_master_from_file(
     let meta = fs::metadata(source_path)?;
     let file_meta = datamile_fs::file_meta(&meta)?;
 
-    let raw_hash = blake3::hash(&bytes);
-    let source_hash = datamile_fs::format_blake3_string(raw_hash.as_bytes());
-
     let img = image::load_from_memory(&bytes).map_err(|source| ImageError::Decode {
         path: source_path.to_path_buf(),
         source,
     })?;
-
-    let source_width = img.width();
-    let source_height = img.height();
-    let source_format = image::guess_format(&bytes).map_or_else(
+    let format = image::guess_format(&bytes).map_or_else(
         |_| "unknown".to_string(),
         |format| format!("{format:?}").to_lowercase(),
     );
+
+    Ok(ImageSourceProbe {
+        raw_hash: blake3::hash(&bytes).as_bytes().to_vec(),
+        width: img.width(),
+        height: img.height(),
+        format,
+        mtime: file_meta.mtime,
+        byte_size: file_meta.byte_size,
+    })
+}
+
+/// Renders the master, reusing a cached source probe so an unchanged image is
+/// never decoded twice.
+///
+/// Warm path: probe from `objects/`, address derived from it, and
+/// `master.qoi` already on disk means zero image work.
+pub fn render_master_cached(
+    source_path: &Path,
+    spec: &ImageSpec,
+    cache_root: &Path,
+) -> Result<RenderedMaster, ImageError> {
+    let probe = datamile_cache::read_or_compute_cached(
+        source_path,
+        cache_root,
+        "objects",
+        probe_source,
+    )?;
 
     let address = compute_image_address(
         spec.fit_mode,
         spec.target_width,
         spec.target_height,
         spec.filter_type,
-        raw_hash.as_bytes(),
+        &probe.raw_hash,
     );
     let (rendered_width, rendered_height) = calculate_rendered_dimensions(
-        source_width,
-        source_height,
+        probe.width,
+        probe.height,
         spec.target_width,
         spec.target_height,
         spec.fit_mode,
@@ -124,6 +166,15 @@ pub fn render_master_from_file(
 
     let target = master_path(cache_root, &address);
     if !target.exists() {
+        let bytes = fs::read(source_path).map_err(|source| ImageError::SourceRead {
+            path: source_path.to_path_buf(),
+            source,
+        })?;
+        let img =
+            image::load_from_memory(&bytes).map_err(|source| ImageError::Decode {
+                path: source_path.to_path_buf(),
+                source,
+            })?;
         let source_rgb = img.into_rgb8();
         if let Some(resized) = resize_image_fit(
             &source_rgb,
@@ -141,14 +192,16 @@ pub fn render_master_from_file(
         address,
         rendered_width,
         rendered_height,
-        fit: spec.fit_mode.as_str(),
-        filter: filter_type_to_str(spec.filter_type),
-        source_width,
-        source_height,
-        source_format,
-        source_hash,
-        source_mtime: file_meta.mtime,
-        source_byte_size: file_meta.byte_size,
+        fit: spec.fit_mode.as_str().to_string(),
+        filter: filter_type_to_str(spec.filter_type).to_string(),
+        source_width: probe.width,
+        source_height: probe.height,
+        source_format: probe.format,
+        source_hash: datamile_fs::format_blake3_string(
+            &probe.raw_hash.as_slice().try_into().unwrap_or([0; 32]),
+        ),
+        source_mtime: probe.mtime,
+        source_byte_size: probe.byte_size,
     })
 }
 

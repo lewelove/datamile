@@ -9,6 +9,7 @@ license = "AGPL-3.0-only"
 workspace = true
 
 [dependencies]
+datamile-cache = { workspace = true }
 datamile-fs = { workspace = true }
 
 base64 = { workspace = true }
@@ -17,6 +18,7 @@ fast_image_resize = { workspace = true }
 image = { workspace = true }
 log = { workspace = true }
 qoi = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

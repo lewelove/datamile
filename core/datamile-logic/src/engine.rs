@@ -96,9 +96,15 @@ impl LogicEngine {
         for (media_type, index) in &mut self.types {
             let mut new_evaluated = HashMap::new();
             for (&uid, record) in &index.entities {
-                if let Ok(parsed) = serde_json::from_str::<Value>(&record.raw_json)
-                    && let Ok(res) = evaluate(media_type, &parsed)
-                {
+                // The compile pass evaluates the inner `<media_type>` entity;
+                // `raw_json` is the whole lock file, wrapper included.
+                let Ok(parsed) = serde_json::from_str::<Value>(&record.raw_json) else {
+                    continue;
+                };
+                let Some(entity) = parsed.get(media_type) else {
+                    continue;
+                };
+                if let Ok(res) = evaluate(media_type, entity) {
                     new_evaluated.insert(uid, res);
                 }
             }

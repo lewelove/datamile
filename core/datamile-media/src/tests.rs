@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use datamile_logic::LogicEngine;
+use datamile_logic::{LogicEngine, SortOrder};
 use datamile_lua_domain::{DomainLuaEngine, LogicManifest};
 use datamile_mpd::MpdEngine;
 use datamile_server::{ImageTaskRegistry, MediaBackend, ServerConfig, ServerState};
@@ -831,8 +831,10 @@ async fn config_change_reloads_the_logic_manifest() {
         &server._fixture.state_dir,
         &server._fixture.external,
     );
+    // The match reads a tag, so a reload that hands it the lock wrapper
+    // instead of the entity leaves the library empty.
     init.push_str(
-        "\nd.library('all', { media = 'album', match = function() return true end })\n",
+        "\nd.library('all', { media = 'album', match = function(a) return a.tags.album ~= nil end })\n",
     );
     write(&server._fixture.config, &init);
 
@@ -845,6 +847,21 @@ async fn config_change_reloads_the_logic_manifest() {
 
     let logic = server.server.logic.read().await;
     assert!(logic.manifest.libraries.contains_key("all"));
+    assert_eq!(
+        logic
+            .request_view(
+                "album",
+                "all",
+                None,
+                "default",
+                None,
+                None,
+                SortOrder::Forward
+            )
+            .len(),
+        1,
+        "the reloaded index must keep the album in the library"
+    );
 }
 
 #[tokio::test]

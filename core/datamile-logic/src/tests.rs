@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -97,6 +98,44 @@ fn engine_with_two_entities() -> LogicEngine {
     engine.build_cache();
 
     engine
+}
+
+/// A hot reload must re-evaluate the same payload the compile pass evaluated:
+/// the inner `<media_type>` entity, not the `{ "<media_type>": ... }` lock
+/// wrapper. The wrapper has no `tags`, so every match function misses and the
+/// library view comes back empty.
+#[test]
+fn reload_manifest_evaluates_the_inner_entity() {
+    let mut engine = engine_with_two_entities();
+    let seen = RefCell::new(Vec::new());
+
+    engine.reload_manifest(
+        &PathBuf::from("/config/init.lua"),
+        manifest(),
+        &|_media_type, entity| {
+            seen.borrow_mut().push(entity.clone());
+
+            // Mimic a config library match: it reads the entity payload.
+            if entity.get("id").is_none() {
+                return Ok(json!({}));
+            }
+            Ok(eval("all", "owned", "recent", "Rock", "Beta"))
+        },
+    );
+
+    assert_eq!(seen.borrow().len(), 2, "every entity is re-evaluated");
+    for entity in seen.borrow().iter() {
+        assert!(entity.get("id").is_some(), "lock wrapper leaked: {entity}");
+        assert!(entity.get(ALBUM).is_none(), "lock wrapper leaked: {entity}");
+    }
+
+    assert_eq!(
+        engine
+            .request_view(ALBUM, "all", None, "alpha", None, None, SortOrder::Forward)
+            .len(),
+        2,
+        "the library view must survive a reload"
+    );
 }
 
 /// Tags keep their JSON type, so every consumer that renders one as text goes

@@ -360,6 +360,33 @@ fn compile_emits_physical_and_virtual_nodes_and_images() {
     assert!(lock_path(&f.lib, "A").exists());
 }
 
+/// Lock keys are pinned, not alphabetical: primitives lead in a fixed order and
+/// every other key sorts after them.
+#[test]
+fn lock_orders_root_and_node_primitives_first() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    write_cover(&f.lib.join("A"));
+
+    let engine = engine_for(&f.config);
+    let compiled = compile_root(&engine, "album", &f.lib.join("A"), &f.cache, None)
+        .expect("compile");
+    let lock: Value = serde_json::from_str(&compiled.lock_json).expect("json");
+
+    let keys = |value: &Value| -> Vec<String> {
+        value.as_object().expect("object").keys().cloned().collect()
+    };
+
+    assert_eq!(
+        keys(&lock["album"]),
+        ["id", "tags", "objects", "images", "nodes", "location"]
+    );
+    assert_eq!(
+        keys(&lock["album"]["nodes"]["track"][0]),
+        ["tags", "objects", "location"]
+    );
+}
+
 /// `ctx` body hooks run before tags/id and expose parent state to children.
 #[test]
 fn ctx_hooks_populate_the_compilation_context() {

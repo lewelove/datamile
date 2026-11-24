@@ -320,13 +320,26 @@ pub fn strip_empty_values(value: &mut Value) {
     }
 }
 
+/// Root and node primitives, in the order a reader of a lock file expects.
+const PRIMITIVE_KEYS: [&str; 5] = ["id", "tags", "objects", "images", "nodes"];
+
+/// Primitives rank first, every other key ranks last and sorts alphabetically.
+fn key_rank(key: &str) -> usize {
+    PRIMITIVE_KEYS
+        .iter()
+        .position(|primitive| *primitive == key)
+        .unwrap_or(PRIMITIVE_KEYS.len())
+}
+
 /// Deterministic key order so lock bytes are stable across runs.
 pub fn sort_json_keys(value: &mut Value) {
     match value {
         Value::Object(map) => {
             let mut entries: Vec<(String, Value)> =
                 std::mem::take(map).into_iter().collect();
-            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            entries.sort_by(|(a, _), (b, _)| {
+                key_rank(a).cmp(&key_rank(b)).then_with(|| a.cmp(b))
+            });
             for (key, mut v) in entries {
                 sort_json_keys(&mut v);
                 map.insert(key, v);

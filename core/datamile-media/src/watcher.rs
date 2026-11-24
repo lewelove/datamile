@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use datamile_server::ServerState;
 use serde_json::json;
 
 use crate::compiler::CompiledRoot;
-use crate::deps::MediaShared;
+use crate::deps::{MediaShared, state_entries};
 use crate::state::{MediaState, open_engine};
 
 /// All hot-reload guards run here, in Rust: self-writes, config reloads,
@@ -504,12 +504,22 @@ async fn ingest_and_broadcast(
     {
         let mut logic = server.logic.write().await;
 
+        // A vanished root entity loses its state entry; its lock is never
+        // deleted. One write per media type, like the pass.
+        let mut removals_by_type: BTreeMap<&str, Vec<&Path>> = BTreeMap::new();
         for (media_type, dir) in &removed_roots {
-            // A vanished root entity loses its state entry; its lock is never
-            // deleted.
-            if let Err(e) = shared.remove_root(state, media_type, dir) {
-                log::error!("Failed to drop the state entry for {}: {e}", dir.display());
+            removals_by_type
+                .entry(media_type.as_str())
+                .or_default()
+                .push(dir.as_path());
+        }
+        for (media_type, dirs) in removals_by_type {
+            if let Err(e) = shared.remove_roots(state, media_type, &dirs) {
+                log::error!("Failed to drop the state entries for {media_type}: {e}");
             }
+        }
+
+        for (media_type, dir) in &removed_roots {
             if let Some(id) = logic.remove_entity_by_path(dir) {
                 per_type.entry(media_type.clone()).or_default().1.push(id);
             }
@@ -544,18 +554,11 @@ async fn ingest_and_broadcast(
             }
         }
 
-        // The watcher writes through the same two calls as the pass.
-        for root in &compiled {
-            if let Err(e) = shared.record_compiled(
-                state,
-                &root.media_type,
-                &root.dir,
-                &root.dependencies,
-            ) {
-                log::error!(
-                    "Failed to record the state entry for {}: {e}",
-                    root.dir.display()
-                );
+        // The watcher writes through the same call as the pass: one state file
+        // write per media type.
+        for (media_type, entries) in state_entries(&compiled) {
+            if let Err(e) = shared.record_roots(state, &media_type, entries) {
+                log::error!("Failed to record the state entries for {media_type}: {e}");
             }
         }
 

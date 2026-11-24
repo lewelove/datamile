@@ -112,12 +112,22 @@ fn album_eval() -> Value {
 
 struct MockBackend {
     payloads: Arc<Mutex<Vec<Value>>>,
+    /// Makes `trigger_update` fail, as a pass that cannot start does.
+    update_fails: bool,
 }
 
 impl MockBackend {
     fn new() -> Self {
         Self {
             payloads: Arc::new(Mutex::new(Vec::new())),
+            update_fails: false,
+        }
+    }
+
+    fn failing() -> Self {
+        Self {
+            update_fails: true,
+            ..Self::new()
         }
     }
 }
@@ -206,6 +216,10 @@ impl MediaBackend for MockBackend {
         _request: UpdateRequest,
         _event_txs: Vec<tokio::sync::mpsc::Sender<String>>,
     ) -> anyhow::Result<()> {
+        if self.update_fails {
+            anyhow::bail!("the compile pool could not start");
+        }
+
         Ok(())
     }
 
@@ -662,4 +676,42 @@ async fn router_selects_targets_from_the_request_body() {
     let items = body_json(response).await;
     assert_eq!(items[0]["type"], json!(ALBUM));
     assert_eq!(items[0]["id"], json!("a"));
+}
+
+/// A pass that cannot start still ends the stream with `Finished`, so the CLI
+/// reports the failure instead of a truncated stream.
+#[tokio::test]
+async fn update_stream_reports_a_start_failure_as_events() {
+    let state =
+        test_state_with_backend(engine_with(&[]), Arc::new(MockBackend::failing())).await;
+    let app = crate::api::router(state);
+
+    let response = app
+        .oneshot(
+            Request::post("/api/update")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"force":false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+    let events: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON event per line"))
+        .collect();
+
+    assert_eq!(events.len(), 2, "{text}");
+    assert_eq!(events[0]["event"], json!("failed"));
+    assert_eq!(
+        events[0]["error"],
+        json!("the compile pool could not start")
+    );
+    assert_eq!(events[1]["event"], json!("finished"));
+    assert_eq!(events[1]["failed"], json!(1));
 }

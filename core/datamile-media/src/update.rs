@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use datamile_cache::{hash_files, load_state, root_is_dirty, walk_files};
 use datamile_logic::LogicEngine;
 use datamile_server::{ServerState, UpdateRequest};
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::compiler::{CompiledRoot, compile_root};
-use crate::deps::{MediaShared, UpdateScope, index_root, unindex_root};
+use crate::deps::{MediaShared, UpdateScope, index_root, state_entries, unindex_root};
 use crate::schema::{DiscoveredRoot, Discovery, discover_roots};
 use crate::state::{MediaState, config_hash_path, open_engine, state_path};
 
@@ -460,6 +460,9 @@ fn plan_work(
 }
 
 /// Writes the state entries and the reverse index the watcher reads.
+///
+/// One write per media type, not one per root entity: a full pass over N roots
+/// would otherwise load and save an N-entry file N times.
 fn record_state(
     shared: &Arc<MediaShared>,
     state: &MediaState,
@@ -474,37 +477,57 @@ fn record_state(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     for root in compiled {
-        let media_type = root.media_type.clone();
-        let dir = root.dir.clone();
-        index_root(&mut index, &dir, &root.dependencies);
+        index_root(&mut index, &root.dir, &root.dependencies);
+    }
 
-        if let Err(e) =
-            shared.record_compiled(state, &media_type, &dir, &root.dependencies)
-        {
-            sink.event(&UpdateEvent::Failed {
-                media_type,
-                dir: Some(dir),
-                error: format!("failed to record the state file: {e}"),
-            });
-            result.failed += 1;
+    for (media_type, entries) in state_entries(compiled) {
+        let dirs: Vec<PathBuf> = entries.iter().map(|(dir, _)| dir.clone()).collect();
+
+        if let Err(e) = shared.record_roots(state, &media_type, entries) {
+            for dir in dirs {
+                sink.event(&UpdateEvent::Failed {
+                    media_type: media_type.clone(),
+                    dir: Some(dir),
+                    error: format!("failed to record the state file: {e}"),
+                });
+                result.failed += 1;
+            }
         }
     }
 
+    let mut by_type: BTreeMap<&str, Vec<&Path>> = BTreeMap::new();
     for (media_type, dir) in removals {
         unindex_root(&mut index, dir);
-        if let Err(e) = shared.remove_root(state, media_type, dir) {
-            sink.event(&UpdateEvent::Failed {
-                media_type: media_type.clone(),
-                dir: Some(dir.clone()),
-                error: format!("failed to record the state file: {e}"),
-            });
-            result.failed += 1;
+        by_type
+            .entry(media_type.as_str())
+            .or_default()
+            .push(dir.as_path());
+    }
+
+    for (media_type, dirs) in by_type {
+        // A removal is reported only once the entry is really gone, or the next
+        // pass would report the same root as removed again.
+        match shared.remove_roots(state, media_type, &dirs) {
+            Ok(()) => {
+                for dir in dirs {
+                    sink.event(&UpdateEvent::Removed {
+                        media_type: media_type.to_string(),
+                        dir: dir.to_path_buf(),
+                    });
+                    result.removed += 1;
+                }
+            }
+            Err(e) => {
+                for dir in dirs {
+                    sink.event(&UpdateEvent::Failed {
+                        media_type: media_type.to_string(),
+                        dir: Some(dir.to_path_buf()),
+                        error: format!("failed to record the state file: {e}"),
+                    });
+                    result.failed += 1;
+                }
+            }
         }
-        sink.event(&UpdateEvent::Removed {
-            media_type: media_type.clone(),
-            dir: dir.clone(),
-        });
-        result.removed += 1;
     }
 }
 
@@ -556,6 +579,12 @@ pub fn run_pass(
         },
     );
 
+    // A `--path` that matches no root entity would otherwise report a clean
+    // pass and exit zero having done nothing.
+    if matches!(scope, UpdateScope::Paths(_)) && scoped == 0 && removals.is_empty() {
+        bail!("no root entity matches the given path");
+    }
+
     result.discovered = scoped;
     sink.event(&UpdateEvent::Started {
         discovered: scoped,
@@ -596,8 +625,14 @@ pub fn run_pass(
         }
     }
 
-    // Only a finished pass may claim the config it compiled.
-    if result.failed == 0 {
+    // Roots that were verified and found clean are `unchanged` too, so the
+    // counts add up to `discovered` instead of all reading zero on a clean pass.
+    result.unchanged += scoped.saturating_sub(dirty.len());
+
+    // Only a pass that compiled everything may claim the config digest, or the
+    // next full pass would trust it and skip the roots this one did not touch.
+    let claims_config = matches!(scope, UpdateScope::All) && media_type.is_none();
+    if claims_config && result.failed == 0 {
         let _ = datamile_fs::write_atomic(&digest_path, &digest);
     }
 

@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Mutex, RwLock};
 
 use anyhow::Result;
 use datamile_cache::{
     FileStat, RootState, RootStates, load_state, root_files, save_state,
 };
 
+use crate::compiler::CompiledRoot;
 use crate::state::MediaState;
 
 /// Reverse index `external file -> root entities that read it`, rebuilt at boot
@@ -123,69 +124,66 @@ impl Default for MediaShared {
     }
 }
 
-impl Clone for MediaShared {
-    fn clone(&self) -> Self {
-        Self {
-            state: RwLock::new(
-                self.state
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-            ),
-            external_index: RwLock::new(
-                self.external_index
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-            ),
-            active_writes: Mutex::new(
-                self.active_writes
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-            ),
-            state_writer: Mutex::new(()),
-            update_lock: Mutex::new(UpdateState::default()),
-        }
+/// The fingerprints of one root entity: its walked files plus the external ones.
+pub type RootFiles = BTreeMap<String, FileStat>;
+
+/// One pending state entry: the root entity's directory and its file map.
+pub type StateEntry = (PathBuf, RootFiles);
+
+/// Pending state entries, grouped by media type.
+pub type StateEntries = BTreeMap<String, Vec<StateEntry>>;
+
+/// The state entries for a batch of compiled roots, grouped by media type, so
+/// one write covers every root of a media type instead of one write per root.
+///
+/// The file maps are built here, outside the writer lock, so the walks do not
+/// hold it.
+#[must_use]
+pub fn state_entries(compiled: &[CompiledRoot]) -> StateEntries {
+    let mut grouped = StateEntries::new();
+
+    for root in compiled {
+        grouped
+            .entry(root.media_type.clone())
+            .or_default()
+            .push((root.dir.clone(), root_files(&root.dir, &root.dependencies)));
     }
+
+    grouped
 }
 
 impl MediaShared {
-    /// Records a compiled root entity: the whole `files` map is replaced, so
-    /// nothing is carried over from the previous pass.
-    pub fn record_root(
+    /// Records a batch of compiled root entities of one media type with a single
+    /// load and save of that media type's state file.
+    ///
+    /// Each entry replaces the root entity's whole `files` map, so nothing is
+    /// carried over from the previous pass.
+    pub fn record_roots(
         &self,
         state: &MediaState,
         media_type: &str,
-        dir: &Path,
-        files: BTreeMap<String, FileStat>,
+        entries: Vec<StateEntry>,
     ) -> Result<()> {
         self.write_state(state, media_type, |states| {
-            states.insert(dir.to_string_lossy().to_string(), RootState { files });
+            for (dir, files) in entries {
+                states.insert(dir.to_string_lossy().to_string(), RootState { files });
+            }
         })
     }
 
-    /// Drops a root entity's state entry. Its lock file is left alone.
-    pub fn remove_root(
+    /// Drops a batch of root entity state entries. Their lock files are left
+    /// alone.
+    pub fn remove_roots(
         &self,
         state: &MediaState,
         media_type: &str,
-        dir: &Path,
+        dirs: &[&Path],
     ) -> Result<()> {
         self.write_state(state, media_type, |states| {
-            states.remove(&dir.to_string_lossy().to_string());
+            for dir in dirs {
+                states.remove(&dir.to_string_lossy().to_string());
+            }
         })
-    }
-
-    /// Convenience wrapper for the common "compile finished" case.
-    pub fn record_compiled(
-        &self,
-        state: &MediaState,
-        media_type: &str,
-        dir: &Path,
-        external: &[PathBuf],
-    ) -> Result<()> {
-        self.record_root(state, media_type, dir, root_files(dir, external))
     }
 
     fn write_state(
@@ -216,5 +214,3 @@ impl MediaShared {
         Ok(())
     }
 }
-
-pub type SharedRef = Arc<MediaShared>;

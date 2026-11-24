@@ -1121,6 +1121,181 @@ fn corrupt_state_file_fails_without_a_dir() {
     assert!(matches!(events.last(), Some(UpdateEvent::Finished { .. })));
 }
 
+/// A scoped pass must not claim the config digest, or the next full pass would
+/// trust it and leave every root the scoped pass skipped compiled by the old
+/// config.
+#[test]
+fn scoped_pass_does_not_claim_the_config_digest() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    let shared = shared_for(&f);
+    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+
+    // A config edit that changes every lock, then a pass scoped to A only.
+    let mut dsl = album_dsl(&f.lib, &f.cache, &f.state_dir, &f.external);
+    dsl.push_str("\nalbum.tag(\"extra\", function(_ctx) return \"x\" end)\n");
+    write(&f.config, &dsl);
+
+    let mut paths = std::collections::HashSet::new();
+    paths.insert(f.lib.join("A"));
+    pass(
+        &shared,
+        &UpdateScope::Paths(paths),
+        None,
+        ForceMode::Preserve,
+    );
+
+    pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+
+    let lock = read_lock(&lock_path(&f.lib, "B"));
+    assert_eq!(
+        lock["album"]["tags"]["extra"],
+        json!("x"),
+        "a config change must still force B after a scoped pass"
+    );
+}
+
+/// One call records a whole batch, so a pass writes one state file per media
+/// type instead of one per root entity.
+#[test]
+fn record_roots_writes_a_whole_batch() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    let shared = shared_for(&f);
+    let state = shared
+        .state
+        .read()
+        .expect("state")
+        .clone()
+        .expect("media state");
+
+    let entries: Vec<_> = [f.lib.join("A"), f.lib.join("B")]
+        .into_iter()
+        .map(|dir| {
+            let files = datamile_cache::walk_files(&dir);
+            (dir, files)
+        })
+        .collect();
+
+    shared
+        .record_roots(&state, "album", entries)
+        .expect("record the batch");
+
+    let states =
+        datamile_cache::load_state(&state_file(&f, "album", &f.lib)).expect("state");
+    assert_eq!(states.len(), 2, "every entry of the batch is written");
+}
+
+/// A clean pass counts every verified root as unchanged, so the Finished counts
+/// add up to `discovered` instead of all reading zero.
+#[test]
+fn clean_pass_counts_unchanged_roots() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    let shared = shared_for(&f);
+    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+
+    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+
+    assert_eq!(result.discovered, 2);
+    assert_eq!(
+        result.unchanged, 2,
+        "clean roots are unchanged, not missing"
+    );
+
+    let finished = events.last().expect("last event");
+    let UpdateEvent::Finished {
+        discovered,
+        added,
+        updated,
+        unchanged,
+        removed,
+        failed,
+    } = finished
+    else {
+        panic!("the last event must be Finished, got {finished:?}");
+    };
+    assert_eq!(*discovered, 2);
+    assert_eq!(*unchanged, 2);
+    assert_eq!(
+        added + updated + unchanged + removed + failed,
+        *discovered,
+        "every discovered root is accounted for"
+    );
+}
+
+/// A removal whose state write fails is reported `Failed`, never `Removed`: the
+/// entry is still there, so the next pass must report the removal again.
+#[test]
+fn failed_state_removal_is_not_reported_as_removed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    let shared = shared_for(&f);
+    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+
+    std::fs::remove_dir_all(f.lib.join("B")).expect("remove B");
+
+    // A read-only state directory makes the atomic write fail while the read of
+    // the existing state file still works.
+    let state_dir = state_file(&f, "album", &f.lib);
+    let state_dir = state_dir.parent().expect("parent").to_path_buf();
+    std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o500))
+        .expect("chmod");
+
+    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+
+    std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("chmod back");
+
+    assert_eq!(result.failed, 1);
+    assert_eq!(result.removed, 0);
+    assert_eq!(
+        event_count(&events, |event| matches!(event, UpdateEvent::Failed { .. })),
+        1
+    );
+    assert_eq!(
+        event_count(&events, |event| matches!(
+            event,
+            UpdateEvent::Removed { .. }
+        )),
+        0
+    );
+}
+
+/// A path that matches no root entity is an error, not a clean pass.
+#[test]
+fn scoped_pass_with_no_matching_root_is_an_error() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    let shared = shared_for(&f);
+    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+
+    let mut paths = std::collections::HashSet::new();
+    paths.insert(f.lib.join("missing"));
+
+    let Err(error) = run_pass(
+        &shared,
+        &UpdateScope::Paths(paths),
+        None,
+        ForceMode::Preserve,
+        None,
+        &LogSink,
+    ) else {
+        panic!("a path that matches nothing must be an error");
+    };
+
+    assert!(
+        format!("{error}").contains("no root entity"),
+        "unexpected error: {error}"
+    );
+}
+
 // --------------------------------------------------------- two media roots ----
 
 struct TwoTypes {
@@ -1328,7 +1503,7 @@ fn concurrent_state_writers_do_not_lose_entries() {
             scope.spawn(move || {
                 let files = datamile_cache::walk_files(dir);
                 shared
-                    .record_root(&state, "album", dir, files)
+                    .record_roots(&state, "album", vec![(dir.clone(), files)])
                     .expect("record");
             });
         }

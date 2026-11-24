@@ -21,7 +21,11 @@ pub async fn trigger_update(
             .backend
             .trigger_update(Arc::clone(&state), payload, vec![tx.clone()])
     {
-        let _ = tx.send(format!("Update failed: {e}")).await;
+        // The stream contract is one JSON event per line, ending in `Finished`,
+        // so the CLI can report the failure instead of a truncated stream.
+        for line in start_failure(&e.to_string()) {
+            let _ = tx.send(line).await;
+        }
     }
     // The backend owns the only other sender; dropping ours ends the stream when
     // the pass is over.
@@ -39,6 +43,28 @@ pub async fn trigger_update(
         )
         .body(axum::body::Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// The two lines that keep the stream contract when a pass cannot even start: a
+/// `Failed` event, then `Finished` with one failure.
+fn start_failure(error: &str) -> [String; 2] {
+    let failed = json!({
+        "event": "failed",
+        "media_type": "-",
+        "dir": null,
+        "error": error,
+    });
+    let finished = json!({
+        "event": "finished",
+        "discovered": 0,
+        "added": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "removed": 0,
+        "failed": 1,
+    });
+
+    [failed.to_string(), finished.to_string()]
 }
 
 /// `GET /api/identity`: what a CLI compares before it delegates anything.

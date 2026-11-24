@@ -11,7 +11,6 @@ use crate::logic::LogicManifest;
 
 const LUA_CORE: &str = include_str!("core.lua");
 const LUA_CONFIG: &str = include_str!("config.lua");
-const LUA_ACTIONS: &str = include_str!("actions.lua");
 const LUA_LOGIC: &str = include_str!("logic.lua");
 
 const DEFAULT_CACHE_ROOT: &str = "~/.cache/datamile";
@@ -61,7 +60,6 @@ impl DomainLuaEngine {
         for (name, script) in [
             ("core.lua", LUA_CORE),
             ("config.lua", LUA_CONFIG),
-            ("actions.lua", LUA_ACTIONS),
             ("logic.lua", LUA_LOGIC),
         ] {
             engine.load_extension(name, script)?;

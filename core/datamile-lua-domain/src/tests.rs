@@ -132,19 +132,6 @@ fn action_runs_with_the_given_intermediary() {
 }
 
 #[test]
-fn open_config_in_terminal_is_a_builtin_action() {
-    let (_dir, engine, path) = setup("");
-
-    let eval = engine.evaluate_config(&path).expect("evaluate config");
-
-    assert!(
-        eval.actions.contains_key("open_config_in_terminal"),
-        "builtin action is missing from {:?}",
-        eval.actions.keys().collect::<Vec<_>>()
-    );
-}
-
-#[test]
 fn logic_manifest_normalizes_ordering_and_targets() {
     let (_dir, engine, path) = setup(
         r#"

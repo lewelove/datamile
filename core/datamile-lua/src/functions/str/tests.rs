@@ -232,6 +232,52 @@ fn test_d_str_pesc() {
     assert!(invalid_type.is_err());
 }
 
+/// Verify that `d.str.uri_encode` percent-encodes every byte outside the
+/// RFC 3986 unreserved set and leaves that set untouched.
+#[test]
+fn test_d_str_uri_encode() {
+    let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
+
+    let query: String = engine
+        .lua
+        .load("return d.str.uri_encode('artist:\"Aphex Twin\" AND releasegroup:\"SAW 85-92\"')")
+        .eval()
+        .expect("Execution failed");
+    assert_eq!(
+        query,
+        "artist%3A%22Aphex%20Twin%22%20AND%20releasegroup%3A%22SAW%2085-92%22"
+    );
+
+    // The unreserved set is the one thing that must survive untouched.
+    let unreserved: String = engine
+        .lua
+        .load("return d.str.uri_encode('AZaz09-._~')")
+        .eval()
+        .expect("Execution failed");
+    assert_eq!(unreserved, "AZaz09-._~");
+
+    // Multi-byte UTF-8 becomes one escape per byte, not per code point.
+    let multibyte: String = engine
+        .lua
+        .load("return d.str.uri_encode('‽')")
+        .eval()
+        .expect("Execution failed");
+    assert_eq!(multibyte, "%E2%80%BD");
+
+    let empty: String = engine
+        .lua
+        .load("return d.str.uri_encode('')")
+        .eval()
+        .expect("Execution failed");
+    assert_eq!(empty, "");
+
+    let invalid_type = engine
+        .lua
+        .load("return d.str.uri_encode(nil)")
+        .eval::<String>();
+    assert!(invalid_type.is_err());
+}
+
 /// Verify that `d.str.stricmp` performs case-insensitive ASCII comparison.
 #[test]
 fn test_d_str_stricmp() {

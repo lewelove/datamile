@@ -38,6 +38,18 @@ function M.pesc(s)
     return (s:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1"))
 end
 
+-- Percent-encodes every byte outside the RFC 3986 unreserved set
+-- (A-Z, a-z, 0-9, "-", ".", "_", "~"). Works byte-wise, so multi-byte UTF-8
+-- becomes one escape per byte: "‽" -> "%E2%80%BD".
+function M.uri_encode(s)
+    if type(s) ~= "string" then
+        error(string.format("s: expected string, got %s", type(s)))
+    end
+    return (s:gsub("[^%w%-%._~]", function(c)
+        return string.format("%%%02X", c:byte())
+    end))
+end
+
 function M.stricmp(a, b)
     if type(a) ~= "string" then
         error(string.format("a: expected string, got %s", type(a)))

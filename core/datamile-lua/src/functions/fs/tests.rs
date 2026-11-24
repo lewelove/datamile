@@ -740,3 +740,157 @@ year = 2024"#;
     let wrong_ext_res = engine.lua.load(&wrong_ext_code).eval::<Table>();
     assert!(wrong_ext_res.is_err());
 }
+
+/// Builds `<root>/<rel>` file trees for the discovery helpers.
+fn write_tree(root: &std::path::Path, files: &[&str]) {
+    for rel in files {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(&path, rel).expect("write file");
+    }
+}
+
+/// `d.fs.roots` walks recursively and returns canonical dirs holding a marker.
+#[test]
+fn test_d_fs_roots_finds_marker_directories() {
+    let root = TempDir::new();
+    write_tree(
+        &root.0,
+        &[
+            "A/album.toml",
+            "B/virtual.toml",
+            "C/notes.txt",
+            "D/E/album.toml",
+        ],
+    );
+
+    let engine = LuaRuntime::new().expect("runtime");
+    let code = format!(
+        "return d.fs.roots('{root}', {{ markers = {{ 'album.toml', 'virtual.toml' }} }})",
+        root = root.path_str()
+    );
+    let found: Table = engine.lua.load(&code).eval().expect("roots");
+
+    assert_eq!(found.raw_len(), 3);
+    let first: String = found.get(1).expect("first");
+    assert!(first.ends_with("/A"), "unexpected {first}");
+}
+
+/// `d.fs.files` is naturally sorted and stat-enriched in one pass.
+#[test]
+fn test_d_fs_files_returns_stat_entries() {
+    let root = TempDir::new();
+    write_tree(&root.0, &["2.flac", "10.flac", "cover.jpg"]);
+
+    let engine = LuaRuntime::new().expect("runtime");
+    let code = format!(
+        "return d.fs.files('{root}', {{ ext = 'flac' }})",
+        root = root.path_str()
+    );
+    let files: Table = engine.lua.load(&code).eval().expect("files");
+
+    assert_eq!(files.raw_len(), 2);
+    let first: Table = files.get(1).expect("first entry");
+    assert_eq!(first.get::<String>("name").expect("name"), "2.flac");
+    assert_eq!(first.get::<String>("stem").expect("stem"), "2");
+    assert_eq!(first.get::<String>("ext").expect("ext"), "flac");
+    assert!(first.get::<u64>("byte_size").expect("size") > 0);
+    let _mtime: u64 = first.get("mtime").expect("mtime");
+    assert!(
+        first
+            .get::<String>("path")
+            .expect("path")
+            .ends_with("2.flac")
+    );
+}
+
+/// `d.fs.files` recurses only when asked, and `paths_only` returns strings.
+#[test]
+fn test_d_fs_files_recursive_and_paths_only() {
+    let root = TempDir::new();
+    write_tree(&root.0, &["a.flac", "nested/b.flac"]);
+
+    let engine = LuaRuntime::new().expect("runtime");
+
+    let flat: Table = engine
+        .lua
+        .load(format!(
+            "return d.fs.files('{root}', {{ paths_only = true }})",
+            root = root.path_str()
+        ))
+        .eval()
+        .expect("flat");
+    assert_eq!(flat.raw_len(), 1);
+
+    let deep: Table = engine
+        .lua
+        .load(format!(
+            "return d.fs.files('{root}', {{ recursive = true, paths_only = true }})",
+            root = root.path_str()
+        ))
+        .eval()
+        .expect("deep");
+    assert_eq!(deep.raw_len(), 2);
+}
+
+/// `d.fs.dirs` lists subdirectories, not files.
+#[test]
+fn test_d_fs_dirs_lists_subdirectories() {
+    let root = TempDir::new();
+    write_tree(&root.0, &["disc1/a.flac", "disc2/b.flac", "cover.jpg"]);
+
+    let engine = LuaRuntime::new().expect("runtime");
+    let dirs: Table = engine
+        .lua
+        .load(format!(
+            "return d.fs.dirs('{root}')",
+            root = root.path_str()
+        ))
+        .eval()
+        .expect("dirs");
+
+    assert_eq!(dirs.raw_len(), 2);
+    let first: Table = dirs.get(1).expect("entry");
+    assert_eq!(first.get::<String>("name").expect("name"), "disc1");
+}
+
+/// `d.fs.first` prefers exact names and falls back to a bare extension.
+#[test]
+fn test_d_fs_first_matches_names_and_extensions() {
+    let root = TempDir::new();
+    write_tree(&root.0, &["folder.jpg", "cover.jpg"]);
+
+    let engine = LuaRuntime::new().expect("runtime");
+
+    let exact: Option<String> = engine
+        .lua
+        .load(format!(
+            "return d.fs.first('{root}', {{ 'missing.jpg', 'cover.jpg' }})",
+            root = root.path_str()
+        ))
+        .eval()
+        .expect("exact");
+    assert!(exact.expect("exact hit").ends_with("cover.jpg"));
+
+    let by_ext: Option<String> = engine
+        .lua
+        .load(format!(
+            "return d.fs.first('{root}', '.jpg')",
+            root = root.path_str()
+        ))
+        .eval()
+        .expect("extension");
+    assert!(by_ext.expect("extension hit").ends_with("cover.jpg"));
+
+    let missing: Option<String> = engine
+        .lua
+        .load(format!(
+            "return d.fs.first('{root}', 'nope.png')",
+            root = root.path_str()
+        ))
+        .eval()
+        .expect("missing");
+    assert!(missing.is_none());
+}

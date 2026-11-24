@@ -12,12 +12,14 @@ workspace = true
 datamile-cache = { workspace = true }
 datamile-fs = { workspace = true }
 
+alphanumeric-sort = { workspace = true }
 anyhow = { workspace = true }
 dotenv-ng-core = { workspace = true }
 mlua = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+walkdir = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }

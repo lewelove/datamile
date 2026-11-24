@@ -94,4 +94,24 @@ function M.bisect(t, val, opts)
     return low
 end
 
+-- Sums a list of numbers, or the results of `fn(item)` when given.
+function M.sum(list, fn)
+    if type(list) ~= "table" then
+        error(string.format("list: expected table, got %s", type(list)))
+    end
+    if fn ~= nil and type(fn) ~= "function" then
+        error(string.format("fn: expected function, got %s", type(fn)))
+    end
+
+    local total = 0
+    for _, item in ipairs(list) do
+        local value = fn and fn(item) or item
+        if type(value) ~= "number" then
+            error(string.format("list: expected numbers, got %s", type(value)))
+        end
+        total = total + value
+    end
+    return total
+end
+
 return M

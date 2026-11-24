@@ -244,4 +244,17 @@ function M.utf_end(s, index)
     return end_idx - index
 end
 
+-- Leading integer prefix, or nil when the string starts with anything else.
+-- `"03 - Title.flac"` -> 3, `"disc2"` -> nil, `"3/12"` -> 3.
+function M.leading_int(s)
+    if type(s) ~= "string" then
+        error(string.format("s: expected string, got %s", type(s)))
+    end
+    local digits = s:match("^%s*(%d+)")
+    if not digits then
+        return nil
+    end
+    return tonumber(digits)
+end
+
 return M

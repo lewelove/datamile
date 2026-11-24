@@ -324,4 +324,88 @@ function M.root(source, marker)
     return nil
 end
 
+-- Recursively finds directories holding any marker (file or subdirectory).
+-- `marker` accepts a string, an array, or `{ markers = { ... } }`.
+function M.roots(dir, marker)
+    if type(dir) ~= "string" then
+        error(string.format("dir: expected string, got %s", type(dir)))
+    end
+
+    local markers
+    if type(marker) == "string" then
+        markers = { marker }
+    elseif type(marker) == "table" then
+        markers = marker.markers or marker
+    else
+        error(string.format("marker: expected string or table, got %s", type(marker)))
+    end
+
+    return M._roots_native(dir, markers)
+end
+
+-- Files under `dir`, naturally sorted and stat-enriched in one walk.
+-- opts: { recursive = bool, ext = "flac" | { ... }, paths_only = bool }
+function M.files(dir, opts)
+    if type(dir) ~= "string" then
+        error(string.format("dir: expected string, got %s", type(dir)))
+    end
+    opts = opts or {}
+
+    local exts = {}
+    if type(opts.ext) == "string" then
+        exts = { opts.ext }
+    elseif type(opts.ext) == "table" then
+        exts = opts.ext
+    end
+
+    local entries = M._files_native(dir, opts.recursive == true, exts)
+    if opts.paths_only then
+        local paths = {}
+        for i, entry in ipairs(entries) do
+            paths[i] = entry.path
+        end
+        return paths
+    end
+    return entries
+end
+
+-- Subdirectories under `dir`, naturally sorted.
+function M.dirs(dir, opts)
+    if type(dir) ~= "string" then
+        error(string.format("dir: expected string, got %s", type(dir)))
+    end
+    opts = opts or {}
+
+    local entries = M._dirs_native(dir, opts.recursive == true)
+    if opts.paths_only then
+        local paths = {}
+        for i, entry in ipairs(entries) do
+            paths[i] = entry.path
+        end
+        return paths
+    end
+    return entries
+end
+
+-- First existing candidate. Bare tokens (".jpg", "jpg") match an extension.
+function M.first(dir, candidates, opts)
+    if type(dir) ~= "string" then
+        error(string.format("dir: expected string, got %s", type(dir)))
+    end
+    if opts ~= nil and type(opts) ~= "table" then
+        error(string.format("opts: expected table, got %s", type(opts)))
+    end
+
+    local list
+    if type(candidates) == "string" then
+        list = { candidates }
+    elseif type(candidates) == "table" then
+        list = candidates
+    else
+        error(string.format("candidates: expected string or table, got %s", type(candidates)))
+    end
+
+    return M._first_native(dir, list)
+end
+
 return M

@@ -3,12 +3,13 @@ mod tests;
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mlua::serde::SerializeOptions;
-use mlua::{Lua, LuaSerdeExt, Table};
+use mlua::{Lua, Table};
+use walkdir::WalkDir;
 
-use crate::EngineContext;
+use crate::{EngineContext, read_with_entity_memo};
 
 const LUA_FS: &str = include_str!("mod.lua");
 
@@ -140,7 +141,7 @@ fn fs_scandir_native(
 
 fn create_fs_reader(
     lua: &Lua,
-    opts: SerializeOptions,
+    _opts: SerializeOptions,
     expected_ext: &'static str,
 ) -> mlua::Result<mlua::Function> {
     lua.create_function(move |lua, path_str: Option<String>| {
@@ -161,16 +162,220 @@ fn create_fs_reader(
                 },
             ));
         }
-        match datamile_cache::read_object_cached(&path, &ctx.cache_root) {
-            Ok(json_val) => lua.to_value_with(&json_val, opts),
-            Err(datamile_cache::CacheError::Io(err))
-                if err.kind() == std::io::ErrorKind::NotFound =>
-            {
-                Ok(mlua::Value::Nil)
-            }
-            Err(e) => Err(mlua::Error::external(e)),
+
+        // A memo hit survives the file vanishing mid-entity; a fresh read of a
+        // missing file is `nil`, matching `d.fs.read`.
+        if let Some(value) = ctx.memo_get(expected_ext, &path) {
+            return Ok(value);
         }
+        if !path.exists() {
+            return Ok(mlua::Value::Nil);
+        }
+
+        let cache_root = ctx.cache_root.clone();
+        read_with_entity_memo(lua, expected_ext, &path, |p| {
+            Ok(datamile_cache::read_object_cached(p, &cache_root)?)
+        })
     })
+}
+
+fn meta_seconds(meta: &std::fs::Metadata) -> u64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EntryKind {
+    File,
+    Dir,
+}
+
+fn entry_table(
+    lua: &Lua,
+    path: &Path,
+    meta: &std::fs::Metadata,
+    kind: EntryKind,
+) -> mlua::Result<Table> {
+    let entry = lua.create_table()?;
+    entry.set("path", path.to_string_lossy().to_string())?;
+    entry.set(
+        "name",
+        path.file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().to_string()),
+    )?;
+    entry.set("mtime", meta_seconds(meta))?;
+
+    if kind == EntryKind::File {
+        entry.set(
+            "stem",
+            path.file_stem()
+                .map_or_else(String::new, |s| s.to_string_lossy().to_string()),
+        )?;
+        entry.set(
+            "ext",
+            path.extension()
+                .map_or_else(String::new, |e| e.to_string_lossy().to_string()),
+        )?;
+        entry.set("byte_size", meta.len())?;
+    }
+
+    Ok(entry)
+}
+
+fn matches_ext(path: &Path, extensions: &[String]) -> bool {
+    extensions.is_empty() || datamile_fs::has_extension(path, extensions)
+}
+
+fn sorted_paths(paths: &mut [PathBuf]) {
+    paths.sort_by(|a, b| alphanumeric_sort::compare_path(a, b));
+}
+
+/// Recursively collects every directory below `dir` (inclusive) holding at
+/// least one of `markers`, canonicalized and naturally sorted.
+fn fs_roots(lua: &Lua, (dir, markers): (String, Vec<String>)) -> mlua::Result<Table> {
+    let root = datamile_fs::expand_path(&dir);
+    let mut found: Vec<PathBuf> = WalkDir::new(&root)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_dir())
+        .filter(|entry| {
+            markers
+                .iter()
+                .any(|marker| entry.path().join(marker).exists())
+        })
+        .map(|entry| {
+            entry
+                .path()
+                .canonicalize()
+                .unwrap_or_else(|_| entry.path().to_path_buf())
+        })
+        .collect();
+
+    sorted_paths(&mut found);
+    found.dedup();
+
+    let table = lua.create_table()?;
+    for (index, path) in found.iter().enumerate() {
+        table.set(index + 1, path.to_string_lossy().to_string())?;
+    }
+    Ok(table)
+}
+
+/// Lists file entries with their stat data in one walk.
+fn fs_files(
+    lua: &Lua,
+    (dir, recursive, extensions): (String, bool, Vec<String>),
+) -> mlua::Result<Table> {
+    let root = datamile_fs::expand_path(&dir);
+    let walker = if recursive {
+        WalkDir::new(&root).follow_links(true).into_iter()
+    } else {
+        WalkDir::new(&root)
+            .max_depth(1)
+            .follow_links(true)
+            .into_iter()
+    };
+
+    let mut entries: Vec<(PathBuf, std::fs::Metadata)> = walker
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .filter(|entry| matches_ext(entry.path(), &extensions))
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            Some((entry.path().to_path_buf(), meta))
+        })
+        .collect();
+
+    entries.sort_by(|(a, _), (b, _)| alphanumeric_sort::compare_path(a, b));
+
+    let table = lua.create_table()?;
+    for (index, (path, meta)) in entries.iter().enumerate() {
+        table.set(index + 1, entry_table(lua, path, meta, EntryKind::File)?)?;
+    }
+    Ok(table)
+}
+
+/// Lists directory entries with their mtime in one walk.
+fn fs_dirs(lua: &Lua, (dir, recursive): (String, bool)) -> mlua::Result<Table> {
+    let root = datamile_fs::expand_path(&dir);
+    let walker = if recursive {
+        WalkDir::new(&root).follow_links(true).into_iter()
+    } else {
+        WalkDir::new(&root)
+            .max_depth(1)
+            .follow_links(true)
+            .into_iter()
+    };
+
+    let mut entries: Vec<(PathBuf, std::fs::Metadata)> = walker
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_dir() && entry.path() != root)
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            Some((entry.path().to_path_buf(), meta))
+        })
+        .collect();
+
+    entries.sort_by(|(a, _), (b, _)| alphanumeric_sort::compare_path(a, b));
+
+    let table = lua.create_table()?;
+    for (index, (path, meta)) in entries.iter().enumerate() {
+        table.set(index + 1, entry_table(lua, path, meta, EntryKind::Dir)?)?;
+    }
+    Ok(table)
+}
+
+/// First candidate that exists, or the first file with a bare extension.
+fn fs_first(
+    lua: &Lua,
+    (dir, candidates): (String, Vec<String>),
+) -> mlua::Result<mlua::Value> {
+    let root = datamile_fs::expand_path(&dir);
+
+    for candidate in &candidates {
+        if candidate.trim().is_empty() {
+            continue;
+        }
+
+        let is_bare_ext = (!candidate.contains('/') && !candidate.contains('.'))
+            || candidate.starts_with('.');
+        if is_bare_ext {
+            let ext = candidate.trim_start_matches('.').to_string();
+            let mut files: Vec<PathBuf> = std::fs::read_dir(&root)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.is_file()
+                        && datamile_fs::has_extension(path, std::slice::from_ref(&ext))
+                })
+                .collect();
+            sorted_paths(&mut files);
+            if let Some(first) = files.first() {
+                return Ok(mlua::Value::String(
+                    lua.create_string(first.to_string_lossy().as_bytes())?,
+                ));
+            }
+            continue;
+        }
+
+        let path = if Path::new(candidate).is_absolute() {
+            PathBuf::from(candidate)
+        } else {
+            root.join(candidate)
+        };
+        if path.exists() {
+            return Ok(mlua::Value::String(
+                lua.create_string(path.to_string_lossy().as_bytes())?,
+            ));
+        }
+    }
+
+    Ok(mlua::Value::Nil)
 }
 
 pub fn register(
@@ -209,6 +414,10 @@ pub fn register(
             fs_scandir_native(lua, (args.0, args.1.unwrap_or(false)))
         })?,
     )?;
+    fs_table.set("_roots_native", lua.create_function(fs_roots)?)?;
+    fs_table.set("_files_native", lua.create_function(fs_files)?)?;
+    fs_table.set("_dirs_native", lua.create_function(fs_dirs)?)?;
+    fs_table.set("_first_native", lua.create_function(fs_first)?)?;
 
     datamile_tbl.set("fs", fs_table)
 }

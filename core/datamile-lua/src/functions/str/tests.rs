@@ -475,3 +475,22 @@ fn test_d_str_utf_indexing() {
         .eval::<i64>();
     assert!(byteindex_err_idx.is_err());
 }
+
+/// Only a leading digit run is an integer; `"disc2"` has none.
+#[test]
+fn test_d_str_leading_int() {
+    let engine = LuaRuntime::new().expect("runtime");
+
+    let cases = [
+        ("03 - Title.flac", Some(3i64)),
+        ("3/12", Some(3)),
+        ("disc2", None),
+        ("  12abc", Some(12)),
+    ];
+
+    for (input, expected) in cases {
+        let code = format!("return d.str.leading_int('{input}')");
+        let got: Option<i64> = engine.lua.load(&code).eval().expect("leading_int");
+        assert_eq!(got, expected, "input {input}");
+    }
+}

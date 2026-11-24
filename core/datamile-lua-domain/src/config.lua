@@ -29,8 +29,12 @@ _G.datamile.action = function(name, t)
     if type(run_fn) ~= "function" then
         error(string.format("action '%s': missing 'run' function", tostring(name)))
     end
+    -- Clients render actions from these two fields, so they must survive the
+    -- registry round-trip; the name is the fallback label.
     REGISTRY.actions[name] = {
         run = run_fn,
+        label = t.label or existing.label or name,
+        description = t.description or existing.description,
         config = t.config or existing.config or {}
     }
 end

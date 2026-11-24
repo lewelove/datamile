@@ -131,6 +131,44 @@ fn action_runs_with_the_given_intermediary() {
     assert_eq!(seen, "/a");
 }
 
+/// Clients render actions by `label` and `description`, so `d.action` must
+/// forward both instead of registering only the run function.
+#[test]
+fn action_keeps_its_label_and_description() {
+    let (_dir, engine, path) = setup(
+        r#"
+        datamile.action("probe", {
+            label = "Probe",
+            description = "Probe the payload",
+            run = function(_ctx) end
+        })
+        "#,
+    );
+
+    let eval = engine.evaluate_config(&path).expect("evaluate config");
+    let action = eval.actions.get("probe").expect("action is registered");
+
+    assert_eq!(action.label, "Probe");
+    assert_eq!(action.description.as_deref(), Some("Probe the payload"));
+}
+
+/// A bare `d.action` still needs a label for the interface to show.
+#[test]
+fn action_label_falls_back_to_its_name() {
+    let (_dir, engine, path) = setup(
+        r#"
+        datamile.action("probe", {
+            run = function(_ctx) end
+        })
+        "#,
+    );
+
+    let eval = engine.evaluate_config(&path).expect("evaluate config");
+
+    assert_eq!(eval.actions["probe"].label, "probe");
+    assert!(eval.actions["probe"].description.is_none());
+}
+
 #[test]
 fn logic_manifest_normalizes_ordering_and_targets() {
     let (_dir, engine, path) = setup(

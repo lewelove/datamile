@@ -722,6 +722,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+ "walkdir",
 ]
 
 [[package]]
@@ -853,12 +854,15 @@ dependencies = [
  "datamile-logic",
  "datamile-lua-domain",
  "datamile-mpd",
+ "dirs",
  "futures",
+ "libc",
  "log",
  "notify",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "tower",
  "tower-http",

@@ -1,6 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
-use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -57,25 +56,111 @@ pub fn hash_files(paths: &[PathBuf]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-/// Reads a stat cache, treating a missing or unreadable file as empty.
-#[must_use]
-pub fn load_stat_cache(path: &Path) -> HashMap<String, FileStat> {
-    if let Ok(content) = fs::read_to_string(path)
-        && let Ok(cache) = serde_json::from_str::<HashMap<String, FileStat>>(&content)
-    {
-        return cache;
-    }
-
-    HashMap::new()
+/// Fingerprints for one root entity: the walked files plus the external files.
+///
+/// A path outside the root entity's directory is an external dependency; root
+/// entities cannot nest, so every path is internal to at most one of them.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq, Debug)]
+pub struct RootState {
+    pub files: BTreeMap<String, FileStat>,
 }
 
-pub fn save_stat_cache<S: BuildHasher>(
-    cache: &HashMap<String, FileStat, S>,
-    path: &Path,
-) -> Result<(), CacheError> {
-    // Sorted view: the caller's map order is a hash order, not a stable one.
-    let sorted: BTreeMap<&String, &FileStat> = cache.iter().collect();
-    let content = serde_json::to_string_pretty(&sorted)?;
+/// One media root's state file, keyed by root entity directory.
+pub type RootStates = BTreeMap<String, RootState>;
+
+/// Every file under `dir`, keyed by absolute path.
+#[must_use]
+pub fn walk_files(dir: &Path) -> BTreeMap<String, FileStat> {
+    walkdir::WalkDir::new(dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            Some((
+                entry.path().to_string_lossy().to_string(),
+                FileStat::from(&meta),
+            ))
+        })
+        .collect()
+}
+
+/// The full fingerprint map for a root entity.
+///
+/// Its walked files plus the stat of every external file it read. An external
+/// file that no longer exists is dropped, which makes the next pass retry the
+/// compile.
+#[must_use]
+pub fn root_files(dir: &Path, external: &[PathBuf]) -> BTreeMap<String, FileStat> {
+    let mut files = walk_files(dir);
+    for dep in external {
+        if let Ok(meta) = fs::metadata(dep) {
+            files.insert(dep.to_string_lossy().to_string(), FileStat::from(&meta));
+        }
+    }
+    files
+}
+
+/// The dirty rule: no state entry, a changed walked set, or a changed or missing
+/// external file.
+#[must_use]
+pub fn root_is_dirty(
+    dir: &Path,
+    walked: &BTreeMap<String, FileStat>,
+    entry: Option<&RootState>,
+) -> bool {
+    let Some(entry) = entry else {
+        return true;
+    };
+
+    let internal = entry
+        .files
+        .keys()
+        .filter(|path| Path::new(path).starts_with(dir))
+        .count();
+
+    if internal != walked.len() {
+        return true;
+    }
+
+    let walked_changed = walked
+        .iter()
+        .any(|(path, stat)| entry.files.get(path) != Some(stat));
+    if walked_changed {
+        return true;
+    }
+
+    entry
+        .files
+        .iter()
+        .filter(|(path, _)| !Path::new(path).starts_with(dir))
+        .any(|(path, stat)| {
+            fs::metadata(path).map_or(true, |meta| FileStat::from(&meta) != *stat)
+        })
+}
+
+/// Reads a state file. A missing file is empty; an unparsable one is an error,
+/// because treating it as empty would report every root entity as removed.
+pub fn load_state(path: &Path) -> Result<RootStates, CacheError> {
+    match fs::read_to_string(path) {
+        Ok(content) => {
+            serde_json::from_str(&content).map_err(|source| CacheError::JsonParse {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(RootStates::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Writes a state file atomically, sorted, and skipped when the bytes match.
+pub fn save_state(states: &RootStates, path: &Path) -> Result<(), CacheError> {
+    let content = serde_json::to_string_pretty(states)?;
+    if fs::read_to_string(path).is_ok_and(|old| old == content) {
+        return Ok(());
+    }
     datamile_fs::write_atomic(path, &content)?;
 
     Ok(())

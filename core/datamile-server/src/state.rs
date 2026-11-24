@@ -73,6 +73,8 @@ pub struct ServerConfig {
     pub config_dir: PathBuf,
     pub config_path: PathBuf,
     pub compiler_jobs: Option<usize>,
+    /// `server.port`; the daemon binds it and exits if a reload changes it.
+    pub port: u16,
 }
 
 pub struct ServerState {
@@ -84,5 +86,8 @@ pub struct ServerState {
     pub image_tasks: Arc<ImageTaskRegistry>,
     /// Last file reported by MPD, used to resolve `playing` action targets.
     pub now_playing: RwLock<String>,
+    /// Why the last config reload failed, if it did. `/api/identity` reports it
+    /// so a CLI refuses to delegate to a daemon with a stale config.
+    pub reload_error: RwLock<Option<String>>,
     pub backend: Arc<dyn MediaBackend>,
 }

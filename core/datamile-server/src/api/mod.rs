@@ -2,6 +2,7 @@ pub mod actions;
 pub mod images;
 pub mod media;
 pub mod playback;
+pub mod select;
 pub mod system;
 pub mod tree;
 pub mod websocket;
@@ -43,7 +44,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/api/images/cache", post(images::trigger_cache_images))
         .route("/api/state", post(system::update_state))
         .route("/api/update", post(system::trigger_update))
-        .route("/api/update/tracked", get(system::tracked_changes))
+        .route("/api/identity", get(system::identity))
+        .route("/api/select", post(select::select_targets))
         .route("/api/reset", post(system::trigger_reset))
         .with_state(state)
 }

@@ -39,7 +39,8 @@ impl PlaybackSlice {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ActionTargetQuery {
     /// Media type the action targets, from the  query parameter.
     pub media_type: Option<String>,
@@ -102,7 +103,6 @@ pub struct UpdateRequest {
     pub media_type: Option<String>,
     pub force: bool,
     pub jobs: Option<usize>,
-    pub silent: bool,
 }
 
 impl UpdateRequest {
@@ -152,11 +152,12 @@ pub trait MediaBackend: Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
     /// Extra watch targets beyond the config dir and music directory.
     fn extra_watch_dirs(&self, state: &ServerState) -> (Vec<PathBuf>, Vec<PathBuf>);
+    /// One serialized event stream per attached client.
     fn trigger_update(
         &self,
         state: Arc<ServerState>,
         request: UpdateRequest,
-        log_tx: Option<mpsc::Sender<String>>,
+        event_txs: Vec<mpsc::Sender<String>>,
     ) -> anyhow::Result<()>;
     fn force_update_entity(
         &self,
@@ -164,6 +165,4 @@ pub trait MediaBackend: Send + Sync + 'static {
         media_type: &str,
         id: &str,
     ) -> anyhow::Result<bool>;
-    /// `(full_rescan, tracked_items)` and resets the tracking state.
-    fn tracked_changes(&self) -> (bool, Vec<String>);
 }

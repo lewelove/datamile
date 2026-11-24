@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -221,12 +221,18 @@ fn is_config_change(
 async fn reload_config(server: &Arc<ServerState>) {
     log::info!("Filesystem change: reloading config and logic...");
     let mut logic = server.logic.write().await;
+
     match server.backend.reload_config_and_logic(&mut logic) {
         Ok(new_config) => {
             let manifest = logic.manifest.clone();
             let actions = new_config.actions.clone();
+            let new_port = new_config.port;
             drop(logic);
+
+            let old_port = server.config.read().await.port;
             *server.config.write().await = new_config;
+            *server.reload_error.write().await = None;
+
             let _ = server.tx.send(
                 json!({
                     "type": "LOGIC_UPDATE",
@@ -235,8 +241,20 @@ async fn reload_config(server: &Arc<ServerState>) {
                 })
                 .to_string(),
             );
+
+            // A bound port cannot change in place, and a daemon on the old port
+            // would be unreachable by a CLI reading the new one.
+            if new_port != old_port {
+                log::error!(
+                    "server.port changed from {old_port} to {new_port}; exiting so the next start binds it"
+                );
+                std::process::exit(0);
+            }
         }
-        Err(e) => log::error!("Failed to reload config: {e:?}"),
+        Err(e) => {
+            log::error!("Failed to reload config: {e:?}");
+            *server.reload_error.write().await = Some(format!("{e:?}"));
+        }
     }
 }
 
@@ -246,17 +264,14 @@ fn collect_external_dependencies(
     paths: &[PathBuf],
     targeted: &mut HashSet<(String, PathBuf)>,
 ) {
-    let graph = shared
-        .deps_graph
+    let index = shared
+        .external_index
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     for path in paths {
         let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
-        let roots = graph
-            .file_to_roots
-            .get(&canon)
-            .or_else(|| graph.file_to_roots.get(path));
+        let roots = index.get(&canon).or_else(|| index.get(path));
 
         if let Some(roots) = roots {
             for root in roots {
@@ -266,7 +281,7 @@ fn collect_external_dependencies(
             }
         }
     }
-    drop(graph);
+    drop(index);
 }
 
 fn known_root_ancestor(
@@ -486,23 +501,14 @@ async fn ingest_and_broadcast(
 ) {
     let mut per_type = PerTypeUpdates::new();
 
-    let deps_path = crate::state::deps_graph_path(&state.cache_root, &state.init_dirs());
-
     {
         let mut logic = server.logic.write().await;
 
         for (media_type, dir) in &removed_roots {
-            let lock_path = dir.join(format!("{media_type}.lock.json"));
-            if lock_path.exists() {
-                if let Ok(mut writes) = shared.active_writes.lock() {
-                    writes.insert(lock_path.clone());
-                    writes.insert(
-                        lock_path
-                            .canonicalize()
-                            .unwrap_or_else(|_| lock_path.clone()),
-                    );
-                }
-                let _ = std::fs::remove_file(&lock_path);
+            // A vanished root entity loses its state entry; its lock is never
+            // deleted.
+            if let Err(e) = shared.remove_root(state, media_type, dir) {
+                log::error!("Failed to drop the state entry for {}: {e}", dir.display());
             }
             if let Some(id) = logic.remove_entity_by_path(dir) {
                 per_type.entry(media_type.clone()).or_default().1.push(id);
@@ -526,25 +532,33 @@ async fn ingest_and_broadcast(
         logic.build_cache();
 
         {
-            let mut graph = shared
-                .deps_graph
+            let mut index = shared
+                .external_index
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             for root in &compiled {
-                graph.update_root_deps(
-                    root.dir.clone(),
-                    root.dependencies.iter().cloned().collect::<BTreeSet<_>>(),
-                );
+                crate::deps::index_root(&mut index, &root.dir, &root.dependencies);
             }
             for (_, dir) in &removed_roots {
-                graph.remove_root(dir);
-            }
-            if let Err(e) = graph.save_to_file(&deps_path) {
-                log::error!("Failed to persist dependency graph: {e}");
+                crate::deps::unindex_root(&mut index, dir);
             }
         }
 
-        crate::update::sync_cache(state, &logic, &compiled, &removed_roots);
+        // The watcher writes through the same two calls as the pass.
+        for root in &compiled {
+            if let Err(e) = shared.record_compiled(
+                state,
+                &root.media_type,
+                &root.dir,
+                &root.dependencies,
+            ) {
+                log::error!(
+                    "Failed to record the state entry for {}: {e}",
+                    root.dir.display()
+                );
+            }
+        }
+
         drop(logic);
     }
 

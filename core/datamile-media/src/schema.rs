@@ -60,6 +60,15 @@ fn validate_nodes(
     Ok(())
 }
 
+/// Media type names become path segments under the cache, so the character set
+/// is restricted to what is safe there.
+fn valid_media_type_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
 /// Phase 0: validates the DSL before any `init` directory is touched.
 pub fn validate_media_schema(
     manifest: &MediaManifest,
@@ -67,6 +76,11 @@ pub fn validate_media_schema(
 ) -> Result<()> {
     let mut seen = HashSet::new();
     for name in &manifest.roots_order {
+        if !valid_media_type_name(name) {
+            bail!(
+                "media.root '{name}' must match [a-z0-9_-]+, so it is safe as a path segment"
+            );
+        }
         if !seen.insert(name.clone()) {
             bail!("duplicate media.root name '{name}'");
         }
@@ -121,13 +135,22 @@ fn require_media(
     Ok(())
 }
 
-/// Phase 1: discovers every root directory and enforces global uniqueness.
+/// Everything one discovery run produced. A media root that fails on its own is
+/// listed in `failures` instead of aborting the whole pass.
+#[derive(Debug, Default)]
+pub struct Discovery {
+    pub roots: Vec<DiscoveredRoot>,
+    pub failures: Vec<(String, anyhow::Error)>,
+}
+
+/// Phase 1: discovers every root directory and enforces global uniqueness and
+/// the no-nesting rule.
 pub fn discover_roots(
     engine: &DomainLuaEngine,
     manifest: &MediaManifest,
     config_dir: &Path,
-) -> Result<Vec<DiscoveredRoot>> {
-    let mut discovered = Vec::new();
+) -> Result<Discovery> {
+    let mut discovery = Discovery::default();
     let mut claimed: HashMap<PathBuf, String> = HashMap::new();
 
     for media_type in &manifest.roots_order {
@@ -138,58 +161,99 @@ pub fn discover_roots(
             continue;
         };
 
-        let init_path = datamile_fs::resolve_path(init, config_dir)
-            .canonicalize()
-            .with_context(|| {
-                format!("media.root '{media_type}' init is not a directory: {init}")
-            })?;
+        match select_media_roots(engine, media_type, init, config_dir) {
+            Ok((init_path, dirs)) => {
+                for dir in dirs {
+                    if let Some(owner) = claimed.get(&dir) {
+                        bail!(
+                            "root directory {} is claimed by both '{owner}' and '{media_type}'",
+                            dir.display()
+                        );
+                    }
+                    claimed.insert(dir.clone(), media_type.clone());
 
-        let select_fn: mlua::Function = engine
-            .runtime
-            .lua
-            .globals()
-            .get("__DATAMILE_MEDIA_SELECT")
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let selected_value: mlua::Value = select_fn
-            .call((media_type.as_str(), init_path.to_string_lossy()))
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let selected: Vec<String> = engine
-            .runtime
-            .from_value(selected_value)
-            .context("select must return a list of paths")?;
-
-        let mut seen: HashSet<PathBuf> = HashSet::new();
-        for raw in selected {
-            let dir = PathBuf::from(&raw)
-                .canonicalize()
-                .with_context(|| format!("selected root vanished: {raw}"))?;
-            if !dir.is_dir() {
-                bail!(
-                    "media.root '{media_type}' selected a non-directory: {}",
-                    dir.display()
-                );
+                    discovery.roots.push(DiscoveredRoot {
+                        media_type: media_type.clone(),
+                        init: init_path.clone(),
+                        dir,
+                    });
+                }
             }
-            if !seen.insert(dir.clone()) {
-                continue;
-            }
-
-            if let Some(owner) = claimed.get(&dir) {
-                bail!(
-                    "root directory {} is claimed by both '{owner}' and '{media_type}'",
-                    dir.display()
-                );
-            }
-            claimed.insert(dir.clone(), media_type.clone());
-
-            discovered.push(DiscoveredRoot {
-                media_type: media_type.clone(),
-                init: init_path.clone(),
-                dir,
-            });
+            Err(error) => discovery.failures.push((media_type.clone(), error)),
         }
     }
 
-    Ok(discovered)
+    reject_nesting(&discovery.roots)?;
+
+    Ok(discovery)
+}
+
+fn select_media_roots(
+    engine: &DomainLuaEngine,
+    media_type: &str,
+    init: &str,
+    config_dir: &Path,
+) -> Result<(PathBuf, Vec<PathBuf>)> {
+    let init_path = datamile_fs::resolve_path(init, config_dir)
+        .canonicalize()
+        .with_context(|| {
+            format!("media.root '{media_type}' init is not a directory: {init}")
+        })?;
+
+    let select_fn: mlua::Function = engine
+        .runtime
+        .lua
+        .globals()
+        .get("__DATAMILE_MEDIA_SELECT")
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let selected_value: mlua::Value = select_fn
+        .call((media_type, init_path.to_string_lossy()))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let selected: Vec<String> = engine
+        .runtime
+        .from_value(selected_value)
+        .context("select must return a list of paths")?;
+
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut dirs = Vec::new();
+    for raw in selected {
+        let dir = PathBuf::from(&raw)
+            .canonicalize()
+            .with_context(|| format!("selected root vanished: {raw}"))?;
+        if !dir.is_dir() {
+            bail!(
+                "media.root '{media_type}' selected a non-directory: {}",
+                dir.display()
+            );
+        }
+        if seen.insert(dir.clone()) {
+            dirs.push(dir);
+        }
+    }
+
+    Ok((init_path, dirs))
+}
+
+/// Root entities may not nest, in the same media type or across media types, so
+/// every file belongs to at most one of them.
+fn reject_nesting(roots: &[DiscoveredRoot]) -> Result<()> {
+    let mut dirs: Vec<&PathBuf> = roots.iter().map(|root| &root.dir).collect();
+    dirs.sort();
+
+    for pair in dirs.windows(2) {
+        let [parent, child] = pair else {
+            continue;
+        };
+        if child.starts_with(parent) {
+            bail!(
+                "root entities may not nest: {} is inside {}",
+                child.display(),
+                parent.display()
+            );
+        }
+    }
+
+    Ok(())
 }
 
 /// Reads the data-only schema out of the Lua VM.

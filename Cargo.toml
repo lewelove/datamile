@@ -68,6 +68,7 @@ fast_image_resize = "6.0.0"
 futures = "0.3.31"
 image = "0.25.9"
 indexmap = { version = "2.13.0", features = ["serde"] }
+libc = "0.2.189"
 kmeans_colors = "0.7.1"
 lofty = "0.25.2"
 log = "0.4.29"

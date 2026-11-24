@@ -18,11 +18,14 @@ datamile-mpd = { workspace = true }
 
 anyhow = { workspace = true }
 axum = { workspace = true }
+dirs = { workspace = true }
 futures = { workspace = true }
+libc = { workspace = true }
 log = { workspace = true }
 notify = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tower-http = { workspace = true }
 

@@ -9,6 +9,7 @@ use serde_json::json;
 use crate::backend::UpdateRequest;
 use crate::state::ServerState;
 
+/// `POST /api/update`: one serialized event per line, consumed only by the CLI.
 pub async fn trigger_update(
     State(state): State<Arc<ServerState>>,
     Json(payload): Json<UpdateRequest>,
@@ -18,10 +19,13 @@ pub async fn trigger_update(
     if let Err(e) =
         state
             .backend
-            .trigger_update(Arc::clone(&state), payload, Some(tx.clone()))
+            .trigger_update(Arc::clone(&state), payload, vec![tx.clone()])
     {
         let _ = tx.send(format!("Update failed: {e}")).await;
     }
+    // The backend owns the only other sender; dropping ours ends the stream when
+    // the pass is over.
+    drop(tx);
 
     let stream = futures::stream::unfold(rx, |mut rx| async move {
         let msg = rx.recv().await?;
@@ -31,18 +35,23 @@ pub async fn trigger_update(
     Response::builder()
         .header(
             axum::http::header::CONTENT_TYPE,
-            "text/plain; charset=utf-8",
+            "application/x-ndjson; charset=utf-8",
         )
         .body(axum::body::Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-pub async fn tracked_changes(State(state): State<Arc<ServerState>>) -> Response {
-    let (full_rescan, tracked_items) = state.backend.tracked_changes();
+/// `GET /api/identity`: what a CLI compares before it delegates anything.
+pub async fn identity(State(state): State<Arc<ServerState>>) -> Response {
+    let config_path = state.config.read().await.config_path.clone();
+    // Canonical on both sides, so the CLI's match rule cannot fail on a symlink.
+    let config_path = config_path.canonicalize().unwrap_or(config_path);
+    let reload_error = state.reload_error.read().await.clone();
 
     Json(json!({
-        "full_rescan": full_rescan,
-        "tracked_items": tracked_items
+        "config_path": config_path.to_string_lossy(),
+        "version": crate::VERSION,
+        "reload_error": reload_error,
     }))
     .into_response()
 }

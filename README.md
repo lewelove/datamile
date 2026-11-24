@@ -207,7 +207,7 @@ You create `~/.config/datamile/init.lua` file. The directory holding it is the c
 
 ```bash
 # A second config next to the one you use daily
-datamile --config ~/datamile-experiments compile "/music/Some Album" --stdout --pretty
+datamile --config ~/datamile-experiments compile "/music/Some Album" --pretty
 ```
 
 The flag beats the `DATAMILE_CONFIG_PATH` environment variable, which also takes a directory and beats `~/.config/datamile`. An override that does not resolve is an error, never a silent fallback to your usual config.

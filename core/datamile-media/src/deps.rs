@@ -1,80 +1,70 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
-use datamile_cache::FileStat;
-use serde::{Deserialize, Serialize};
+use anyhow::Result;
+use datamile_cache::{
+    FileStat, RootState, RootStates, load_state, root_files, save_state,
+};
 
 use crate::state::MediaState;
 
-/// External file dependencies of each compiled root. Sorted maps and sets keep
-/// the persisted graph byte-stable across runs.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DependencyGraph {
-    pub file_to_roots: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
-    pub root_to_files: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+/// Reverse index `external file -> root entities that read it`, rebuilt at boot
+/// from the state files and kept in memory for the watcher. Nothing on disk
+/// duplicates it.
+pub type ExternalIndex = BTreeMap<PathBuf, BTreeSet<PathBuf>>;
+
+/// Rebuilds the reverse index by reading every media root's state file.
+#[must_use]
+pub fn rebuild_external_index(state: &MediaState) -> ExternalIndex {
+    let mut index = ExternalIndex::new();
+
+    for (media_type, init) in state.media_roots() {
+        let path = crate::state::state_path(
+            &state.cache_root,
+            &state.config_path,
+            &media_type,
+            &init,
+        );
+        let Ok(states) = load_state(&path) else {
+            continue;
+        };
+        for (dir, entry) in &states {
+            let dir = PathBuf::from(dir);
+            for file in external_files(&dir, entry) {
+                index.entry(file).or_default().insert(dir.clone());
+            }
+        }
+    }
+
+    index
 }
 
-impl DependencyGraph {
-    pub fn update_root_deps(&mut self, root: PathBuf, new_deps: BTreeSet<PathBuf>) {
-        self.remove_root(&root);
+/// Entries outside the root entity's own directory are external dependencies.
+fn external_files(dir: &Path, entry: &RootState) -> Vec<PathBuf> {
+    entry
+        .files
+        .keys()
+        .filter(|path| !Path::new(path).starts_with(dir))
+        .map(PathBuf::from)
+        .collect()
+}
 
-        for dep in &new_deps {
-            self.file_to_roots
-                .entry(dep.clone())
-                .or_default()
-                .insert(root.clone());
-        }
-        self.root_to_files.insert(root, new_deps);
+pub fn index_root(index: &mut ExternalIndex, dir: &Path, external: &[PathBuf]) {
+    unindex_root(index, dir);
+    for file in external {
+        index
+            .entry(file.clone())
+            .or_default()
+            .insert(dir.to_path_buf());
     }
+}
 
-    pub fn remove_root(&mut self, root: &Path) {
-        if let Some(deps) = self.root_to_files.remove(root) {
-            for dep in deps {
-                if let Some(roots) = self.file_to_roots.get_mut(&dep) {
-                    roots.remove(root);
-                    if roots.is_empty() {
-                        self.file_to_roots.remove(&dep);
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn prune(&mut self) -> bool {
-        let before = self.root_to_files.len();
-        self.root_to_files.retain(|root, _| root.exists());
-        if self.root_to_files.len() == before {
-            return false;
-        }
-
-        let mut rebuilt: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
-        for (root, deps) in &self.root_to_files {
-            for dep in deps {
-                rebuilt.entry(dep.clone()).or_default().insert(root.clone());
-            }
-        }
-        self.file_to_roots = rebuilt;
-        true
-    }
-
-    #[must_use]
-    pub fn load_from_file(path: &Path) -> Self {
-        if let Ok(content) = std::fs::read_to_string(path)
-            && let Ok(mut graph) = serde_json::from_str::<Self>(&content)
-        {
-            graph.prune();
-            return graph;
-        }
-        Self::default()
-    }
-
-    pub fn save_to_file(&self, path: &Path) -> anyhow::Result<()> {
-        let content = serde_json::to_string_pretty(self)?;
-        datamile_fs::write_atomic(path, &content)?;
-        Ok(())
-    }
+pub fn unindex_root(index: &mut ExternalIndex, dir: &Path) {
+    index.retain(|_, roots| {
+        roots.remove(dir);
+        !roots.is_empty()
+    });
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,19 +96,18 @@ pub struct PendingUpdate {
     pub media_type: Option<String>,
     pub force: bool,
     pub jobs: Option<usize>,
-    pub silent: bool,
-    pub log_txs: Vec<tokio::sync::mpsc::Sender<String>>,
+    /// One serialized event stream per attached client.
+    pub event_txs: Vec<tokio::sync::mpsc::Sender<String>>,
 }
 
 /// Shared engine state handed to the update and watcher pipelines.
 pub struct MediaShared {
     pub state: RwLock<Option<MediaState>>,
-    pub deps_graph: RwLock<DependencyGraph>,
+    pub external_index: RwLock<ExternalIndex>,
     pub active_writes: Mutex<HashSet<PathBuf>>,
-    /// Last successful stat per known root, used to skip clean recompiles.
-    pub root_stats: RwLock<HashMap<PathBuf, FileStat>>,
-    pub tracked: Mutex<HashSet<(String, PathBuf)>>,
-    pub full_rescan_needed: AtomicBool,
+    /// One writer per state file: the pass and the watcher both submit through
+    /// here instead of loading, mutating and saving on their own.
+    state_writer: Mutex<()>,
     pub update_lock: Mutex<UpdateState>,
 }
 
@@ -126,11 +115,9 @@ impl Default for MediaShared {
     fn default() -> Self {
         Self {
             state: RwLock::new(None),
-            deps_graph: RwLock::new(DependencyGraph::default()),
+            external_index: RwLock::new(ExternalIndex::new()),
             active_writes: Mutex::new(HashSet::new()),
-            root_stats: RwLock::new(HashMap::new()),
-            tracked: Mutex::new(HashSet::new()),
-            full_rescan_needed: AtomicBool::new(false),
+            state_writer: Mutex::new(()),
             update_lock: Mutex::new(UpdateState::default()),
         }
     }
@@ -145,8 +132,8 @@ impl Clone for MediaShared {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone(),
             ),
-            deps_graph: RwLock::new(
-                self.deps_graph
+            external_index: RwLock::new(
+                self.external_index
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone(),
@@ -157,24 +144,76 @@ impl Clone for MediaShared {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone(),
             ),
-            root_stats: RwLock::new(
-                self.root_stats
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-            ),
-            tracked: Mutex::new(
-                self.tracked
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-            ),
-            full_rescan_needed: AtomicBool::new(
-                self.full_rescan_needed
-                    .load(std::sync::atomic::Ordering::Relaxed),
-            ),
+            state_writer: Mutex::new(()),
             update_lock: Mutex::new(UpdateState::default()),
         }
+    }
+}
+
+impl MediaShared {
+    /// Records a compiled root entity: the whole `files` map is replaced, so
+    /// nothing is carried over from the previous pass.
+    pub fn record_root(
+        &self,
+        state: &MediaState,
+        media_type: &str,
+        dir: &Path,
+        files: BTreeMap<String, FileStat>,
+    ) -> Result<()> {
+        self.write_state(state, media_type, |states| {
+            states.insert(dir.to_string_lossy().to_string(), RootState { files });
+        })
+    }
+
+    /// Drops a root entity's state entry. Its lock file is left alone.
+    pub fn remove_root(
+        &self,
+        state: &MediaState,
+        media_type: &str,
+        dir: &Path,
+    ) -> Result<()> {
+        self.write_state(state, media_type, |states| {
+            states.remove(&dir.to_string_lossy().to_string());
+        })
+    }
+
+    /// Convenience wrapper for the common "compile finished" case.
+    pub fn record_compiled(
+        &self,
+        state: &MediaState,
+        media_type: &str,
+        dir: &Path,
+        external: &[PathBuf],
+    ) -> Result<()> {
+        self.record_root(state, media_type, dir, root_files(dir, external))
+    }
+
+    fn write_state(
+        &self,
+        state: &MediaState,
+        media_type: &str,
+        mutate: impl FnOnce(&mut RootStates),
+    ) -> Result<()> {
+        let Some(init) = state.init_of(media_type) else {
+            anyhow::bail!("media type '{media_type}' has no init");
+        };
+        let path = crate::state::state_path(
+            &state.cache_root,
+            &state.config_path,
+            media_type,
+            &init,
+        );
+
+        let _guard = self
+            .state_writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let mut states = load_state(&path)?;
+        mutate(&mut states);
+        save_state(&states, &path)?;
+
+        Ok(())
     }
 }
 

@@ -13,11 +13,11 @@ mod tests;
 
 pub use backend::MediaEngineBackend;
 pub use compiler::{CompiledRoot, compile_root, preview_root};
-pub use deps::{DependencyGraph, MediaShared};
+pub use deps::{ExternalIndex, MediaShared, rebuild_external_index};
 pub use ingest::{ParsedEntity, parse_lock};
 pub use schema::{
-    DiscoveredRoot, MediaManifest, MediaNodeSchema, MediaRootSchema, discover_roots,
-    read_media_manifest, validate_media_schema,
+    DiscoveredRoot, Discovery, MediaManifest, MediaNodeSchema, MediaRootSchema,
+    discover_roots, read_media_manifest, validate_media_schema,
 };
 pub use state::{MediaState, open_engine};
-pub use update::{ForceMode, Verbosity};
+pub use update::{ForceMode, LogSink, PassResult, StreamSink, UpdateEvent, UpdateSink};

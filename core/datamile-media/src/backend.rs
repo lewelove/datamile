@@ -3,21 +3,19 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result};
-use datamile_cache::FileStat;
 use datamile_logic::LogicEngine;
 use datamile_server::{
-    ActionTargetQuery, MediaBackend, PlaybackSlice, ServerConfig, ServerState,
-    UpdateRequest,
+    ActionTargetQuery, DEFAULT_PORT, MediaBackend, PlaybackSlice, ServerConfig,
+    ServerState, UpdateRequest,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::deps::{DependencyGraph, MediaShared};
+use crate::deps::{MediaShared, rebuild_external_index};
 use crate::schema::{discover_roots, read_media_manifest, validate_media_schema};
-use crate::state::{MediaState, deps_graph_path, open_engine};
+use crate::state::{MediaState, open_engine};
 
 /// Schema-driven media engine backend.
 pub struct MediaEngineBackend {
@@ -147,7 +145,6 @@ impl MediaBackend for MediaEngineBackend {
         };
 
         logic.clear();
-        let mut root_stats = std::collections::HashMap::new();
 
         for root in &state.roots {
             let lock_path = root.dir.join(format!("{}.lock.json", root.media_type));
@@ -182,18 +179,9 @@ impl MediaBackend for MediaEngineBackend {
             {
                 log::error!("Failed to index {}: {e}", root.dir.display());
             }
-
-            if let Ok(meta) = std::fs::metadata(&root.dir) {
-                root_stats.insert(root.dir.clone(), FileStat::from(&meta));
-            }
         }
 
         logic.build_cache();
-        *self
-            .shared
-            .root_stats
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = root_stats;
     }
 
     #[allow(
@@ -222,7 +210,14 @@ impl MediaBackend for MediaEngineBackend {
         let evaluated = engine.evaluate_config(&config_path)?;
         let media = read_media_manifest(&engine)?;
         validate_media_schema(&media, &evaluated.manifest)?;
-        let roots = discover_roots(&engine, &media, &config_dir)?;
+
+        let discovery = discover_roots(&engine, &media, &config_dir)?;
+        if let Some((media_type, error)) = discovery.failures.first() {
+            return Err(anyhow::anyhow!(
+                "media.root '{media_type}' discovery failed: {error}"
+            ));
+        }
+        let roots = discovery.roots;
 
         let cache_root = if evaluated.config.storage.cache.is_empty() {
             crate::state::default_cache_root()
@@ -259,6 +254,12 @@ impl MediaBackend for MediaEngineBackend {
                 .unwrap_or_else(|_| config_path.clone()),
         );
 
+        let port = if evaluated.config.server.port == 0 {
+            DEFAULT_PORT
+        } else {
+            evaluated.config.server.port
+        };
+
         let state = MediaState {
             config_path: config_path.clone(),
             config_dir: config_dir.clone(),
@@ -272,31 +273,17 @@ impl MediaBackend for MediaEngineBackend {
             interfaces: evaluated.interfaces.clone(),
             mpd: mpd.clone(),
             compiler_jobs,
+            port,
         };
 
-        let inits = state.init_dirs();
-        let deps_path = deps_graph_path(&cache_root, &inits);
+        // No persisted dependency graph: the reverse index is rebuilt from the
+        // state files, which already hold the external entries.
         *self
             .shared
-            .deps_graph
+            .external_index
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            DependencyGraph::load_from_file(&deps_path);
-
-        let root_stats = state
-            .roots
-            .iter()
-            .filter_map(|root| {
-                std::fs::metadata(&root.dir)
-                    .ok()
-                    .map(|meta| (root.dir.clone(), FileStat::from(&meta)))
-            })
-            .collect();
-        *self
-            .shared
-            .root_stats
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = root_stats;
+            rebuild_external_index(&state);
 
         let evaluate =
             |media_type: &str, value: &Value| engine.evaluate_logic(media_type, value);
@@ -320,6 +307,7 @@ impl MediaBackend for MediaEngineBackend {
             config_dir,
             config_path,
             compiler_jobs,
+            port,
         })
     }
 
@@ -379,21 +367,21 @@ impl MediaBackend for MediaEngineBackend {
             .current_state()
             .map_or_else(Vec::new, |s| s.init_dirs());
 
-        let graph = self
+        let index = self
             .shared
-            .deps_graph
+            .external_index
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let mut non_recursive = Vec::new();
-        for dep_file in graph.file_to_roots.keys() {
+        for dep_file in index.keys() {
             if !inits.iter().any(|init| dep_file.starts_with(init))
                 && let Some(parent) = dep_file.parent()
             {
                 non_recursive.push(parent.to_path_buf());
             }
         }
-        drop(graph);
+        drop(index);
 
         (Vec::new(), non_recursive)
     }
@@ -402,12 +390,12 @@ impl MediaBackend for MediaEngineBackend {
         &self,
         state: Arc<ServerState>,
         request: UpdateRequest,
-        log_tx: Option<mpsc::Sender<String>>,
+        event_txs: Vec<mpsc::Sender<String>>,
     ) -> Result<()> {
         let shared = Arc::clone(&self.shared);
         tokio::spawn(async move {
             if let Err(e) =
-                crate::update::run_server_update(state, shared, request, log_tx).await
+                crate::update::run_server_update(state, shared, request, event_txs).await
             {
                 log::error!("Server update failed: {e}");
             }
@@ -437,30 +425,9 @@ impl MediaBackend for MediaEngineBackend {
         self.trigger_update(
             state,
             UpdateRequest::force(Some(path.to_string_lossy().to_string())),
-            None,
+            Vec::new(),
         )?;
         Ok(true)
-    }
-
-    fn tracked_changes(&self) -> (bool, Vec<String>) {
-        let full_rescan = self
-            .shared
-            .full_rescan_needed
-            .swap(false, Ordering::Relaxed);
-
-        let tracked = self.shared.tracked.lock().map_or_else(
-            |_| Vec::new(),
-            |mut guard| {
-                guard
-                    .drain()
-                    .map(|(media_type, path)| {
-                        format!("{media_type}\u{1f}{}", path.to_string_lossy())
-                    })
-                    .collect()
-            },
-        );
-
-        (full_rescan, tracked)
     }
 }
 

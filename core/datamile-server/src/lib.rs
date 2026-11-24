@@ -1,5 +1,6 @@
 pub mod api;
 pub mod backend;
+pub mod instance;
 pub mod mpd_bridge;
 pub mod state;
 pub mod watcher;
@@ -16,15 +17,18 @@ use anyhow::{Context, Result};
 pub use backend::{ActionTargetQuery, MediaBackend, PlaybackSlice, UpdateRequest};
 use datamile_logic::LogicEngine;
 use datamile_lua_domain::LogicManifest;
+pub use instance::{Identity, IdentityMismatch, InstanceLock, VERSION};
 pub use state::{
     ImageClaim, ImageTaskGuard, ImageTaskRegistry, ServerConfig, ServerState,
 };
+
+/// Port used when the config leaves `server.port` at 0.
+pub const DEFAULT_PORT: u16 = 8000;
 use tokio::sync::{RwLock, broadcast};
 use tower_http::cors::{Any, CorsLayer};
 
 fn create_directories(cache_root: &Path, state_root: &Path) {
     std::fs::create_dir_all(cache_root).ok();
-    std::fs::create_dir_all(cache_root.join("libraries")).ok();
     std::fs::create_dir_all(cache_root.join("objects")).ok();
     std::fs::create_dir_all(state_root).ok();
 }
@@ -63,7 +67,7 @@ fn default_state() -> serde_json::Value {
 ///
 /// The backend owns every domain decision: what a media type is, how a lock
 /// maps to playable URIs, and how an update runs.
-pub async fn run(backend: Arc<dyn MediaBackend>, port: u16) -> Result<()> {
+pub async fn run(backend: Arc<dyn MediaBackend>) -> Result<()> {
     let mut logic_engine = LogicEngine::new(PathBuf::new(), LogicManifest::default());
     let config = backend
         .reload_config_and_logic(&mut logic_engine)
@@ -87,6 +91,12 @@ pub async fn run(backend: Arc<dyn MediaBackend>, port: u16) -> Result<()> {
         (datamile_mpd::MpdEngine::new(tx), status_tx)
     };
 
+    let port = if config.port == 0 {
+        DEFAULT_PORT
+    } else {
+        config.port
+    };
+
     let state = Arc::new(ServerState {
         logic,
         ui_state: RwLock::new(ui_state),
@@ -95,6 +105,7 @@ pub async fn run(backend: Arc<dyn MediaBackend>, port: u16) -> Result<()> {
         mpd_engine,
         image_tasks: Arc::new(ImageTaskRegistry::default()),
         now_playing: RwLock::new(String::new()),
+        reload_error: RwLock::new(None),
         backend: Arc::clone(&backend),
     });
 
@@ -104,7 +115,7 @@ pub async fn run(backend: Arc<dyn MediaBackend>, port: u16) -> Result<()> {
     watcher::start(Arc::clone(&state));
 
     if let Err(e) =
-        backend.trigger_update(Arc::clone(&state), UpdateRequest::preserve(), None)
+        backend.trigger_update(Arc::clone(&state), UpdateRequest::preserve(), Vec::new())
     {
         log::error!("Startup auto-update error: {e}");
     }

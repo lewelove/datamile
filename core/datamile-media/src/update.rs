@@ -1,45 +1,187 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use datamile_cache::{FileStat, hash_files};
+use datamile_cache::{hash_files, load_state, root_is_dirty, walk_files};
 use datamile_logic::LogicEngine;
-use datamile_server::{MediaBackend, ServerState, UpdateRequest};
+use datamile_server::{ServerState, UpdateRequest};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::compiler::{CompiledRoot, compile_root};
-use crate::deps::{DependencyGraph, MediaShared, PendingUpdate, UpdateScope};
-use crate::schema::{DiscoveredRoot, discover_roots};
-use crate::state::{
-    MediaState, config_hash_path, deps_graph_path, open_engine, stat_cache_path,
-};
+use crate::deps::{MediaShared, UpdateScope, index_root, unindex_root};
+use crate::schema::{DiscoveredRoot, Discovery, discover_roots};
+use crate::state::{MediaState, config_hash_path, open_engine, state_path};
 
+#[cfg(test)]
+mod tests;
+
+/// One typed line of a pass. Rendered through `Display` and delivered to the
+/// daemon log, the CLI and the HTTP response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct CachedRoot {
-    media_type: String,
-    dir: PathBuf,
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum UpdateEvent {
+    Started {
+        discovered: usize,
+        dirty: usize,
+    },
+    Added {
+        media_type: String,
+        id: String,
+        dir: PathBuf,
+    },
+    Updated {
+        media_type: String,
+        id: String,
+        dir: PathBuf,
+    },
+    Unchanged {
+        media_type: String,
+        id: String,
+        dir: PathBuf,
+    },
+    Removed {
+        media_type: String,
+        dir: PathBuf,
+    },
+    Failed {
+        media_type: String,
+        dir: Option<PathBuf>,
+        error: String,
+    },
+    Finished {
+        discovered: usize,
+        added: usize,
+        updated: usize,
+        unchanged: usize,
+        removed: usize,
+        failed: usize,
+    },
 }
 
-/// Persisted between passes, so the files map and the root list are kept sorted:
-/// a pass that changes nothing must not rewrite the file with new bytes.
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct LibraryCache {
-    files: BTreeMap<String, FileStat>,
-    roots: Vec<CachedRoot>,
+impl std::fmt::Display for UpdateEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Started { discovered, dirty } => {
+                write!(f, "Verifying {discovered} roots ({dirty} dirty)...")
+            }
+            Self::Added {
+                media_type,
+                id,
+                dir,
+            } => write!(f, "Added {media_type} '{id}' ({})", dir.display()),
+            Self::Updated {
+                media_type,
+                id,
+                dir,
+            } => write!(f, "Updated {media_type} '{id}' ({})", dir.display()),
+            Self::Unchanged {
+                media_type,
+                id,
+                dir,
+            } => write!(f, "Unchanged {media_type} '{id}' ({})", dir.display()),
+            Self::Removed { media_type, dir } => {
+                write!(f, "Removed {media_type} ({})", dir.display())
+            }
+            Self::Failed {
+                media_type,
+                dir: Some(dir),
+                error,
+            } => write!(f, "Failed {media_type} ({}): {error}", dir.display()),
+            Self::Failed {
+                media_type,
+                dir: None,
+                error,
+            } => write!(f, "Failed {media_type}: {error}"),
+            Self::Finished {
+                discovered,
+                added,
+                updated,
+                unchanged,
+                removed,
+                failed,
+            } => write!(
+                f,
+                "Finished: {discovered} discovered, {added} added, {updated} updated, \
+                 {unchanged} unchanged, {removed} removed, {failed} failed."
+            ),
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verbosity {
-    Verbose,
-    Silent,
+/// Anything that receives every event of a pass.
+pub trait UpdateSink: Send + Sync {
+    fn event(&self, event: &UpdateEvent);
 }
 
-impl From<bool> for Verbosity {
-    fn from(silent: bool) -> Self {
-        if silent { Self::Silent } else { Self::Verbose }
+/// Writes every event to the logger at its own level.
+pub struct LogSink;
+
+impl UpdateSink for LogSink {
+    fn event(&self, event: &UpdateEvent) {
+        match event {
+            UpdateEvent::Failed { .. } => log::error!("{event}"),
+            UpdateEvent::Unchanged { .. } => log::debug!("{event}"),
+            _ => log::info!("{event}"),
+        }
+    }
+}
+
+/// Forwards serialized events to one HTTP client. The queue is bounded: a
+/// client that cannot keep up is unregistered and its stream ends.
+pub struct StreamSink {
+    tx: Mutex<Option<tokio::sync::mpsc::Sender<String>>>,
+}
+
+impl StreamSink {
+    #[must_use]
+    pub const fn new(tx: tokio::sync::mpsc::Sender<String>) -> Self {
+        Self {
+            tx: Mutex::new(Some(tx)),
+        }
+    }
+}
+
+impl UpdateSink for StreamSink {
+    fn event(&self, event: &UpdateEvent) {
+        let Ok(mut guard) = self.tx.lock() else {
+            return;
+        };
+        let Some(tx) = guard.as_ref() else {
+            return;
+        };
+
+        let Ok(line) = serde_json::to_string(event) else {
+            return;
+        };
+
+        if tx.try_send(line).is_err() {
+            // Full or closed: unregister so the stream ends instead of lying.
+            *guard = None;
+        }
+    }
+}
+
+/// A sink made of sinks: one event reaches the journal and every attached
+/// client without the pass knowing how many consumers there are.
+pub struct CompositeSink {
+    sinks: Vec<Arc<dyn UpdateSink>>,
+}
+
+impl CompositeSink {
+    #[must_use]
+    pub const fn new(sinks: Vec<Arc<dyn UpdateSink>>) -> Self {
+        Self { sinks }
+    }
+}
+
+impl UpdateSink for CompositeSink {
+    fn event(&self, event: &UpdateEvent) {
+        for sink in &self.sinks {
+            sink.event(event);
+        }
     }
 }
 
@@ -56,9 +198,35 @@ impl From<bool> for ForceMode {
     }
 }
 
-pub struct UpdateOutcome {
+/// Counts per outcome. The command's exit status comes from `failed`, never from
+/// counting received lines.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PassResult {
+    pub discovered: usize,
+    pub added: usize,
+    pub updated: usize,
+    pub unchanged: usize,
+    pub removed: usize,
+    pub failed: usize,
+}
+
+impl PassResult {
+    #[must_use]
+    pub const fn ok(&self) -> bool {
+        self.failed == 0
+    }
+}
+
+pub struct PassOutcome {
+    pub result: PassResult,
     pub compiled: Vec<CompiledRoot>,
     pub removed: Vec<(String, PathBuf)>,
+}
+
+/// One media root's state, loaded before anything is compiled.
+struct MediaRootPlan {
+    media_type: String,
+    states: datamile_cache::RootStates,
 }
 
 type PerTypeUpdates = HashMap<
@@ -69,103 +237,6 @@ type PerTypeUpdates = HashMap<
     ),
 >;
 
-fn path_key(path: &Path) -> String {
-    path.to_string_lossy().to_string()
-}
-
-fn prefix_for(root: &Path) -> String {
-    format!("{}/", path_key(root))
-}
-
-fn load_cache(path: &Path) -> LibraryCache {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|content| serde_json::from_str(&content).ok())
-        .unwrap_or_default()
-}
-
-fn save_cache(cache: &LibraryCache, path: &Path) -> Result<()> {
-    let content = serde_json::to_string_pretty(cache)?;
-    datamile_fs::write_atomic(path, &content)?;
-    Ok(())
-}
-
-fn walk_files(root: &Path) -> Vec<(String, FileStat)> {
-    walkdir::WalkDir::new(root)
-        .follow_links(true)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .filter_map(|entry| {
-            let meta = entry.metadata().ok()?;
-            Some((path_key(entry.path()), FileStat::from(&meta)))
-        })
-        .collect()
-}
-
-fn external_deps_dirty(
-    root: &Path,
-    cache: &LibraryCache,
-    deps_graph: &DependencyGraph,
-) -> bool {
-    let Some(deps) = deps_graph.root_to_files.get(root) else {
-        return false;
-    };
-
-    deps.iter().any(|dep| {
-        if dep.starts_with(root) {
-            return false;
-        }
-        dep.metadata().map_or(true, |meta| {
-            cache.files.get(&path_key(dep)) != Some(&FileStat::from(&meta))
-        })
-    })
-}
-
-fn root_dirty(
-    root: &DiscoveredRoot,
-    cache: &LibraryCache,
-    deps_graph: &DependencyGraph,
-    force: ForceMode,
-) -> bool {
-    if force == ForceMode::Force {
-        return true;
-    }
-
-    let lock = root.dir.join(format!("{}.lock.json", root.media_type));
-    if !lock.exists() {
-        return true;
-    }
-
-    let known = cache
-        .roots
-        .iter()
-        .any(|cached| cached.media_type == root.media_type && cached.dir == root.dir);
-    if !known {
-        return true;
-    }
-
-    let files = walk_files(&root.dir);
-    if files
-        .iter()
-        .any(|(key, stat)| cache.files.get(key) != Some(stat))
-    {
-        return true;
-    }
-
-    let prefix = prefix_for(&root.dir);
-    let cached_files = cache
-        .files
-        .keys()
-        .filter(|key| key.starts_with(&prefix))
-        .count();
-    if cached_files != files.len() {
-        return true;
-    }
-
-    external_deps_dirty(&root.dir, cache, deps_graph)
-}
-
 fn in_scope(root: &DiscoveredRoot, scope: &UpdateScope) -> bool {
     match scope {
         UpdateScope::All => true,
@@ -175,34 +246,85 @@ fn in_scope(root: &DiscoveredRoot, scope: &UpdateScope) -> bool {
     }
 }
 
+fn outcome_event(
+    compiled: &CompiledRoot,
+    known: &HashSet<(String, PathBuf)>,
+) -> UpdateEvent {
+    let media_type = compiled.media_type.clone();
+    let id = compiled.id.clone();
+    let dir = compiled.dir.clone();
+
+    if !known.contains(&(media_type.clone(), dir.clone())) {
+        return UpdateEvent::Added {
+            media_type,
+            id,
+            dir,
+        };
+    }
+
+    if compiled.modified {
+        UpdateEvent::Updated {
+            media_type,
+            id,
+            dir,
+        }
+    } else {
+        UpdateEvent::Unchanged {
+            media_type,
+            id,
+            dir,
+        }
+    }
+}
+
 fn compile_roots(
     state: &MediaState,
-    roots: &[DiscoveredRoot],
+    dirty: &[DiscoveredRoot],
     jobs: Option<usize>,
-    active_writes: &Arc<std::sync::Mutex<HashSet<PathBuf>>>,
-) -> Vec<CompiledRoot> {
+    active_writes: &Arc<Mutex<HashSet<PathBuf>>>,
+    known: &HashSet<(String, PathBuf)>,
+    sink: &dyn UpdateSink,
+) -> (Vec<CompiledRoot>, usize) {
     let default_jobs =
         std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    let pool = rayon::ThreadPoolBuilder::new()
+    let Ok(pool) = rayon::ThreadPoolBuilder::new()
         .num_threads(jobs.unwrap_or(default_jobs).max(1))
-        .build();
-
-    let Ok(pool) = pool else {
-        log::error!("Failed to build the compile pool");
-        return Vec::new();
+        .build()
+    else {
+        let failed = dirty.len();
+        for root in dirty {
+            sink.event(&UpdateEvent::Failed {
+                media_type: root.media_type.clone(),
+                dir: Some(root.dir.clone()),
+                error: "failed to build the compile pool".to_string(),
+            });
+        }
+        return (Vec::new(), failed);
     };
 
-    pool.install(|| {
-        roots
+    let failures = Mutex::new(0usize);
+
+    let compiled = pool.install(|| {
+        dirty
             .par_iter()
             .filter_map(|root| {
+                let failed = |error: String| {
+                    sink.event(&UpdateEvent::Failed {
+                        media_type: root.media_type.clone(),
+                        dir: Some(root.dir.clone()),
+                        error,
+                    });
+                    if let Ok(mut count) = failures.lock() {
+                        *count += 1;
+                    }
+                    None
+                };
+
                 let engine = match open_engine(state) {
                     Ok(engine) => engine,
-                    Err(e) => {
-                        log::error!("Failed to open a compile VM: {e}");
-                        return None;
-                    }
+                    Err(e) => return failed(format!("failed to open a compile VM: {e}")),
                 };
+
                 match compile_root(
                     &engine,
                     &root.media_type,
@@ -210,30 +332,194 @@ fn compile_roots(
                     &state.cache_root,
                     Some(active_writes),
                 ) {
-                    Ok(compiled) => Some(compiled),
-                    Err(e) => {
-                        log::error!("Compilation failed for {}: {e}", root.dir.display());
-                        None
+                    Ok(compiled) => {
+                        sink.event(&outcome_event(&compiled, known));
+                        Some(compiled)
                     }
+                    Err(e) => failed(e.to_string()),
                 }
             })
             .collect()
-    })
+    });
+
+    let failures = failures
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    (compiled, failures)
 }
 
-/// One incremental verification and compilation pass.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the pass reads as one verify, compile and cache-update sequence"
-)]
+/// Loads every media root's state file.
+///
+/// A media root that fails on its own is reported without a dir and skipped; the
+/// rest of the pass continues.
+fn load_plans(
+    state: &MediaState,
+    discovery: &Discovery,
+    sink: &dyn UpdateSink,
+    result: &mut PassResult,
+) -> Vec<MediaRootPlan> {
+    let mut broken: HashSet<String> = HashSet::new();
+
+    for (media_type, error) in &discovery.failures {
+        sink.event(&UpdateEvent::Failed {
+            media_type: media_type.clone(),
+            dir: None,
+            error: error.to_string(),
+        });
+        result.failed += 1;
+        broken.insert(media_type.clone());
+    }
+
+    let mut plans = Vec::new();
+    for (media_type, init) in state.media_roots() {
+        if broken.contains(&media_type) {
+            continue;
+        }
+
+        let path = state_path(&state.cache_root, &state.config_path, &media_type, &init);
+
+        match load_state(&path) {
+            Ok(states) => plans.push(MediaRootPlan { media_type, states }),
+            Err(error) => {
+                sink.event(&UpdateEvent::Failed {
+                    media_type: media_type.clone(),
+                    dir: None,
+                    error: error.to_string(),
+                });
+                result.failed += 1;
+                broken.insert(media_type);
+            }
+        }
+    }
+
+    plans
+}
+
+/// What the pass will compile and what it must drop.
+struct Planned {
+    dirty: Vec<DiscoveredRoot>,
+    removals: Vec<(String, PathBuf)>,
+    /// Root entities that had a state entry before this pass.
+    known: HashSet<(String, PathBuf)>,
+    /// Root entities in scope, which is what `Started` reports.
+    scoped: usize,
+}
+
+fn plan_work(
+    plans: &[MediaRootPlan],
+    roots: &[DiscoveredRoot],
+    scope: &UpdateScope,
+    media_type: Option<&str>,
+    force: ForceMode,
+) -> Planned {
+    let mut planned = Planned {
+        dirty: Vec::new(),
+        removals: Vec::new(),
+        known: HashSet::new(),
+        scoped: 0,
+    };
+
+    for plan in plans {
+        let found: Vec<&DiscoveredRoot> = roots
+            .iter()
+            .filter(|root| root.media_type == plan.media_type)
+            .collect();
+
+        for dir in plan.states.keys() {
+            // The key set is the list of root entities that existed at the end
+            // of the last pass.
+            planned
+                .known
+                .insert((plan.media_type.clone(), PathBuf::from(dir)));
+
+            if !found.iter().any(|root| root.dir == Path::new(dir)) {
+                planned
+                    .removals
+                    .push((plan.media_type.clone(), PathBuf::from(dir)));
+            }
+        }
+
+        for root in found {
+            if media_type.is_some_and(|filter| filter != root.media_type)
+                || !in_scope(root, scope)
+            {
+                continue;
+            }
+            planned.scoped += 1;
+
+            let entry = plan.states.get(&root.dir.to_string_lossy().to_string());
+            let walked = walk_files(&root.dir);
+            if force == ForceMode::Force || root_is_dirty(&root.dir, &walked, entry) {
+                planned.dirty.push(root.clone());
+            }
+        }
+    }
+
+    planned
+}
+
+/// Writes the state entries and the reverse index the watcher reads.
+fn record_state(
+    shared: &Arc<MediaShared>,
+    state: &MediaState,
+    compiled: &[CompiledRoot],
+    removals: &[(String, PathBuf)],
+    sink: &dyn UpdateSink,
+    result: &mut PassResult,
+) {
+    let mut index = shared
+        .external_index
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    for root in compiled {
+        let media_type = root.media_type.clone();
+        let dir = root.dir.clone();
+        index_root(&mut index, &dir, &root.dependencies);
+
+        if let Err(e) =
+            shared.record_compiled(state, &media_type, &dir, &root.dependencies)
+        {
+            sink.event(&UpdateEvent::Failed {
+                media_type,
+                dir: Some(dir),
+                error: format!("failed to record the state file: {e}"),
+            });
+            result.failed += 1;
+        }
+    }
+
+    for (media_type, dir) in removals {
+        unindex_root(&mut index, dir);
+        if let Err(e) = shared.remove_root(state, media_type, dir) {
+            sink.event(&UpdateEvent::Failed {
+                media_type: media_type.clone(),
+                dir: Some(dir.clone()),
+                error: format!("failed to record the state file: {e}"),
+            });
+            result.failed += 1;
+        }
+        sink.event(&UpdateEvent::Removed {
+            media_type: media_type.clone(),
+            dir: dir.clone(),
+        });
+        result.removed += 1;
+    }
+}
+
+/// One discovery, compile and state update pass.
+///
+/// Discovery is always full: `--path` and `--type` narrow compilation only, so
+/// removals are reported whatever the scope.
 pub fn run_pass(
     shared: &Arc<MediaShared>,
     scope: &UpdateScope,
     media_type: Option<&str>,
     force: ForceMode,
     jobs: Option<usize>,
-    verbosity: Verbosity,
-) -> Result<UpdateOutcome> {
+    sink: &dyn UpdateSink,
+) -> Result<PassOutcome> {
     let state = shared
         .state
         .read()
@@ -242,108 +528,46 @@ pub fn run_pass(
         .context("Media state is not loaded")?;
 
     let engine = open_engine(&state)?;
-    let discovered: Vec<DiscoveredRoot> =
-        discover_roots(&engine, &state.media, &state.config_dir)?
-            .into_iter()
-            .filter(|root| in_scope(root, scope))
-            .filter(|root| media_type.is_none_or(|mt| root.media_type == mt))
-            .collect();
+    let discovery = discover_roots(&engine, &state.media, &state.config_dir)?;
 
-    let inits = state.init_dirs();
-    let cache_path = stat_cache_path(&state.cache_root, &inits);
-    let deps_path = deps_graph_path(&state.cache_root, &inits);
-    std::fs::create_dir_all(cache_path.parent().unwrap_or_else(|| Path::new(".")))?;
+    let mut result = PassResult::default();
+    let plans = load_plans(&state, &discovery, sink, &mut result);
 
-    let mut cache = load_cache(&cache_path);
-    let mut deps_graph = shared
-        .deps_graph
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
+    // A missing or different config digest forces a full pass.
+    let digest_path = config_hash_path(&state.cache_root, &state.config_path);
+    let digest = hash_files(&state.dependencies);
+    let force_all = force == ForceMode::Force
+        || std::fs::read_to_string(&digest_path).unwrap_or_default() != digest;
 
-    let config_hash_file = config_hash_path(&state.cache_root);
-    let current_hash = hash_files(&state.dependencies);
-    let config_changed =
-        std::fs::read_to_string(&config_hash_file).unwrap_or_default() != current_hash;
-    let force = if config_changed {
-        ForceMode::Force
-    } else {
-        force
-    };
+    let Planned {
+        dirty,
+        removals,
+        known,
+        scoped,
+    } = plan_work(
+        &plans,
+        &discovery.roots,
+        scope,
+        media_type,
+        if force_all {
+            ForceMode::Force
+        } else {
+            ForceMode::Preserve
+        },
+    );
 
-    if verbosity == Verbosity::Verbose {
-        log::info!("Verifying {} roots...", discovered.len());
-    }
+    result.discovered = scoped;
+    sink.event(&UpdateEvent::Started {
+        discovered: scoped,
+        dirty: dirty.len(),
+    });
 
-    let dirty: Vec<DiscoveredRoot> = discovered
-        .iter()
-        .filter(|root| root_dirty(root, &cache, &deps_graph, force))
-        .cloned()
-        .collect();
-
-    let active_writes = Arc::new(std::sync::Mutex::new(HashSet::new()));
+    let active_writes = Arc::new(Mutex::new(HashSet::new()));
     let jobs = jobs.or(state.compiler_jobs);
-    let compiled = compile_roots(&state, &dirty, jobs, &active_writes);
+    let (compiled, failures) =
+        compile_roots(&state, &dirty, jobs, &active_writes, &known, sink);
+    result.failed += failures;
 
-    for root in &compiled {
-        deps_graph.update_root_deps(
-            root.dir.clone(),
-            root.dependencies.iter().cloned().collect(),
-        );
-        cache
-            .files
-            .retain(|key, _| !key.starts_with(&prefix_for(&root.dir)));
-        for (key, stat) in walk_files(&root.dir) {
-            cache.files.insert(key, stat);
-        }
-    }
-
-    let discovered_keys: HashSet<(String, PathBuf)> = discovered
-        .iter()
-        .map(|root| (root.media_type.clone(), root.dir.clone()))
-        .collect();
-
-    let removed: Vec<(String, PathBuf)> = cache
-        .roots
-        .iter()
-        .filter(|cached| {
-            !discovered_keys.contains(&(cached.media_type.clone(), cached.dir.clone()))
-        })
-        .map(|cached| (cached.media_type.clone(), cached.dir.clone()))
-        .collect();
-
-    for (_, dir) in &removed {
-        deps_graph.remove_root(dir);
-        cache
-            .files
-            .retain(|key, _| !key.starts_with(&prefix_for(dir)));
-        if let Some(root) = state.roots.iter().find(|root| &root.dir == dir) {
-            let _ =
-                std::fs::remove_file(dir.join(format!("{}.lock.json", root.media_type)));
-        }
-    }
-
-    cache.roots = discovered
-        .iter()
-        .map(|root| CachedRoot {
-            media_type: root.media_type.clone(),
-            dir: root.dir.clone(),
-        })
-        .collect();
-    cache.roots.sort_by(|a, b| a.dir.cmp(&b.dir));
-
-    deps_graph.prune();
-    save_cache(&cache, &cache_path)?;
-    deps_graph.save_to_file(&deps_path)?;
-    let _ = std::fs::write(&config_hash_file, &current_hash);
-
-    {
-        let mut guard = shared
-            .deps_graph
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = deps_graph;
-    }
     {
         let mut writes = shared
             .active_writes
@@ -358,39 +582,45 @@ pub fn run_pass(
         );
     }
 
-    if verbosity == Verbosity::Verbose {
-        log::info!(
-            "Update complete: {} checked ({} modified), {} removed.",
-            discovered.len(),
-            compiled.iter().filter(|root| root.modified).count(),
-            removed.len()
-        );
-    }
+    record_state(shared, &state, &compiled, &removals, sink, &mut result);
 
-    Ok(UpdateOutcome { compiled, removed })
-}
-
-fn emit_log(
-    message: &str,
-    verbosity: Verbosity,
-    log_txs: &[tokio::sync::mpsc::Sender<String>],
-) {
-    if verbosity == Verbosity::Verbose {
-        log::info!("{message}");
-    }
-    for tx in log_txs {
-        if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) =
-            tx.try_send(message.to_string())
-        {
-            log::warn!("Update log receiver queue is full; dropping a message");
+    for compiled in &compiled {
+        if known.contains(&(compiled.media_type.clone(), compiled.dir.clone())) {
+            if compiled.modified {
+                result.updated += 1;
+            } else {
+                result.unchanged += 1;
+            }
+        } else {
+            result.added += 1;
         }
     }
+
+    // Only a finished pass may claim the config it compiled.
+    if result.failed == 0 {
+        let _ = datamile_fs::write_atomic(&digest_path, &digest);
+    }
+
+    sink.event(&UpdateEvent::Finished {
+        discovered: result.discovered,
+        added: result.added,
+        updated: result.updated,
+        unchanged: result.unchanged,
+        removed: result.removed,
+        failed: result.failed,
+    });
+
+    Ok(PassOutcome {
+        result,
+        compiled,
+        removed: removals,
+    })
 }
 
 fn ingest_outcome(
     state: &MediaState,
     logic: &mut LogicEngine,
-    outcome: &UpdateOutcome,
+    outcome: &PassOutcome,
 ) -> PerTypeUpdates {
     let mut per_type = PerTypeUpdates::new();
 
@@ -471,6 +701,10 @@ fn shelves_for(logic: &LogicEngine, media_type: &str) -> HashMap<String, Vec<Str
     clippy::too_many_arguments,
     reason = "the pass mirrors the pending-update fields one to one"
 )]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the media type filter is moved into the blocking pass"
+)]
 async fn run_update_pass(
     state: Arc<ServerState>,
     shared: Arc<MediaShared>,
@@ -478,20 +712,28 @@ async fn run_update_pass(
     media_type: Option<String>,
     force: ForceMode,
     jobs: Option<usize>,
-    verbosity: Verbosity,
-    log_txs: Vec<tokio::sync::mpsc::Sender<String>>,
-) -> Result<()> {
-    let shared_for_pass = Arc::clone(&shared);
-    let media_type_for_pass = media_type.clone();
+    event_txs: Vec<tokio::sync::mpsc::Sender<String>>,
+) -> Result<PassResult> {
+    // The journal always runs; each attached client adds one bounded stream.
+    let sinks = CompositeSink::new(
+        std::iter::once(Arc::new(LogSink) as Arc<dyn UpdateSink>)
+            .chain(
+                event_txs
+                    .into_iter()
+                    .map(|tx| Arc::new(StreamSink::new(tx)) as Arc<dyn UpdateSink>),
+            )
+            .collect(),
+    );
 
+    let shared_for_pass = Arc::clone(&shared);
     let outcome = tokio::task::spawn_blocking(move || {
         run_pass(
             &shared_for_pass,
             &scope,
-            media_type_for_pass.as_deref(),
+            media_type.as_deref(),
             force,
             jobs,
-            verbosity,
+            &sinks,
         )
     })
     .await??;
@@ -509,11 +751,11 @@ async fn run_update_pass(
         let mut logic = logic_arc.blocking_write();
         let per_type = ingest_outcome(&ingest_state, &mut logic, &outcome);
         drop(logic);
-        (per_type, outcome.compiled.len(), outcome.removed.len())
+        (per_type, outcome.result)
     })
     .await?;
 
-    let (per_type, compiled_count, removed_count) = per_type;
+    let (per_type, result) = per_type;
 
     for (media_type, (updated, removed)) in per_type {
         if updated.is_empty() && removed.is_empty() {
@@ -535,27 +777,21 @@ async fn run_update_pass(
         );
     }
 
-    emit_log(
-        &format!("Update complete: {compiled_count} compiled, {removed_count} removed."),
-        verbosity,
-        &log_txs,
-    );
-
-    Ok(())
+    Ok(result)
 }
 
 pub async fn run_server_update(
     state: Arc<ServerState>,
     shared: Arc<MediaShared>,
     request: UpdateRequest,
-    log_tx: Option<tokio::sync::mpsc::Sender<String>>,
-) -> Result<()> {
+    event_txs: Vec<tokio::sync::mpsc::Sender<String>>,
+) -> Result<PassResult> {
     let scope = request.path.map_or(UpdateScope::All, |path| {
         let mut set = HashSet::new();
-        set.insert(datamile_fs::expand_path(&path));
+        let path = datamile_fs::expand_path(&path);
+        set.insert(path.canonicalize().unwrap_or(path));
         UpdateScope::Paths(set)
     });
-    let verbosity = Verbosity::from(request.silent);
 
     {
         let mut lock = shared
@@ -567,17 +803,17 @@ pub async fn run_server_update(
                 pending.scope.merge(scope);
                 pending.force |= request.force;
                 pending.jobs = request.jobs.or(pending.jobs);
+                pending.event_txs.extend(event_txs);
             } else {
-                lock.pending = Some(PendingUpdate {
+                lock.pending = Some(crate::deps::PendingUpdate {
                     scope,
                     media_type: request.media_type,
                     force: request.force,
                     jobs: request.jobs,
-                    silent: request.silent,
-                    log_txs: log_tx.into_iter().collect(),
+                    event_txs,
                 });
             }
-            return Ok(());
+            return Ok(PassResult::default());
         }
         lock.is_running = true;
     }
@@ -586,7 +822,7 @@ pub async fn run_server_update(
     let mut media_type = request.media_type;
     let mut force = ForceMode::from(request.force);
     let mut jobs = request.jobs;
-    let mut log_txs = log_tx.into_iter().collect::<Vec<_>>();
+    let mut event_txs = event_txs;
 
     let mut last;
     loop {
@@ -597,8 +833,7 @@ pub async fn run_server_update(
             media_type.clone(),
             force,
             jobs,
-            verbosity,
-            log_txs.clone(),
+            event_txs.clone(),
         )
         .await;
 
@@ -625,140 +860,123 @@ pub async fn run_server_update(
         media_type = next.media_type;
         force = ForceMode::from(next.force);
         jobs = next.jobs;
-        log_txs = next.log_txs;
+        event_txs = next.event_txs;
     }
 
     last
 }
 
-/// Keeps the persisted stat cache in step with a hot reload.
-pub(crate) fn sync_cache(
-    state: &MediaState,
-    logic: &LogicEngine,
-    compiled: &[CompiledRoot],
-    removed: &[(String, PathBuf)],
-) {
-    let inits = state.init_dirs();
-    let cache_path = stat_cache_path(&state.cache_root, &inits);
-    let mut cache = load_cache(&cache_path);
-
-    for root in compiled {
-        cache
-            .files
-            .retain(|key, _| !key.starts_with(&prefix_for(&root.dir)));
-        for (key, stat) in walk_files(&root.dir) {
-            cache.files.insert(key, stat);
-        }
-    }
-
-    for (_, dir) in removed {
-        cache
-            .files
-            .retain(|key, _| !key.starts_with(&prefix_for(dir)));
-    }
-
-    cache.roots = logic
-        .all_entities()
-        .map(|record| CachedRoot {
-            media_type: record.media_type.clone(),
-            dir: record.path.clone(),
-        })
-        .collect();
-    cache.roots.sort_by(|a, b| a.dir.cmp(&b.dir));
-
-    if let Err(e) = save_cache(&cache, &cache_path) {
-        log::error!("Failed to persist the stat cache: {e}");
-    }
-}
-
-/// CLI update: delegates to a running server, otherwise runs locally.
-pub async fn run(
+/// Runs one pass in this process, for a CLI that holds the instance lock.
+pub fn run_local(
+    shared: &Arc<MediaShared>,
     path: Option<PathBuf>,
-    media_type: Option<String>,
+    media_type: Option<&str>,
     force: ForceMode,
     jobs: Option<usize>,
-    verbosity: Verbosity,
-) -> Result<()> {
-    if is_server_up().await {
-        return delegate(path, media_type, force, jobs, verbosity).await;
-    }
-
-    let backend = crate::MediaEngineBackend::new();
-    let mut logic = LogicEngine::new(
-        PathBuf::new(),
-        datamile_lua_domain::LogicManifest::default(),
-    );
-    backend.reload_config_and_logic(&mut logic)?;
-
+    sink: &dyn UpdateSink,
+) -> Result<PassResult> {
     let scope = path.map_or(UpdateScope::All, |path| {
         let mut set = HashSet::new();
-        set.insert(datamile_fs::expand_path(&path.to_string_lossy()));
+        set.insert(path);
         UpdateScope::Paths(set)
     });
 
-    let shared = backend.shared();
-    tokio::task::spawn_blocking(move || {
-        run_pass(
-            &shared,
-            &scope,
-            media_type.as_deref(),
-            force,
-            jobs,
-            verbosity,
-        )
-    })
-    .await??;
-
-    Ok(())
+    run_pass(shared, &scope, media_type, force, jobs, sink).map(|outcome| outcome.result)
 }
 
-async fn is_server_up() -> bool {
-    reqwest::Client::new()
-        .get("http://127.0.0.1:8000/api/update/tracked")
-        .timeout(std::time::Duration::from_millis(300))
-        .send()
-        .await
-        .is_ok_and(|response| response.status().is_success())
-}
-
-async fn delegate(
+/// Streams a pass from the daemon, rendering each event through `sink`.
+///
+/// An unterminated stream is an error: a dropped `Finished` must never turn a
+/// failure into a success.
+pub async fn delegate(
+    port: u16,
     path: Option<PathBuf>,
     media_type: Option<String>,
     force: ForceMode,
     jobs: Option<usize>,
-    verbosity: Verbosity,
-) -> Result<()> {
+    sink: &dyn UpdateSink,
+) -> Result<PassResult> {
     let body = json!({
         "path": path.map(|p| p.to_string_lossy().to_string()),
         "media_type": media_type,
         "force": force == ForceMode::Force,
         "jobs": jobs,
-        "silent": verbosity == Verbosity::Silent
     });
 
-    let mut response = reqwest::Client::new()
-        .post("http://127.0.0.1:8000/api/update")
+    let mut response = local_client()
+        .post(format!("http://127.0.0.1:{port}/api/update"))
         .json(&body)
         .send()
         .await
-        .context("Failed to reach the running server")?;
+        .context("Failed to reach the running daemon")?;
 
     if !response.status().is_success() {
         let text = response.text().await.unwrap_or_default();
-        anyhow::bail!("Server update failed: {text}");
+        anyhow::bail!("Daemon update failed: {text}");
     }
 
+    let mut finished = None;
     let mut buffer = String::new();
-    while let Ok(Some(chunk)) = response.chunk().await {
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].trim_end().to_string();
-            buffer.drain(..=pos);
-            if !line.is_empty() && verbosity == Verbosity::Verbose {
-                log::info!("{line}");
+
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => buffer.push_str(&String::from_utf8_lossy(&chunk)),
+            Ok(None) => break,
+            Err(e) => return Err(e).context("Update stream broke"),
+        }
+
+        while let Some(position) = buffer.find('\n') {
+            let line: String = buffer.drain(..=position).collect();
+            if let Some(event) = parse_event(&line, sink) {
+                finished = Some(event);
             }
         }
     }
 
-    Ok(())
+    if let Some(event) = parse_event(&buffer, sink) {
+        finished = Some(event);
+    }
+
+    finished.context("The update stream ended without a Finished event")
+}
+
+/// Every call here is loopback, so an `HTTP_PROXY` in the environment must not
+/// route it.
+fn local_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap_or_default()
+}
+
+fn parse_event(line: &str, sink: &dyn UpdateSink) -> Option<PassResult> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+
+    let Ok(event) = serde_json::from_str::<UpdateEvent>(line) else {
+        log::warn!("Ignoring an unreadable update line: {line}");
+        return None;
+    };
+    sink.event(&event);
+
+    match event {
+        UpdateEvent::Finished {
+            discovered,
+            added,
+            updated,
+            unchanged,
+            removed,
+            failed,
+        } => Some(PassResult {
+            discovered,
+            added,
+            updated,
+            unchanged,
+            removed,
+            failed,
+        }),
+        _ => None,
+    }
 }

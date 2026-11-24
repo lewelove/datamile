@@ -146,6 +146,7 @@ impl MediaBackend for MockBackend {
             config_dir: PathBuf::from("/config"),
             config_path: PathBuf::from("/config/init.lua"),
             compiler_jobs: None,
+            port: crate::DEFAULT_PORT,
         })
     }
 
@@ -203,7 +204,7 @@ impl MediaBackend for MockBackend {
         &self,
         _state: Arc<ServerState>,
         _request: UpdateRequest,
-        _log_tx: Option<tokio::sync::mpsc::Sender<String>>,
+        _event_txs: Vec<tokio::sync::mpsc::Sender<String>>,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -215,10 +216,6 @@ impl MediaBackend for MockBackend {
         _id: &str,
     ) -> anyhow::Result<bool> {
         Ok(false)
-    }
-
-    fn tracked_changes(&self) -> (bool, Vec<String>) {
-        (false, Vec::new())
     }
 }
 
@@ -248,6 +245,7 @@ async fn test_state_with_backend(
         mpd_engine: MpdEngine::new(tx),
         image_tasks: Arc::new(ImageTaskRegistry::default()),
         now_playing: tokio::sync::RwLock::new("Artist/Album/01.flac".to_string()),
+        reload_error: tokio::sync::RwLock::new(None),
         backend,
     })
 }
@@ -622,4 +620,46 @@ async fn websocket_requests_are_scoped_by_media_type() {
     .await;
     assert_eq!(shelf["media_type"], json!(ALBUM));
     assert_eq!(shelf["ids"], json!(["Dune"]));
+}
+
+/// `/api/identity` is what a CLI compares before delegating: the config it
+/// serves, its version, and whether its last reload failed.
+#[tokio::test]
+async fn router_reports_identity() {
+    let state = test_state(engine_with(&[])).await;
+    let app = crate::api::router(state);
+
+    let response = app
+        .oneshot(Request::get("/api/identity").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["config_path"], json!("/config/init.lua"));
+    assert_eq!(body["version"], json!(crate::VERSION));
+    assert_eq!(body["reload_error"], json!(null));
+}
+
+/// `/api/select` resolves action targets from the body, using the daemon's
+/// already-built index instead of a local rescan.
+#[tokio::test]
+async fn router_selects_targets_from_the_request_body() {
+    let state = test_state(engine_with(&[(ALBUM, "a", album_eval())])).await;
+    let app = crate::api::router(state);
+
+    let response = app
+        .oneshot(
+            Request::post("/api/select")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"media_type":"album","id":"a"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let items = body_json(response).await;
+    assert_eq!(items[0]["type"], json!(ALBUM));
+    assert_eq!(items[0]["id"], json!("a"));
 }

@@ -28,6 +28,8 @@ pub struct MediaState {
     pub interfaces: HashMap<String, InterfaceDef>,
     pub mpd: MpdConfig,
     pub compiler_jobs: Option<usize>,
+    /// `server.port`, normalised to the default when the config leaves it at 0.
+    pub port: u16,
 }
 
 impl MediaState {
@@ -44,6 +46,31 @@ impl MediaState {
             .filter(|root| root.media_type == media_type)
             .map(|root| root.dir.clone())
             .collect()
+    }
+
+    /// `(media type, canonical init)` for every declared media root, whether or
+    /// not `select` currently returns any root entity. Removal needs the ones
+    /// that return none.
+    #[must_use]
+    pub fn media_roots(&self) -> Vec<(String, PathBuf)> {
+        self.media
+            .roots_order
+            .iter()
+            .filter_map(|media_type| {
+                let init = self.media.roots.get(media_type)?.init.as_deref()?;
+                let init = datamile_fs::resolve_path(init, &self.config_dir);
+                Some((media_type.clone(), canonical(&init)))
+            })
+            .collect()
+    }
+
+    /// Canonical `init` of one media root, needed to find its state file.
+    #[must_use]
+    pub fn init_of(&self, media_type: &str) -> Option<PathBuf> {
+        self.media_roots()
+            .into_iter()
+            .find(|(name, _)| name == media_type)
+            .map(|(_, init)| init)
     }
 
     #[must_use]
@@ -81,37 +108,37 @@ pub fn open_engine(state: &MediaState) -> Result<DomainLuaEngine> {
     Ok(engine)
 }
 
-/// Cache directory for one set of root `init` directories.
+/// Durable state is namespaced by config path, so two configs never share a
+/// state file even when they share a cache root and an `init`.
 #[must_use]
-pub fn library_cache_dir(cache_root: &Path, inits: &[PathBuf]) -> PathBuf {
-    let mut sorted = inits.to_vec();
-    sorted.sort();
-    let key = sorted
-        .iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect::<Vec<_>>()
-        .join(":");
-    let hash = if key.is_empty() {
-        calculate_path_hash(Path::new("media"))
-    } else {
-        calculate_path_hash(Path::new(&key))
-    };
-    cache_root.join("libraries").join(hash)
+pub fn config_cache_dir(cache_root: &Path, config_path: &Path) -> PathBuf {
+    cache_root
+        .join("configs")
+        .join(calculate_path_hash(&canonical(config_path)))
 }
 
 #[must_use]
-pub fn deps_graph_path(cache_root: &Path, inits: &[PathBuf]) -> PathBuf {
-    library_cache_dir(cache_root, inits).join("dependencies.json")
+pub fn config_hash_path(cache_root: &Path, config_path: &Path) -> PathBuf {
+    config_cache_dir(cache_root, config_path).join("config.blake3")
 }
 
+/// The state file for one media root: one per `(config, media type, init)`.
 #[must_use]
-pub fn stat_cache_path(cache_root: &Path, inits: &[PathBuf]) -> PathBuf {
-    library_cache_dir(cache_root, inits).join("library.json")
+pub fn state_path(
+    cache_root: &Path,
+    config_path: &Path,
+    media_type: &str,
+    init: &Path,
+) -> PathBuf {
+    config_cache_dir(cache_root, config_path)
+        .join("roots")
+        .join(media_type)
+        .join(calculate_path_hash(&canonical(init)))
+        .join("state.json")
 }
 
-#[must_use]
-pub fn config_hash_path(cache_root: &Path) -> PathBuf {
-    cache_root.join("config.blake3")
+fn canonical(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[must_use]

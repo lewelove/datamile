@@ -2,6 +2,7 @@
 import { fade, type FadeParams } from "svelte/transition";
 import { cubicOut } from "svelte/easing";
 import { view } from "../../../library/view.svelte.ts";
+import { tracksOf } from "../../../library/tracks.ts";
 import { playMedia, executeAction, updateMedia } from "../../../api.ts";
 import ClearCover from "../../ClearCover.svelte";
 import ModalDrawerTracks from "./ModalDrawerTracks.svelte";
@@ -14,7 +15,7 @@ let leftColumnWidth = $derived(Math.round(0.36 * windowWidth));
 
 let albumData = $derived(album.album || {});
 let albumId = $derived(albumData.id || "");
-let albumTracks = $derived(albumData.nodes?.tracks || []);
+let albumTracks = $derived(tracksOf(albumData));
 let infoData = $derived(albumData.objects?.info || {});
 
 let imageHash = $derived(albumData.images?.main?.[0]?.address || "");

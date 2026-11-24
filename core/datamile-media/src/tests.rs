@@ -401,7 +401,7 @@ fn ctx_hooks_populate_the_compilation_context() {
         &config,
         &format!(
             r#"
-            local tracks = d.media.node("tracks", {{
+            local track = d.media.node("track", {{
                 ctx = function(ctx)
                     ctx.marker = ctx.parent.marker .. "-track"
                 end,
@@ -409,14 +409,14 @@ fn ctx_hooks_populate_the_compilation_context() {
                     return d.fs.files(ctx.path, {{ ext = "flac", paths_only = true }})
                 end,
             }})
-            tracks.tag("title", function(ctx) return ctx.marker end)
+            track.tag("title", function(ctx) return ctx.marker end)
 
             local album = d.media.root("album", {{
                 init = "{lib}",
                 select = function(dir) return d.fs.roots(dir, "album.toml") end,
                 ctx = function(ctx) ctx.marker = "album" end,
                 id = function(ctx) return ctx.marker end,
-                nodes = {{ "tracks" }},
+                nodes = {{ "track" }},
             }})
             album.tag("album", function(ctx) return ctx.marker end)
             "#,
@@ -438,7 +438,7 @@ fn ctx_hooks_populate_the_compilation_context() {
     assert_eq!(lock["album"]["id"], json!("album"));
     assert_eq!(lock["album"]["tags"]["album"], json!("album"));
     assert_eq!(
-        lock["album"]["nodes"]["tracks"][0]["tags"]["title"],
+        lock["album"]["nodes"]["track"][0]["tags"]["title"],
         json!("album-track")
     );
 }

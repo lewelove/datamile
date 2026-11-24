@@ -1,6 +1,7 @@
 <script lang="ts">
 import { player } from "../player.svelte.ts";
 import { collection } from "../../library/collection.svelte.ts";
+import { tracksOf } from "../../library/tracks.ts";
 import PanelShell from "./PanelShell.svelte";
 import QueueHeader from "./QueueHeader.svelte";
 import TracklistView from "./TracklistView.svelte";
@@ -11,7 +12,7 @@ let mappedTracks = $derived(
     const fullAlbum = item.media_id ? collection.fullAlbumCache[item.media_id] : null;
     const meta =
       item.node_index !== null && item.node_index !== undefined
-        ? fullAlbum?.album?.nodes?.tracks?.[item.node_index] ?? null
+        ? tracksOf(fullAlbum?.album)[item.node_index] ?? null
         : null;
 
     return {

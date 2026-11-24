@@ -405,7 +405,7 @@ export class ViewState {
           tags: dictEntry?.tags,
           objects: dictEntry?.objects,
           images: dictEntry?.images || {},
-          nodes: { tracks: [] }
+          nodes: { track: [] }
         }
       };
 

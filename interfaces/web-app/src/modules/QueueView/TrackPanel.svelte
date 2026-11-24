@@ -1,6 +1,7 @@
 <script lang="ts">
 import { player } from "../player.svelte.ts";
 import { collection } from "../../library/collection.svelte.ts";
+import { tracksOf } from "../../library/tracks.ts";
 import PanelShell from "./PanelShell.svelte";
 import QueueHeader from "./QueueHeader.svelte";
 import LyricsView from "./LyricsView.svelte";
@@ -12,9 +13,7 @@ let activeTrackIdx = $derived(player.currentNodeIndex);
 
 let fullAlbum = $derived(activeId ? collection.fullAlbumCache[activeId] : null);
 let currentTrackFull = $derived(
-  activeTrackIdx !== null
-    ? fullAlbum?.album?.nodes?.tracks?.[activeTrackIdx] ?? null
-    : null
+  activeTrackIdx !== null ? tracksOf(fullAlbum?.album)[activeTrackIdx] ?? null : null
 );
 
 let title = $derived(currentTrackFull?.tags?.title || player.title || "Unknown Title");

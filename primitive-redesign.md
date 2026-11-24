@@ -24,7 +24,7 @@ It has related `match` predicate Lua function that runs through all albums and t
 
 ```lua
 match = function(a, value)
-  return a.keys.genre == "Ambient"
+  return a.tags.genre == "Ambient"
 end
 ```
 
@@ -48,13 +48,13 @@ It has related `order` Lua function that returns keys by which albums will be or
 
 ```lua
 order = function(a)
-  return a.keys.genre
+  return a.tags.genre
 end
 ```
 
 ```lua
 order = function(a)
-  return { a.keys.genre, a.keys.year }
+  return { a.tags.genre, a.tags.year }
 end
 ```
 

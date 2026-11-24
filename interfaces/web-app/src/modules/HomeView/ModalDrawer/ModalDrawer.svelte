@@ -2,6 +2,7 @@
 import { fade, type FadeParams } from "svelte/transition";
 import { cubicOut } from "svelte/easing";
 import { view } from "../../../library/view.svelte.ts";
+import { collection } from "../../../library/collection.svelte.ts";
 import { tracksOf } from "../../../library/tracks.ts";
 import { playMedia, executeAction, updateMedia } from "../../../api.ts";
 import ClearCover from "../../ClearCover.svelte";
@@ -163,38 +164,46 @@ function handleBackdropClick(e: MouseEvent) {
             <button type="button" class="v-btn-icon icon-btn" onclick={handleUpdate} title="Update Album">
               <span class="icon">refresh</span>
             </button>
-            <button
-              type="button"
-              class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_folder", albumId)}
-              title="Open Local Folder"
-            >
-              <span class="icon">folder</span>
-            </button>
-            <button
-              type="button"
-              class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_manifest", albumId)}
-              title="Open Manifest"
-            >
-              <span class="icon">edit_document</span>
-            </button>
-            <button
-              type="button"
-              class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_lock", albumId)}
-              title="Open Data Object"
-            >
-              <span class="icon">code</span>
-            </button>
-            <button
-              type="button"
-              class="v-btn-icon icon-btn"
-              onclick={() => executeAction("open_terminal", albumId)}
-              title="Open Terminal"
-            >
-              <span class="icon">terminal_2</span>
-            </button>
+            {#if collection.hasAction("open_folder")}
+              <button
+                type="button"
+                class="v-btn-icon icon-btn"
+                onclick={() => executeAction("open_folder", albumId)}
+                title={collection.actions["open_folder"]?.label || "Open Local Folder"}
+              >
+                <span class="icon">folder</span>
+              </button>
+            {/if}
+            {#if collection.hasAction("open_anchor_manifest")}
+              <button
+                type="button"
+                class="v-btn-icon icon-btn"
+                onclick={() => executeAction("open_anchor_manifest", albumId)}
+                title={collection.actions["open_anchor_manifest"]?.label || "Open Manifest"}
+              >
+                <span class="icon">edit_document</span>
+              </button>
+            {/if}
+            {#if collection.hasAction("open_lock")}
+              <button
+                type="button"
+                class="v-btn-icon icon-btn"
+                onclick={() => executeAction("open_lock", albumId)}
+                title={collection.actions["open_lock"]?.label || "Open Data Object"}
+              >
+                <span class="icon">code</span>
+              </button>
+            {/if}
+            {#if collection.hasAction("open_terminal")}
+              <button
+                type="button"
+                class="v-btn-icon icon-btn"
+                onclick={() => executeAction("open_terminal", albumId)}
+                title={collection.actions["open_terminal"]?.label || "Open Terminal"}
+              >
+                <span class="icon">terminal_2</span>
+              </button>
+            {/if}
           </div>
 
           <div class="bar-group right">

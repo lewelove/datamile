@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import { view } from "./library/view.svelte.ts";
+import { collection } from "./library/collection.svelte.ts";
 import { initApp } from "./library/init.ts";
 import { nav, setTab } from "./navigation.svelte.ts";
 import { executeAction } from "./api.ts";
@@ -57,14 +58,22 @@ function handleKeydown(e: KeyboardEvent) {
   const code = e.code;
   const key = e.key;
 
-  if ((e.ctrlKey || e.metaKey) && (key === "," || code === "Comma")) {
+  if (
+    collection.hasAction("open_config_in_terminal") &&
+    (e.ctrlKey || e.metaKey) &&
+    (key === "," || code === "Comma")
+  ) {
     e.preventDefault();
     e.stopPropagation();
     executeAction("open_config_in_terminal", "").catch(() => {});
     return;
   }
 
-  if ((e.ctrlKey || e.metaKey) && (key === "t" || key === "T" || code === "KeyT")) {
+  if (
+    collection.hasAction("open_terminal") &&
+    (e.ctrlKey || e.metaKey) &&
+    (key === "t" || key === "T" || code === "KeyT")
+  ) {
     e.preventDefault();
     e.stopPropagation();
     if (shortcutAlbumId) {
@@ -73,7 +82,11 @@ function handleKeydown(e: KeyboardEvent) {
     return;
   }
 
-  if ((e.ctrlKey || e.metaKey) && (key === "d" || key === "D" || code === "KeyD")) {
+  if (
+    collection.hasAction("open_folder") &&
+    (e.ctrlKey || e.metaKey) &&
+    (key === "d" || key === "D" || code === "KeyD")
+  ) {
     e.preventDefault();
     e.stopPropagation();
     if (shortcutAlbumId) {

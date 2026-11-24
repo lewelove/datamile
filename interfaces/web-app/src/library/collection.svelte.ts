@@ -4,6 +4,7 @@ import { sync } from "./sync.svelte.ts";
 import { updatePlayerState } from "../modules/player.svelte.ts";
 import { config as globalConfig } from "../config.svelte.ts";
 import type {
+  ActionDef,
   AlbumCardItem,
   AlbumDictEntry,
   AlbumImageEntry,
@@ -66,6 +67,7 @@ class CollectionStore {
   libraryViewIds: string[] = $state([]);
   sidebarGroups: SvelteMap<string, GrouperTreeNode[]> = $state(new SvelteMap());
   fullAlbumCache: Record<string, FullAlbum> = $state({});
+  actions: Record<string, ActionDef> = $state({});
   manifest: LogicManifest = $state({
     filters: {},
     libraries: {},
@@ -87,6 +89,9 @@ class CollectionStore {
         this.sidebarShelves = json.shelves;
       }
       this.dict = json.media?.album || {};
+      if (json.actions) {
+        this.actions = json.actions;
+      }
       if (json.manifest) {
         this.manifest = json.manifest;
       }
@@ -127,6 +132,9 @@ class CollectionStore {
         triggerImagePrewarm(addresses);
       }
     } else if (json.type === "LOGIC_UPDATE") {
+      if (json.actions) {
+        this.actions = json.actions;
+      }
       if (json.manifest) {
         this.manifest = json.manifest;
       }
@@ -187,6 +195,11 @@ class CollectionStore {
       console.error(err);
     }
     return null;
+  }
+
+  /** Interfaces only render a control when the config declares its action. */
+  hasAction(name: string): boolean {
+    return Boolean(this.actions[name]);
   }
 
   get availableFilters(): Record<string, FilterDef> {

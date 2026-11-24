@@ -1,6 +1,7 @@
 <script lang="ts">
 import { nav, setTab } from "../navigation.svelte.ts";
 import { executeAction } from "../api.ts";
+import { collection } from "../library/collection.svelte.ts";
 
 let { variant = "solid" }: { variant?: "solid" | "transparent" } = $props();
 
@@ -35,14 +36,16 @@ async function handleOpenConfig() {
   </div>
 
   <div class="nav-group bottom">
-    <button
-      type="button"
-      class="v-btn-icon v-sidebar-button round"
-      onclick={handleOpenConfig}
-      title="Open Config"
-    >
-      <span class="icon">settings</span>
-    </button>
+    {#if collection.hasAction("open_config_in_terminal")}
+      <button
+        type="button"
+        class="v-btn-icon v-sidebar-button round"
+        onclick={handleOpenConfig}
+        title={collection.actions["open_config_in_terminal"]?.label || "Open Config"}
+      >
+        <span class="icon">settings</span>
+      </button>
+    {/if}
   </div>
 </nav>
 

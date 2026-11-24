@@ -308,5 +308,5 @@ export type WsMessage =
       updated?: Record<string, AlbumDictEntry>;
       shelves?: Record<string, string[]>;
     }
-  | { type: "LOGIC_UPDATE"; manifest?: LogicManifest }
+  | { type: "LOGIC_UPDATE"; manifest?: LogicManifest; actions?: Record<string, ActionDef> }
   | (MpdStatusPayload & { type: "MPD_STATUS" });

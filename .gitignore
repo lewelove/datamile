@@ -10,7 +10,6 @@ actions/*
 !actions/*.*
 
 notes/
-docs/
 specs/
 spec.md
 

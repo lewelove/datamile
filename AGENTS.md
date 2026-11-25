@@ -1,5 +1,10 @@
 # AGENTS.md
 
+## Vocabulary
+
+`docs/vocabulary.md` is the canonical glossary. Read it before naming a
+new concept, and use its terms in code, config, specs and commits.
+
 ## Coding Standards
 
 - Avoid magic numbers and strings by extracting recurring or meaningful values into descriptive constants (const) or enums. Keep self-explanatory, one-off values inline to avoid clutter. If a value comes from a spec (e.g. HTTP 200 OK), use a constant regardless.

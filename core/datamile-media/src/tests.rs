@@ -338,7 +338,14 @@ fn compile_emits_physical_and_virtual_nodes_and_images() {
 
     assert_eq!(album["id"], json!("Artist - A"));
     assert_eq!(album["location"]["kind"], json!("dir"));
-    assert_eq!(album["location"]["path"], json!("."));
+    assert_eq!(
+        album["location"]["path"],
+        json!(root.canonicalize().expect("canon").to_string_lossy())
+    );
+    assert!(
+        album["location"].get("mtime").is_none(),
+        "dirs carry no mtime"
+    );
 
     let tracks = album["nodes"]["track"].as_array().expect("tracks");
     assert_eq!(tracks.len(), 2);
@@ -586,6 +593,10 @@ fn multi_level_tree_nests_seasons_and_episodes() {
     let lock: Value = serde_json::from_str(&compiled.lock_json).expect("json");
     let season = &lock["show"]["nodes"]["season"][0];
     assert_eq!(season["location"]["kind"], json!("dir"));
+    assert!(
+        season["location"].get("mtime").is_none(),
+        "dirs carry no mtime"
+    );
     assert_eq!(
         season["nodes"]["episode"][0]["location"]["path"],
         json!("Season 1/E01.mkv")
@@ -626,8 +637,7 @@ struct Server {
 async fn make_server() -> Server {
     let f = fixture();
     make_album(&f.lib, "A", &["01.flac"]);
-    // Exists before the first compile so editing it does not change the root's
-    // directory mtime; the lock bytes must stay identical.
+    // A file the schema never reads, used as a hot-reload event source.
     write(&f.lib.join("A/notes.txt"), "first");
     let (state, manifest) = media_state(&f);
 

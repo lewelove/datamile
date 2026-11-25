@@ -37,7 +37,7 @@ fn lock_json(media_type: &str, id: &str, tracks: &[(&str, Value)]) -> Value {
     json!({
         (media_type): {
             "id": id,
-            "location": { "kind": "dir", "path": ".", "mtime": 1 },
+            "location": { "kind": "dir", "path": "/lib/a" },
             "tags": {},
             "objects": {},
             "images": {},

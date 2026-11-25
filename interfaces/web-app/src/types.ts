@@ -61,12 +61,10 @@ export interface TrackObjects {
   [key: string]: unknown;
 }
 
-export interface NodeLocation {
-  kind?: "dir" | "file";
-  path?: string;
-  mtime?: number;
-  byte_size?: number;
-}
+/** A dir location carries no stats: only files do. */
+export type NodeLocation =
+  | { kind: "dir"; path: string }
+  | { kind: "file"; path: string; mtime: number; byte_size: number };
 
 export interface AlbumLockData {
   id?: string;

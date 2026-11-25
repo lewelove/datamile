@@ -66,14 +66,18 @@ fn mtime_seconds(meta: &std::fs::Metadata) -> u64 {
     datamile_fs::file_meta(meta).map_or(0, |m| m.mtime)
 }
 
-fn dir_location(lua: &Lua, _root: &str) -> mlua::Result<Value> {
-    // A root's own mtime is deliberately zero: writing `<type>.lock.json`
-    // changes the directory mtime, so any real value would make every
-    // recompile produce different lock bytes. Child nodes carry real mtimes.
+fn dir_location(lua: &Lua, root: &str) -> mlua::Result<Value> {
+    let root_path = datamile_fs::expand_path(root);
+    let canonical = root_path
+        .canonicalize()
+        .unwrap_or_else(|_| root_path.clone());
+
+    // No mtime or byte_size: writing `<type>.lock.json` bumps the directory's
+    // mtime, so any value here would make every recompile produce new lock
+    // bytes. Only files carry stats, and only where a cache keys on them.
     let location = lua.create_table()?;
     location.set("kind", "dir")?;
-    location.set("path", ".")?;
-    location.set("mtime", 0)?;
+    location.set("path", canonical.to_string_lossy().to_string())?;
     Ok(Value::Table(location))
 }
 
@@ -105,8 +109,8 @@ fn node_location(lua: &Lua, root: &str, raw: &str) -> mlua::Result<Value> {
     let location = lua.create_table()?;
     location.set("kind", kind)?;
     location.set("path", location_path)?;
-    location.set("mtime", mtime_seconds(&meta))?;
     if kind == "file" {
+        location.set("mtime", mtime_seconds(&meta))?;
         location.set("byte_size", meta.len())?;
     }
 

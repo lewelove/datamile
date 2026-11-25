@@ -160,11 +160,10 @@ fn prepare_entities(
         let Some(schema) = state.root_schema(&root.media_type) else {
             continue;
         };
-        let music_directory = state.mpd_base(&root.media_type, &root.dir);
 
+        let music_directory = state.mpd_base();
         let Ok(parsed) = crate::ingest::parse_lock(
             &root.media_type,
-            &root.dir,
             &root.lock_json,
             schema,
             music_directory.as_deref(),

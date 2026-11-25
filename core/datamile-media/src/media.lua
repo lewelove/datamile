@@ -6,7 +6,7 @@ REGISTRY.media_roots_order = REGISTRY.media_roots_order or {}
 REGISTRY.media_nodes = REGISTRY.media_nodes or {}
 
 -- The only methods a media entity has are tag/object/image. Everything else
--- (init, select, id, playable, nodes) belongs in the body table.
+-- (init, select, id, nodes) belongs in the body table.
 local function attach_methods(def, owner)
     def.tags = def.tags or {}
     def.objects = def.objects or {}
@@ -111,7 +111,6 @@ local function node_schema(def, owner, visiting)
         end
         visiting[name] = true
         nodes[name] = {
-            playable = child.playable == true,
             has_select = type(child.select) == "function",
             nodes = node_schema(child, string.format("media.node '%s'", name), visiting),
         }

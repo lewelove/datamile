@@ -4,23 +4,19 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_CACHE_DIR: &str = "~/.cache/datamile";
 const DEFAULT_STATE_DIR: &str = "~/.local/share/datamile";
 
-/// Media-agnostic root config. Domain-specific sections (`manifest`, `compiler`,
-/// `music_directory`, ...) pass through `extra` untouched so this crate never
-/// needs to know their schema.
+/// The whole surface of `d.config`. Every key and section is declared here, so
+/// a typo fails the config instead of being carried along unused.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DomainConfig {
-    #[serde(default)]
     pub storage: StorageConfig,
-    #[serde(default)]
     pub server: ServerConfig,
-    #[serde(default)]
     pub mpd: MpdConfig,
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
+    pub compiler: CompilerConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
@@ -36,12 +32,10 @@ impl Default for ServerConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StorageConfig {
     pub cache: String,
     pub state: String,
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for StorageConfig {
@@ -49,9 +43,15 @@ impl Default for StorageConfig {
         Self {
             cache: DEFAULT_CACHE_DIR.to_string(),
             state: DEFAULT_STATE_DIR.to_string(),
-            extra: serde_json::Map::new(),
         }
     }
+}
+
+/// Compilation knobs; `jobs = nil` means the available parallelism.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct CompilerConfig {
+    pub jobs: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]

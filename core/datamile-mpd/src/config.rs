@@ -5,10 +5,10 @@ const DEFAULT_PORT: u16 = 6600;
 
 /// MPD transport settings declared under `d.config({ mpd = { ... } })`.
 ///
-/// `music_directory` is optional: when absent, callers strip the owning media
-/// root's `init` directory to build MPD URIs.
+/// `music_directory` must match MPD's own setting: playable URIs are the locks'
+/// absolute paths with this base subtracted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MpdConfig {
     pub enabled: bool,
     pub host: String,

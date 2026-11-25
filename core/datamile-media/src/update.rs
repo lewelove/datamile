@@ -674,11 +674,10 @@ fn ingest_outcome(
         let Some(schema) = state.root_schema(&compiled.media_type) else {
             continue;
         };
-        let music_directory = state.mpd_base(&compiled.media_type, &compiled.dir);
 
+        let music_directory = state.mpd_base();
         let Ok(parsed) = crate::ingest::parse_lock(
             &compiled.media_type,
-            &compiled.dir,
             &compiled.lock_json,
             schema,
             music_directory.as_deref(),

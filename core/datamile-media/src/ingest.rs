@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use datamile_logic::{EntityRecord, ImageLookupItem, PlayableLookupItem, tag_text};
 use serde_json::Value;
 use serde_json::value::RawValue;
@@ -30,18 +30,21 @@ fn search_texts(tags: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
+/// An MPD URI is the playable file's absolute location with `music_directory`
+/// subtracted. When the file is not under it, the absolute path goes out as-is
+/// and MPD refuses it: one error, one log line, no guessing here.
 fn mpd_uri(root: &Path, rel: &str, music_directory: Option<&Path>) -> String {
-    let absolute = if Path::new(rel).is_absolute() {
+    let path_fs = if Path::new(rel).is_absolute() {
         PathBuf::from(rel)
     } else {
         root.join(rel)
     };
-    let base = music_directory.unwrap_or(root);
-    let raw = absolute.strip_prefix(base).map_or_else(
-        |_| absolute.to_string_lossy().to_string(),
-        |p| p.to_string_lossy().to_string(),
-    );
-    raw.trim_start_matches('/').to_string()
+
+    music_directory
+        .and_then(|base| path_fs.strip_prefix(base).ok())
+        .unwrap_or(&path_fs)
+        .to_string_lossy()
+        .to_string()
 }
 
 fn playable_meta(node: &Value) -> Value {
@@ -95,8 +98,7 @@ fn walk_nodes(
         for (index, node) in items.iter().enumerate() {
             path_acc.push((node_name.clone(), index));
 
-            if schema.playable
-                && node.pointer("/location/kind").and_then(Value::as_str) == Some("file")
+            if node.pointer("/location/kind").and_then(Value::as_str) == Some("file")
                 && let Some(rel) = node.pointer("/location/path").and_then(Value::as_str)
                 && !rel.is_empty()
             {
@@ -185,14 +187,15 @@ fn parse_images(entity: &Value, root: &Path) -> (ImageEntries, ImageNamespaces) 
 }
 
 /// Turns any `<type>.lock.json` into the media-agnostic index records.
+///
+/// The lock is self-contained: the entity dir is its own `location`, so playable
+/// URIs and image sources never need a path handed in from outside.
 pub fn parse_lock(
     media_type: &str,
-    root: &Path,
     lock_json: &str,
     schema: &MediaRootSchema,
     music_directory: Option<&Path>,
 ) -> Result<Option<ParsedEntity>> {
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let parsed: Value = serde_json::from_str(lock_json)?;
 
     let Some(entity) = parsed.get(media_type) else {
@@ -205,6 +208,17 @@ pub fn parse_lock(
         .filter(|id| !id.is_empty())
         .context("lock has no id")?
         .to_string();
+
+    let location = entity.get("location").context("lock has no location")?;
+    if location.get("kind").and_then(Value::as_str) != Some("dir") {
+        bail!("lock location is not a dir");
+    }
+    let root = location
+        .get("path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .context("lock location path is not absolute")?;
 
     let mut playables = Vec::new();
     if let Some(nodes) = entity.get("nodes") {

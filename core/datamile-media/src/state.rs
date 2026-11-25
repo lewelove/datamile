@@ -82,17 +82,12 @@ impl MediaState {
         inits
     }
 
-    /// MPD base for a root type: `mpd.music_directory` or the root's own init.
+    /// Base for playable URIs, resolved the same way the locks' paths were.
     #[must_use]
-    pub fn mpd_base(&self, media_type: &str, root_dir: &Path) -> Option<PathBuf> {
-        if let Some(music_directory) = &self.mpd.music_directory {
-            let expanded = datamile_fs::expand_path(music_directory);
-            return Some(expanded.canonicalize().unwrap_or_else(|_| expanded.clone()));
-        }
-        self.roots
-            .iter()
-            .find(|root| root.media_type == media_type && root.dir == root_dir)
-            .map(|root| root.init.clone())
+    pub fn mpd_base(&self) -> Option<PathBuf> {
+        let raw = self.mpd.music_directory.as_deref()?;
+        let path = datamile_fs::resolve_path(raw, &self.config_dir);
+        Some(path.canonicalize().unwrap_or(path))
     }
 }
 

@@ -54,12 +54,10 @@ fn album_dsl(lib: &Path, cache: &Path, state_dir: &Path, external: &Path) -> Str
     format!(
         r#"
 d.config({{
-    storage = {{ cache = "{cache}", state = "{state}" }},
-    mpd = {{ music_directory = "{lib}" }}
+    storage = {{ cache = "{cache}", state = "{state}" }}
 }})
 
 local track = d.media.node("track", {{
-    playable = true,
     select = function(ctx)
         return d.fs.files(ctx.path, {{ ext = "flac", paths_only = true }})
     end,
@@ -370,6 +368,83 @@ fn compile_emits_physical_and_virtual_nodes_and_images() {
     assert!(lock_path(&f.lib, "A").exists());
 }
 
+/// One compiled album and the schema needed to read its lock back.
+fn compiled_album() -> (Fixture, Value, crate::schema::MediaManifest) {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+
+    let engine = engine_for(&f.config);
+    let compiled = compile_root(&engine, "album", &f.lib.join("A"), &f.cache, None)
+        .expect("compile");
+    let lock = serde_json::from_str(&compiled.lock_json).expect("json");
+    let media = read_media_manifest(&engine).expect("manifest");
+
+    (f, lock, media)
+}
+
+/// The lock decides the file, the config only the base: the URI is the entity
+/// location joined with the node location, minus `music_directory`.
+#[test]
+fn playable_uri_is_the_entity_location_relative_to_the_music_directory() {
+    let (f, lock, media) = compiled_album();
+    let schema = media.roots.get("album").expect("album schema");
+    let base = f.lib.canonicalize().expect("canon");
+    let dir = lock["album"]["location"]["path"]
+        .as_str()
+        .expect("entity dir");
+    let node = lock["album"]["nodes"]["track"][0]["location"]["path"]
+        .as_str()
+        .expect("track path");
+
+    let parsed =
+        crate::ingest::parse_lock("album", &lock.to_string(), schema, Some(&base))
+            .expect("parse")
+            .expect("entity");
+
+    assert_eq!(parsed.entity.path, PathBuf::from(dir));
+    assert_eq!(
+        parsed.playables[0].path,
+        Path::new(dir)
+            .strip_prefix(&base)
+            .expect("entity under the base")
+            .join(node)
+            .to_string_lossy()
+    );
+}
+
+/// A file outside `music_directory` keeps its absolute path. Nothing here tries
+/// to guess a base: MPD refuses the URI and the refusal lands in the log.
+#[test]
+fn playable_outside_the_music_directory_stays_absolute() {
+    let (f, mut lock, media) = compiled_album();
+    let schema = media.roots.get("album").expect("album schema");
+    let outside = "/elsewhere/02.flac";
+    lock["album"]["nodes"]["track"][0]["location"]["path"] = json!(outside);
+
+    let parsed = crate::ingest::parse_lock(
+        "album",
+        &lock.to_string(),
+        schema,
+        Some(&f.lib.canonicalize().expect("canon")),
+    )
+    .expect("parse")
+    .expect("entity");
+
+    assert_eq!(parsed.playables[0].path, outside);
+}
+
+/// A lock without a dir location cannot be indexed: its paths would be guesses.
+#[test]
+fn lock_without_a_dir_location_is_refused() {
+    let (_f, _lock, media) = compiled_album();
+    let schema = media.roots.get("album").expect("album schema");
+
+    let result =
+        crate::ingest::parse_lock("album", r#"{"album":{"id":"x"}}"#, schema, None);
+
+    assert!(result.is_err(), "a lock with no location must not index");
+}
+
 /// Lock keys are pinned, not alphabetical: primitives lead in a fixed order and
 /// every other key sorts after them.
 #[test]
@@ -556,7 +631,6 @@ fn multi_level_tree_nests_seasons_and_episodes() {
         &format!(
             r#"
             local episode = d.media.node("episode", {{
-                playable = true,
                 select = function(ctx)
                     return d.fs.files(ctx.path, {{ ext = "mkv", paths_only = true }})
                 end,
@@ -1339,12 +1413,10 @@ fn two_type_dsl(albums: &Path, shows: &Path, cache: &Path, state_dir: &Path) -> 
     format!(
         r#"
 d.config({{
-    storage = {{ cache = "{cache}", state = "{state}" }},
-    mpd = {{ music_directory = "{albums}" }}
+    storage = {{ cache = "{cache}", state = "{state}" }}
 }})
 
 local track = d.media.node("track", {{
-    playable = true,
     select = function(ctx)
         return d.fs.files(ctx.path, {{ ext = "flac", paths_only = true }})
     end,
@@ -1362,7 +1434,6 @@ album.tag("album", function(ctx)
 end)
 
 local episode = d.media.node("episode", {{
-    playable = true,
     select = function(ctx)
         return d.fs.files(ctx.path, {{ ext = "mkv", paths_only = true }})
     end,

@@ -19,20 +19,15 @@ fn setup(init: &str) -> (TempDir, DomainLuaEngine, PathBuf) {
     (dir, engine, path)
 }
 
+/// Every declared section and key survives the Lua round-trip.
 #[test]
-fn config_keeps_domain_specific_fields_in_extra() {
+fn config_reads_every_declared_section() {
     let (_dir, engine, path) = setup(
         r#"
         datamile.config({
-            storage = {
-                cache = "/tmp/cache",
-                state = "/tmp/state",
-                music_directory = "/music"
-            },
+            storage = { cache = "/tmp/cache", state = "/tmp/state" },
             server = { host = "0.0.0.0", port = 9000 },
-            manifest = { audio_extensions = { "flac" } },
-            compiler = { jobs = 3 },
-            custom = true
+            compiler = { jobs = 3 }
         })
         "#,
     );
@@ -40,15 +35,41 @@ fn config_keeps_domain_specific_fields_in_extra() {
     let eval = engine.evaluate_config(&path).expect("evaluate config");
 
     assert_eq!(eval.config.storage.cache, "/tmp/cache");
-    assert_eq!(
-        eval.config.storage.extra["music_directory"],
-        json!("/music")
-    );
-    assert_eq!(eval.config.extra["manifest"]["audio_extensions"][0], "flac");
-    assert_eq!(eval.config.extra["compiler"]["jobs"], 3);
-    assert_eq!(eval.config.extra["custom"], json!(true));
+    assert_eq!(eval.config.storage.state, "/tmp/state");
     assert_eq!(eval.config.server.host, "0.0.0.0");
     assert_eq!(eval.config.server.port, 9000);
+    assert_eq!(eval.config.compiler.jobs, Some(3));
+}
+
+/// `d.config` is closed: an option it does not declare is a typo, and the whole
+/// config is refused instead of quietly carrying a key nothing reads.
+#[test]
+fn config_rejects_unknown_options() {
+    for (declaration, name) in [
+        ("custom = true", "custom"),
+        (
+            "storage = { cache = \"/tmp/cache\", retention = 3 }",
+            "retention",
+        ),
+        ("server = { host = \"0.0.0.0\", tls = true }", "tls"),
+        ("mpd = { port = 6600, password = \"x\" }", "password"),
+        ("compiler = { jobs = 3, threads = 3 }", "threads"),
+        ("manifest = { audio_extensions = { \"flac\" } }", "manifest"),
+    ] {
+        let (_dir, engine, path) =
+            setup(&format!("datamile.config({{ {declaration} }})"));
+
+        let err = engine
+            .evaluate_config(&path)
+            .err()
+            .unwrap_or_else(|| panic!("{declaration} must be rejected"));
+
+        let message = format!("{err}");
+        assert!(
+            message.contains(name),
+            "error for '{declaration}' must name '{name}': {message}"
+        );
+    }
 }
 
 #[test]

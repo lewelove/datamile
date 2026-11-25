@@ -154,11 +154,10 @@ impl MediaBackend for MediaEngineBackend {
             let Some(schema) = state.root_schema(&root.media_type) else {
                 continue;
             };
-            let music_directory = state.mpd_base(&root.media_type, &root.dir);
 
+            let music_directory = state.mpd_base();
             let Some(parsed) = crate::ingest::parse_lock(
                 &root.media_type,
-                &root.dir,
                 &lock_json,
                 schema,
                 music_directory.as_deref(),
@@ -230,22 +229,9 @@ impl MediaBackend for MediaEngineBackend {
             datamile_fs::resolve_path(&evaluated.config.storage.state, &config_dir)
         };
 
-        let mut mpd = evaluated.config.mpd.clone();
-        if let Some(music_directory) = &mpd.music_directory {
-            mpd.music_directory = Some(
-                datamile_fs::resolve_path(music_directory, &config_dir)
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
+        let mpd = evaluated.config.mpd.clone();
 
-        let compiler_jobs = evaluated
-            .config
-            .extra
-            .get("compiler")
-            .and_then(|compiler| compiler.get("jobs"))
-            .and_then(Value::as_u64)
-            .and_then(|jobs| usize::try_from(jobs).ok());
+        let compiler_jobs = evaluated.config.compiler.jobs;
 
         let mut dependencies = evaluated.dependencies.clone();
         dependencies.push(

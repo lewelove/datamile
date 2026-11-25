@@ -9,8 +9,6 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MediaNodeSchema {
     #[serde(default)]
-    pub playable: bool,
-    #[serde(default)]
     pub has_select: bool,
     #[serde(default)]
     pub nodes: BTreeMap<String, Self>,

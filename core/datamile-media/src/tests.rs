@@ -352,6 +352,7 @@ fn compile_emits_physical_and_virtual_nodes_and_images() {
     assert_eq!(tracks[0]["location"]["kind"], json!("file"));
     assert_eq!(tracks[0]["location"]["path"], json!("01.flac"));
     assert!(tracks[0]["location"]["byte_size"].as_u64().unwrap_or(0) > 0);
+    assert!(tracks[0]["location"]["mtime"].as_u64().unwrap_or(0) > 0);
 
     let bonus = &album["nodes"]["bonus"][0];
     assert!(

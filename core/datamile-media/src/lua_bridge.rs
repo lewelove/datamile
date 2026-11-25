@@ -67,17 +67,12 @@ fn mtime_seconds(meta: &std::fs::Metadata) -> u64 {
 }
 
 fn dir_location(lua: &Lua, root: &str) -> mlua::Result<Value> {
-    let root_path = datamile_fs::expand_path(root);
-    let canonical = root_path
-        .canonicalize()
-        .unwrap_or_else(|_| root_path.clone());
-
     // No mtime or byte_size: writing `<type>.lock.json` bumps the directory's
     // mtime, so any value here would make every recompile produce new lock
     // bytes. Only files carry stats, and only where a cache keys on them.
     let location = lua.create_table()?;
     location.set("kind", "dir")?;
-    location.set("path", canonical.to_string_lossy().to_string())?;
+    location.set("path", root)?;
     Ok(Value::Table(location))
 }
 

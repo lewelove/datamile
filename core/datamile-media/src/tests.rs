@@ -389,11 +389,11 @@ fn lock_orders_root_and_node_primitives_first() {
 
     assert_eq!(
         keys(&lock["album"]),
-        ["id", "tags", "objects", "images", "nodes", "location"]
+        ["id", "location", "tags", "objects", "images", "nodes"]
     );
     assert_eq!(
         keys(&lock["album"]["nodes"]["track"][0]),
-        ["tags", "objects", "location"]
+        ["location", "tags", "objects"]
     );
 }
 

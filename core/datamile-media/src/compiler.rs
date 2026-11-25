@@ -321,7 +321,8 @@ pub fn strip_empty_values(value: &mut Value) {
 }
 
 /// Root and node primitives, in the order a reader of a lock file expects.
-const PRIMITIVE_KEYS: [&str; 5] = ["id", "tags", "objects", "images", "nodes"];
+const PRIMITIVE_KEYS: [&str; 6] =
+    ["id", "location", "tags", "objects", "images", "nodes"];
 
 /// Primitives rank first, every other key ranks last and sorts alphabetically.
 fn key_rank(key: &str) -> usize {

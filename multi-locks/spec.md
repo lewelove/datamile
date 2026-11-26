@@ -1,124 +1,119 @@
 # Multi-lock entity dirs
 
-Status: plan. Not approved, not implemented. Records the 2026-11-24 decision
-that one directory may hold several media types' locks, and what that costs
-in discovery, indexing, lookups, lock lifecycle, and `datamile x` target
-resolution.
+Status: specification.
 
-`specs/actions/spec.md` defines `d.action`, `ActionSet`, `ctx`, and `/api/x`;
-this document owns entity identity, the single write path, lock freshness, and
-target resolution for `datamile x`.
-
-## Core design rules
-
-Four rules replace the old `1 dir == 1 lock` assumption throughout:
-
-1. **Identity is `(media_type, dir)`, never `dir` alone.** Every index,
-   watcher target, dependency edge, removal, and update scope carries
-   `EntityKey { media_type, dir }`. No function removes, updates, or indexes an
-   entity by bare path.
-2. **One write path.** All compilation and state writes flow through one
-   serialized pipeline (`run_server_update` when the daemon is live,
-   `InstanceLock` when a CLI runs offline). The watcher resolves changed
-   entities and submits requests to that pipeline instead of running a second
-   compiler.
-3. **Sources are not outputs.** Input files and `*.lock.json` outputs stay
-   strictly separated: fingerprinting skips every lock file, lock freshness
-   is tracked via `lock_stat: FileStat { mtime, size }`, and compiling may never
-   read any lock file.
-4. **Facts in the index, meaning in the consumer.** Shared audio files and image
-   addresses keep all owners in the index; each consumer names the media type it
-   owns.
+`specs/actions/spec.md` defines `d.action`, `ctx`, and `POST /api/x`; this
+document owns entity identity, the single write path, lock freshness, CAS
+image lookup ownership, `CompileGuard`, and target resolution.
 
 ## Intent
 
-The same files can be several media types at once. One folder of FLACs can be an
-`album` (generic playback shape), a `vinyl` (`sides` node holding `tracks`),
-and a `cd` (CD-only metadata). These are different compilations of the same
-audio, not different audio.
+The same source files can belong to multiple media types at once. One folder of
+FLACs can compile as an `album` (tracklist view), a `vinyl` (`sides` -> `tracks`
+view), and a `cd` (CD metadata). Keeping one media type for all shapes forces
+unrelated node trees into one lock; splitting directories forces audio and
+artwork to live outside their entity dirs. Multi-lock entity dirs let each media
+type compile its own `<media_type>.lock.json` beside the same source files.
+
+## Goals
+
+- Allow one directory to hold `<media_type>.lock.json` for multiple media types
+  simultaneously while keeping same-type nesting forbidden.
+- Route all lock/state writes through one serialized pipeline (`run_server_update`
+  on the daemon, `InstanceLock` for offline `datamile update`).
+- Enforce strict separation between source inputs and `*.lock.json` outputs via
+  one `d.fs` choke point and `walk_files` exclusion.
+- Preserve shared audio and CAS image ownership across sibling media types.
+- Resolve `POST /api/x` targets deterministically via `(media_type, dir)`.
+
+## Non-goals
+
+- Playback sessions and the `datamile-mpv` crate.
+- Lock-as-input (reading another entity's lock during compile).
+- Pruning leftover `<media_type>.lock.json` files when manifests are deleted.
+
+## Core rules
+
+1. **Identity is `EntityKey { media_type, dir }`, never `dir` alone.** Every
+   index entry, dependency edge, removal, and resolved target is keyed by
+   `(media_type, canonical_dir)`.
+2. **One write path.** All lock compilation and `state.json` writes run through
+   one serialized pipeline (`run_server_update` on the daemon, `InstanceLock` in
+   offline `datamile update`). The watcher resolves changed targets and submits
+   requests to `run_server_update` rather than running a second compiler.
+3. **Sources are not outputs.** `walk_files` skips every `*.lock.json`, lock
+   freshness is tracked via `FileStat { mtime, size }`, and reading any
+   `*.lock.json` through `d.fs` during compile is an error.
+4. **Facts in the index, meaning in the consumer.** Shared audio URIs and CAS
+   image addresses retain all owning entities in `LogicEngine`; each consumer
+   queries for its own media type or CAS address.
+
+## Allowed layouts
+
+- One directory may hold `<media_type>.lock.json` for any number of distinct
+  media types; entity ids are scoped per media type.
+- Within one media type, `select` must not return two dirs where one is a
+  subfolder of the other.
+- Across different media types, shared dirs and nested dirs are allowed.
 
 ```text
-/media/abbey-road/
-  album.toml  cd.toml  vinyl.toml
-  01 - Come Together.flac   02 - Something.flac   ...
-  album.lock.json  cd.lock.json  vinyl.lock.json
-```
-
-Keeping one media type for all three shapes forces unrelated node trees into
-one lock; splitting into three directories forces audio and artwork to live
-outside their entity dirs. Multi-lock dirs let each media type compile its own
-shape beside the same source files.
-
-## The rule
-
-- A dir may hold `<media_type>.lock.json` for any number of media types. Each
-  lock is the entity of its own media type; ids are per media type and need not
-  agree.
-- Within one `d.media.root`, `select` must not return two dirs where one is a
-  subfolder of the other. Same-root nesting stays an error.
-- Between different `d.media.root`s, shared dirs and nesting are allowed.
-
-```text
-/media/films/Inception (2010)/          legal: two roots, nested
+/media/films/Inception (2010)/          allowed: two media types, nested
   movie.toml  inception.mkv  movie.lock.json
   soundtrack/
     album.toml  *.flac  album.lock.json
 
-/media/albums/Abbey Road/               illegal: one root, nested
+/media/albums/Abbey Road/               forbidden: one media type, nested
   album.toml  ...  album.lock.json
   disc2/
     album.toml  ...  album.lock.json
 ```
 
-## What it changes
+## Changes
 
-### 1. Discovery
+### 1. Per-type discovery
 
-`core/datamile-media/src/schema.rs` refuses both shapes today:
+Today `core/datamile-media/src/schema.rs` rejects both layouts:
 
-- `claimed: HashMap<PathBuf, String>` spans the whole pass, so two roots that
-  select the same dir collide even when their media types differ
-  (`root directory X is claimed by both 'album' and 'movie'`).
-- `reject_nesting` sorts and compares adjacent dir pairs across all media types.
-  Its docstring justifies this with "so every file belongs to at most one of
-  them"; that guarantee is what this plan replaces.
+- `claimed: HashMap<PathBuf, String>` spans all media roots, failing if two
+  media types select the same directory.
+- `reject_nesting` sorts all discovered dirs globally across media types.
 
-Changes to implement:
+Changes:
 
-- Remove the cross-type `claimed` collision check (per-root uniqueness is already
-  enforced inside `select_media_roots` via `seen`).
-- Scope `reject_nesting` to compare dirs only within each `media_type`.
+- Remove the cross-type `claimed` map; per-root uniqueness stays enforced by
+  `select_media_roots`'s `seen` set (and within a media type if multiple roots
+  share a `media_type`, check per `media_type`).
+- Scope `reject_nesting` to compare adjacent dirs only within each `media_type`.
 - Update `reject_nesting`'s docstring and invert the cross-type collision test in
   `core/datamile-media/src/tests.rs`.
 
-### 2. Entity identity & index
+### 2. Entity identity and update scope
 
-Define `EntityKey` in `datamile-cache` (re-exported by `datamile-media` and
-`datamile-server`) so `datamile-lua`, `datamile-media`, `datamile-server`, and
-`datamile` share one identity type without circular dependencies:
+Define `EntityKey` in `core/datamile-cache/src/stat.rs` and re-export it from
+`datamile-cache`, `datamile-media`, and `datamile-server`:
 
 ```rust
-/// Canonical identity of one compiled media entity: `(media_type, dir)`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EntityKey {
     pub media_type: String,
+    /// Always canonicalized before storage or comparison.
     pub dir: PathBuf,
 }
 ```
 
-Changes to implement:
+Changes:
 
 - **`LogicEngine` removal (`core/datamile-logic/src/engine.rs`)**: replace
   `remove_entity_by_path(&mut self, path)` with
   `remove_entity_by_type_and_path(&mut self, media_type: &str, path: &Path)` and
-  update callers in `update.rs`, `watcher.rs`, `validate_and_cleanup_paths`, and
+  update callers in `update.rs`, `validate_and_cleanup_paths`, and
   `core/datamile-logic/src/tests.rs`.
-- **Force update (`core/datamile-media/src/backend.rs`)**:
-  `force_update_entity` sets `media_type: Some(media_type.to_string())` on
-  `UpdateRequest` (today it calls `UpdateRequest::force(...)` with `None`, which
-  would recompile every media type in a shared dir).
+- **Force update (`core/datamile-media/src/backend.rs`)**: `force_update_entity`
+  enqueues `UpdateRequest { entities: vec![EntityKey { media_type, dir }], force: true, .. }`
+  so forcing one entity never recompiles sibling media types in the same dir.
 - **Update scope (`core/datamile-media/src/deps.rs`, `update.rs`, `core/datamile-server/src/backend.rs`)**:
-  replace `UpdateScope` + `PendingUpdate.media_type` with one clean enum:
+  replace `UpdateScope` and `PendingUpdate.media_type` with:
+
   ```rust
   pub enum UpdateScope {
       All { media_type: Option<String> },
@@ -126,424 +121,283 @@ Changes to implement:
       Entities(BTreeSet<EntityKey>),
   }
   ```
-  Merge rules: `All { None }` absorbs everything; `All { Some(a) }` + `All { Some(b) }`
-  becomes `All { None }` when `a != b`; `Entities` + `Entities` unions both sets;
-  `Entities` + `All`/`Paths` widens cleanly (or filters `Entities` into the union).
-  `UpdateRequest` (`datamile-server/src/backend.rs`) gains
-  `#[serde(default)] pub entities: Vec<EntityKey>` so `POST /api/update` remains
-  backwards-compatible.
+
+  `UpdateRequest` adds `#[serde(default)] pub entities: Vec<EntityKey>`. When
+  `entities` is non-empty, `run_server_update` builds `UpdateScope::Entities`
+  (canonicalizing each `dir` and ignoring `path`/`media_type`); otherwise it
+  builds `UpdateScope::Paths` when `path` is set or `UpdateScope::All` when
+  unset.
+
+  Complete `UpdateScope::merge` matrix:
+
+  | Existing \ Incoming | `All { None }` | `All { Some(b) }` | `Paths { pb, mb }` | `Entities(eb)` |
+  | --- | --- | --- | --- | --- |
+  | `All { None }` | `All { None }` | `All { None }` | `All { None }` | `All { None }` |
+  | `All { Some(a) }` | `All { None }` | `All { Some(a) }` if `a==b` else `All { None }` | `All { Some(a) }` if `mb == Some(a)` else `All { None }` | `All { Some(a) }` if all in `eb` match `a` else `All { None }` |
+  | `Paths { pa, ma }` | `All { None }` | mirror of row 2 | `Paths { pa ∪ pb, ma }` if `ma==mb` else `All { None }` | widen `All { ma }` if `ma` matches all `eb` else `All { None }` |
+  | `Entities(ea)` | `All { None }` | mirror of row 2 | mirror of row 3 | `Entities(ea ∪ eb)` |
+
+  `in_scope` checks `Entities` by exact `EntityKey` membership; `run_pass` and
+  `run_update_pass` take `UpdateScope` directly (removing the separate
+  `media_type` parameter) and claim the config digest only on
+  `UpdateScope::All { media_type: None }` with zero failures.
 
 ### 3. Dependency index
 
-Today `core/datamile-media/src/deps.rs` uses
-`ExternalIndex = BTreeMap<PathBuf /*external file*/, BTreeSet<PathBuf /*dir*/>>`
-and `index_root` calls `unindex_root(dir)` first, erasing sibling types in the
-same dir.
+`ExternalIndex` in `core/datamile-media/src/deps.rs` becomes:
 
-Changes to implement:
+```rust
+pub type ExternalIndex = BTreeMap<PathBuf, BTreeSet<EntityKey>>;
+```
 
-- Key owners as `EntityKey`:
-  `pub type ExternalIndex = BTreeMap<PathBuf, BTreeSet<EntityKey>>;`
-- `BTreeSet<EntityKey>` guarantees idempotency by type.
-- `index_entity(index, key, external)` removes `key` from existing buckets
-  (`unindex_entity(index, key)` via `retain`) and inserts `key` for each file in
-  `external`. No separate `reverse` map is needed.
-- `rebuild_external_index` already walks `state.media_roots()` ->
-  `(media_type, init)` and builds `EntityKey { media_type, dir }` entries.
+- `index_entity(index, key: &EntityKey, external: &[PathBuf])` removes `key`
+  from existing buckets (`unindex_entity(index, key)`) and inserts `key.clone()`
+  for each external path.
+- Note: `unindex_entity` runs once per compiled entity via `retain` on the
+  external-file map (external maps remain small; if a pass compiles many
+  entities, `record_state` may sweep once over the batch).
+- `rebuild_external_index` reads `state.media_roots()` -> `(media_type, init)`
+  and builds `EntityKey { media_type, dir }`.
 
-### 4. Watcher & single write path
+### 4. Watcher and single write path
 
-Today `core/datamile-media/src/watcher.rs` compiles, prepares entities, updates
-`LogicEngine`, updates `ExternalIndex`, and broadcasts `MEDIA_UPDATED` on its own
-without acquiring `shared.update_lock`—racing with startup auto-update and CLI
-passes—and has two multi-lock bugs (`removed_roots` checks bare `dir`, and
-`collect_external_dependencies` filters hits through the boot-time `state.roots`
-snapshot, missing runtime-added entities).
+`core/datamile-media/src/watcher.rs` stops compiling, ingesting, writing state,
+and broadcasting `MEDIA_UPDATED` directly:
 
-Under rule 2 (**One write path**):
-
-- Config changes reload config and manifest as today, then enqueue
-  `UpdateScope::All { media_type: None }` if needed.
-- Non-config filesystem events in `watcher.rs` do not compile or write locks/state:
+- Config dependency changes reload config and manifest, then submit
+  `UpdateScope::All { media_type: None }` to `run_server_update` if needed.
+- Non-config filesystem events resolve targets without holding `logic`,
+  `state_writer`, or `update_lock` across `.await`:
   - External dependency hits read `ExternalIndex` directly into a
-    `BTreeSet<EntityKey>` (no `state.roots` filter).
-  - Watch-root path hits scan affected `(media_type, init)` pairs via
-    `known_root_ancestor` and `select_roots` to collect changed/new `EntityKey`s,
-    or enqueue scoped `Paths` when an ancestor directory is deleted so removals
-    are reconciled cleanly.
-- The watcher submits the collected targets to `run_server_update`. All locking,
-  compilation, ingestion, `ExternalIndex` updates, `state.json` writes, and
-  `MEDIA_UPDATED` broadcasts happen in one place.
-- `active_writes` remains keyed on `<dir>/<media_type>.lock.json` strictly as a
-  latency optimization to skip re-evaluating self-written lock events.
+    `BTreeSet<EntityKey>`.
+  - Watch-root path hits resolve affected `(media_type, init)` pairs via
+    `known_root_ancestor` and `select_roots` into `EntityKey`s, or enqueue
+    `UpdateScope::Paths` when an ancestor directory is deleted so missing roots
+    are removed on the next pass.
+- The watcher submits collected requests to `run_server_update`.
+- Lock acquisition order inside `run_server_update` is strictly:
+  `update_lock` (coalesce into `PendingUpdate`, max 1 pending merged slot) ->
+  `spawn_blocking(run_pass)` (acquires `state_writer` in `record_state`) ->
+  `logic.write()` (ingestion) -> `tx.send(MEDIA_UPDATED)`.
+- `active_writes` remains keyed on `<dir>/<media_type>.lock.json` to skip
+  self-triggered `inotify` events.
 
 ### 5. Playable lookups
 
-`playable_lookup` (`core/datamile-logic/src/engine.rs`) currently maps URI ->
-one `PlayableLookupItem`, clobbering on upsert and erasing on delete.
-
-Changes to implement:
-
-- Store `HashMap<String, Vec<PlayableLookupItem>>` (keeping `media_type`,
-  `media_id`, `node_index`, `node_path`, `path`, `meta`).
-- Upserting replaces any existing entry in the URI bucket with the same
-  `(media_type, media_id)` and keeps all other owners.
-- Removing an entity drops only items matching `(media_type, media_id)` and
-  removes the URI key only when its owner list becomes empty.
-
-### 6. Image lookups
-
-`image_lookup` (`core/datamile-logic/src/engine.rs`) currently maps `address` ->
-one `ImageLookupItem` (carrying `entity_dir`, `path`, `fit`, `filter`,
-`target_width`, `target_height`).
-
-Changes to implement:
-
-- Store `HashMap<String, BTreeMap<(String, String), ImageLookupItem>>` keyed by
-  `(media_type, media_id)` per `address` so removing one entity cannot orphan
-  another owner's image address.
-- `GET /api/images/{file}` (`core/datamile-server/src/api/images.rs`) selects
-  the owner with the lowest `(media_type, entity_dir)` deterministically when
-  rendering a missing master QOI.
-
-## Freshness and lock lifecycle
-
-The lock is a compiled output that outlives its entity (`lua-api.md` §7).
-Everything below is **new behaviour to implement** (today `walk_files` walks
-locks too, `RootState` carries only `files`, and `CompiledRoot` carries no lock
-metadata).
-
-```text
-state entry for album/abbey-road
-  files:     { album.toml: {mtime,size}, 01 - Come Together.flac: {mtime,size},
-               /media/abbey-road/cover.jpg: {mtime,size} }
-  lock_stat: { mtime, size }   -- of album.lock.json, recorded without hashing
-```
-
-### No lock is an input
-
-`walk_files` (`core/datamile-cache/src/stat.rs`) skips every file whose name
-ends with `.lock.json`. Otherwise the compiled output becomes an input,
-dirtying its own entity and sibling types in the same directory.
-
-### Lock freshness via `FileStat`
-
-`RootState` (`core/datamile-cache/src/stat.rs`) adds:
+`playable_lookup` in `core/datamile-logic/src/engine.rs` becomes:
 
 ```rust
-#[serde(default)]
-pub lock_stat: Option<FileStat>,
+pub playable_lookup: HashMap<String, Vec<PlayableLookupItem>>,
 ```
 
-No `blake3` hashing is performed on locks anywhere. During planning
-(`plan_work`), an entity is dirty if any of the following hold:
+- Upserting replaces any item in the URI bucket with the same
+  `(media_type, media_id)` while preserving other owners.
+- Removing an entity retains only items where `(item.media_type, item.media_id)`
+  differs, dropping the URI key only when the `Vec` becomes empty.
 
-- `entry` is missing, or `entry.lock_stat` is `None`.
-- `walked` / external files fail `root_is_dirty`.
-- `<dir>/<media_type>.lock.json` is missing on disk.
-- The lock file's `FileStat { mtime, size }` differs from `entry.lock_stat`
-  (catches hand-edits, truncations, and deletions at `stat()` cost).
-- `serde_json::from_slice::<Value>` fails on the lock file (catches partial/corrupt
-  writes).
+### 6. CAS image lookups
 
-A lock has no version key. Its only top-level key is the media type, so
-`lock[media]` is the entity, and schema changes are handled by recompiling on
-config digest change.
+Compiled masters live in content-addressed storage at
+`<cache_root>/images/<address>/master.qoi`, where `address` is the BLAKE3
+digest of `(fit, width, height, filter, source_bytes)`. Because `GET /api/images/{file}`
+reads `<cache_root>/images/<address>/master.qoi` directly whenever it exists,
+`image_lookup` is strictly a cold-cache recovery fallback if `master.qoi` is
+missing from disk, and every owner of an `address` shares identical rendering
+parameters.
 
-### `lock_stat` is recorded for every compiled root
+`image_lookup` in `core/datamile-logic/src/engine.rs` becomes:
 
-`CompiledRoot` (`core/datamile-media/src/compiler.rs`) gains
-`pub lock_stat: FileStat`, populated via `FileStat::from(&fs::metadata(&lock_path)?)`
-inside the compile step immediately after writing (when `modified == true`) **or**
-verifying the existing lock (when `modified == false`).
+```rust
+#[derive(Clone, Debug)]
+pub struct ImageSpecMeta {
+    pub fit: String,
+    pub filter: String,
+    pub target_width: u32,
+    pub target_height: u32,
+}
 
-Both `update.rs` and `watcher.rs` record `lock_stat` into `RootState` for
-**every** compiled root—never skipping `!root.modified` roots before writing
-`state.json`. Only the `MEDIA_UPDATED` WebSocket broadcast skips unchanged known
-entities.
+#[derive(Clone, Debug)]
+pub struct CachedImageLookup {
+    pub spec: ImageSpecMeta,
+    pub sources: Vec<(EntityKey, PathBuf)>,
+}
 
-Three conditions guarantee loop termination:
-
-1. `lock_stat` is recorded from the lock on disk for every compiled root in the
-   single write pipeline.
-2. No lock file is an input (`walk_files` skips `*.lock.json`).
-3. One write path owns compilation and state persistence.
-
-### Locks are never deleted, never renamed
-
-A lock left behind by a dropped entity stays under its normal name. Its state
-entry in `state.json` (or `LogicEngine`) decides liveness, so the leftover is
-inert:
-
-```console
-$ ls /media/gone
-album.lock.json   # album.toml deleted, state entry removed
-$ datamile x open_terminal --dir /media/gone --media album
-error: entity ('album', '/media/gone') is not in the entity index; run `datamile update`
-$ datamile x open_terminal --dir /media/gone
-error: no indexed entity in '/media/gone'; run `datamile update`
+pub image_lookup: HashMap<String, CachedImageLookup>,
 ```
 
-Pruning leftover locks is deliberately rejected: a temporary discovery
-regression (e.g. an unmounted path or a `select` bug) would wipe compiled locks
-across the library.
+- Upserting inserts or updates `(EntityKey, abs_source_path)` inside `sources`.
+- Removing an entity removes only entries matching `EntityKey` and removes the
+  `address` key only when `sources` becomes empty.
+- On a cold-cache miss in `core/datamile-server/src/api/images.rs`,
+  `ensure_master_image` tries the paths in `sources` in order and renders
+  `master.qoi` from the first source file that exists on disk.
 
-### All lock reads during compile are an error
+### 7. Freshness, single-choke lock ban, and read-only paths
 
-```text
-/media/boxset/package.toml
-  tags = { tracks = d.fs.read_json("../disc1/album.lock.json").tags.tracks }
-
-error: compile cannot read lock file 'disc1/album.lock.json'; a lock is never an input.
-       Read the source manifest or audio files instead.
-```
-
-Enforced in `EngineContext` (`core/datamile-lua/src/lib.rs`) using an RAII
-`CompileGuard` created at the start of `compile_root_impl` and dropped on return
-(including `?` error paths, so a leaked flag never poisons a reused VM). While
-the guard is active, any `*.lock.json` path (including the entity's own lock)
-passed to `d.fs` (`read`, `read_json`, `read_toml`, `read_lines`, `read_dotenv`,
-`exists`, `first`, `files`, `dirs`, `roots`, `scandir`) fails as a config error.
-(`d.json` only has `encode`/`decode` and touches no paths.)
-
-Note: `d.fs` hooks run in Lua; raw Lua `io.open` is outside `d.fs` and
-unsupported for dependency tracking.
-
-### Read-only paths
-
-If a dirty or modified entity cannot write its lock because the path is
-read-only (`PermissionDenied` or `ReadOnlyFilesystem` on `write_atomic`),
-`compile_root_impl` fails **that entity only** with:
-
-```text
-/media/readonly/album.lock.json could not be updated; datamile cannot recompile on a read-only path
-```
-
-Other entities, media types, and the running daemon continue unaffected.
-
-### Migration
-
-Existing `state.json` files lack `lock_stat` (`Option<FileStat>` deserializes as
-`None`), and excluding `*.lock.json` changes `walk_files`. Every entity is
-recompiled cleanly once on the first `datamile update` pass after upgrading, then
-settles.
-
-## Consumers
-
-The Rust binary is media-agnostic apart from MPD, which owns the
-`album (root) -> track (node)` shape only and will be retired when `datamile-mpv`
-replaces MPD. Until then:
-
-- `mpd_bridge` (`core/datamile-server/src/mpd_bridge.rs`) and `playing_target`
-  (`core/datamile-media/src/backend.rs`) filter `playable_lookup` for `"album"`
-  as an explicit, temporary documented exception.
-- A future `datamile-mpv` crate will own playback sessions, resolve its own
-  entities, and retire this exception.
+- **Exclude locks from `walk_files`**: `walk_files` in
+  `core/datamile-cache/src/stat.rs` skips every file whose name ends with
+  `.lock.json`.
+- **Track `lock_stat` inside `RootState`**:
+  `RootState` gains `#[serde(default)] pub lock_stat: Option<FileStat>`.
+  `CompiledRoot` gains `pub lock_stat: FileStat`, populated via
+  `FileStat::from(&fs::metadata(&lock_path)?)` after writing or verifying the
+  lock. `StateEntry` becomes `(PathBuf, RootFiles, FileStat)` and `run_pass`
+  records `lock_stat` for every compiled root (whether `modified` is `true` or
+  `false`).
+- **`root_is_dirty` signature**:
+  `pub fn root_is_dirty(dir: &Path, media_type: &str, walked: &BTreeMap<String, FileStat>, entry: Option<&RootState>) -> bool`
+  returns `true` if `entry` is `None`, `entry.lock_stat` is `None`, `walked` or
+  external files in `entry.files` changed/vanished, `<dir>/<media_type>.lock.json`
+  is missing on disk, or its on-disk `FileStat` differs from `entry.lock_stat`.
+- **Single choke point `CompileGuard`**:
+  An RAII `CompileGuard` on `EngineContext` (`core/datamile-lua/src/lib.rs`) is
+  held across `compile_root_impl` and dropped on return (including `?` exits):
+  - Enforced in `EngineContext::record_dependency` (called by `parse_path_with_ctx`
+    for `read`, `read_json`, `read_toml`, `read_lines`, `read_dotenv`, `exists`):
+    when `CompileGuard` is active, any path ending in `.lock.json` fails with:
+    `error: compile cannot read lock file '<path>'; a lock is never an input`
+  - Directory enumerators (`d.fs.files`, `d.fs.dirs`, `d.fs.roots`, `d.fs.first`,
+    `_scandir_native`) filter out `*.lock.json` entries while `CompileGuard` is
+    active so `d.fs.files(ctx.path)` continues to work in shared directories.
+  - Raw Lua `io.open` is outside `d.fs`; it is neither tracked for hot-reload
+    nor guarded.
+- **Read-only paths**: If `write_atomic` fails with `PermissionDenied` or
+  `EROFS` on a dirty/modified lock, `compile_root_impl` fails that entity only
+  with:
+  `<path> could not be updated; datamile cannot recompile on a read-only path`
+  and leaves its previous `RootState` entry untouched.
+- **Migration**: Existing `state.json` files deserialize `lock_stat` as `None`
+  and include lock paths in `files`, triggering one clean recompile on first
+  `datamile update` after upgrade.
+- **MPD temporary exception**: Until `datamile-mpv` replaces MPD,
+  `core/datamile-server/src/mpd_bridge.rs` queries `playable_lookup` for
+  `item.media_type == "album"`.
 
 ## Target resolution
 
-`datamile x` (and `/api/x` / `/api/x/resolve`, sharing one Rust resolver)
-resolves entity targets using `(media_type, dir)`:
+`POST /api/x` delegates target resolution to one shared Rust resolver querying
+the daemon's `LogicEngine` index (`MediaManifest`, `ActionMap`, and
+`EntityRecord`s keyed by `(media_type, canonical_dir)`):
 
-- **`--dir <entity-dir>...`**: repeatable; applies `~` expansion and
-  `std::fs::canonicalize` before matching against `EntityKey.dir` / `state.json`.
-  A path that cannot be canonicalized (missing or deleted) fails for that dir.
-  There is no subdirectory search and no walking up.
-- **`--media <media_type>...`**: optional, repeatable. Any value not in the
-  registered `MediaManifest` fails before any dir is resolved.
-- **When `--media` IS provided**: `--media` is a **literal selector** of
-  `<canon_dir>/<media>.lock.json`. There is no execution guard—even if the
-  action did not declare that media type in `d.action`, the pair resolves and
-  runs if indexed.
-- **When `--media` is OMITTED**:
-  - **Generic action (`action.media == nil`) + no `--dir`**: runs once targetless
-    (`ctx.lock = nil`, `ctx.media = nil`).
-  - **Generic action + `--dir` given**: runs if `canon_dir` has exactly 1
-    indexed entity; errors if 0 or 2+ (`"ambiguous: pass --media"`).
-  - **Scoped action (`action.media` declared)**: omitted `--dir` defaults to `.`
-    (on CLI; HTTP `/api/x` requires `dir` for scoped actions and returns `400` if
-    omitted). Intersects the indexed entities at `canon_dir` with
-    `action.media` (**Option B**):
-    - 1 match -> runs that `(canon_dir, media)` pair.
-    - 2+ matches -> error listing the matching media types (`"ambiguous: pass --media"`).
-    - 0 matches -> error: if `canon_dir` has no indexed entities at all, name
-      `datamile update`; if it has other media types not in `action.media`, name
-      the indexed types and note `"pass --media to select explicitly"`.
-- **Cross product & exit code**: runs are `(dir, media)` in argument order; one
-  result per run. Failures are collected so remaining pairs still run, and the
-  CLI exits non-zero if any run failed.
-- **Entity index as truth (online & offline)**:
-  - `x` never compiles and never checks staleness (`datamile update` ensures
-    strict freshness; `x` uses the last compiled lock in the index).
-  - **Daemon live**: resolves via `POST /api/x/resolve` against the daemon's
-    in-memory index (`LogicEngine`).
-  - **Offline (`InstanceLock::holder()` is `None`)**: evaluates `init.lua` only
-    (**no `discover_roots`, no `select` walk, no `scan_library`, no `evaluate_logic`**),
-    reads `state.json` per `(media_type, init)` to verify indexed `EntityKey`s,
-    and reads only the targeted `<canon_dir>/<media_type>.lock.json` file(s).
-    Targetless generic actions do not read `state.json` or require library
-    mounts to be present.
+1. Validate `name` (canonicalized `-` -> `_`) against `ActionMap` (`404` if
+   unknown).
+2. Validate every entry in `media` against `MediaManifest` (`400` if
+   unregistered).
+3. Validate `dirs`: every entry must be an expanded absolute path; canonicalize
+   each path (`std::fs::canonicalize` -> per-dir error if missing/deleted).
+4. Resolve per `(canon_dir, media)` in argument order:
+   - **No `dirs`, no `media`, generic action**: 1 targetless run (`media: None,
+     dir: None`).
+   - **No `dirs`, scoped action (or non-empty `media`)**: `400 Bad Request`.
+   - **Explicit `media` provided**: literal selector of `<canon_dir>/<m>.lock.json`
+     for each `m` in `media`. Succeeds if indexed in `LogicEngine`; otherwise
+     sets `XRun.error` (`entity ('<m>', '<canon_dir>') is not in the entity index; run 'datamile update'`).
+   - **`media` omitted, generic action (`entry.media == None`), `dirs` provided**:
+     succeeds if `canon_dir` has exactly 1 indexed entity across all media
+     types; otherwise sets `XRun.error`:
+     - `0` entities -> `no indexed entity in '<canon_dir>'; run 'datamile update'`
+     - `2+` entities -> `ambiguous target at '<canon_dir>' (<types>); pass --media`
+   - **`media` omitted, scoped action (`entry.media == Some(declared)`)**:
+     intersects indexed media types at `canon_dir` with `declared.keys()`:
+     - `1` match -> resolves that `(canon_dir, m)` pair.
+     - `2+` matches -> sets `XRun.error`: `ambiguous target at '<canon_dir>' (<matches>); pass --media`.
+     - `0` matches -> if `canon_dir` has 0 indexed entities, sets `XRun.error`:
+       `no indexed entity in '<canon_dir>'; run 'datamile update'`; if it has
+       indexed entities outside `declared`, sets `XRun.error`:
+       `no matching entity at '<canon_dir>' (indexed: <types>); pass --media to select explicitly`.
+5. For each resolved `(canon_dir, m)`, read `<canon_dir>/<m>.lock.json` from
+   disk (if `execute: false` or `execute: true` to populate `ctx.lock`). If the
+   lock file is missing or unparseable, set `XRun.error` naming `datamile update`.
 
 ## Edge cases
 
 | Case | Behaviour |
 | --- | --- |
-| generic action, no `--dir` and no `--media` | runs once with `ctx.lock = nil, ctx.media = nil` |
-| generic action, `--dir` with 1 entity, no `--media` | runs it with `ctx.lock` and `ctx.media` |
-| generic action, `--dir` with 2+ entities, no `--media` | error: ambiguous, pass `--media` |
-| scoped action (`album`), dir has `album` + `vinyl`, no `--media` | runs `album` (Option B intersection) |
-| scoped action (`album, vinyl`), dir has `album` + `vinyl`, no `--media` | error: ambiguous, pass `--media` |
-| scoped action (`album`), dir has `movie` only, no `--media` | error: no matching entity; pass `--media` to select explicitly |
-| any action, explicit `--dir X --media Y` (indexed) | runs `Y` regardless of action's declared `media` |
-| unknown dir with `--media` | error naming `datamile update` |
-| unknown dir, no `--media` | error naming `datamile update` |
-| dir deleted or non-existent | error for that dir |
-| unregistered `--media` value | error before any dir is resolved |
-| nested dirs inside one media root | discovery error, unchanged |
-| nested dirs across media roots | allowed |
-| lock missing, unparseable, or `lock_stat` mismatch | recompiled; edits discarded |
-| compile reads any `*.lock.json` via `d.fs` | config error via `CompileGuard` |
-| state file from before `lock_stat` existed | one full recompile, then stable |
-| read-only library with dirty entity / modified lock | entity fails loudly; other entities proceed |
-| lock write during a pass | `active_writes` skips or pipeline sees matching `lock_stat` |
-| same file playable under two types | both owners kept; MPD asks for `"album"` |
-| same image address under two entities | shared ownership; deterministic lowest `EntityKey` owner |
+| Generic action, `dirs: []`, `media: []` | 1 targetless run (`lock: null, media: null`) |
+| Generic action, `dirs: [X]` (1 entity), `media: []` | resolves that entity (`lock`, `media`) |
+| Generic action, `dirs: [X]` (2+ entities), `media: []` | `XRun.error`: ambiguous, pass `--media` |
+| Scoped (`album`), `X` has `album` + `vinyl`, `media: []` | resolves `album` |
+| Scoped (`album, vinyl`), `X` has `album` + `vinyl`, `media: []` | `XRun.error`: ambiguous, pass `--media` |
+| Scoped (`album`), `X` has `movie` only, `media: []` | `XRun.error`: no matching entity; pass `--media` to select explicitly |
+| Any action, `dirs: [X]`, `media: [Y]` (indexed) | resolves `Y` regardless of action's declared `media` |
+| Unindexed `dir` with or without `media` | `XRun.error` naming `datamile update` |
+| Indexed entity whose `<dir>/<m>.lock.json` was deleted | `XRun.error` naming `datamile update` |
+| Deleted or non-existent `dir` | `XRun.error` for that `dir` |
+| Unregistered `media` value | `400 Bad Request` before dir resolution |
+| Nested dirs inside one media type | discovery error |
+| Nested dirs across distinct media types | allowed |
+| Lock missing or `lock_stat` mismatch on `update` | entity marked dirty and recompiled |
+| Compile reads `*.lock.json` via `d.fs` | config error via `CompileGuard` |
+| `d.fs.files(ctx.path)` when lock files exist | `*.lock.json` filtered out; audio files returned |
+| Read-only path with dirty entity / modified lock | entity fails with read-only error; siblings continue |
+| Lock write during a pass | `active_writes` skips self-event; matching `lock_stat` stays clean |
+| Same file playable under two media types | both owners kept; MPD filters `"album"` |
+| Same CAS image address under two entities | shared `sources` list; cold-cache miss uses first surviving file |
 
 ## Alternatives Considered
 
-- **Content `blake3` digest on locks (`lock_hash`) instead of `lock_stat`**:
-  Hashing every lock JSON on every `update` pass detects same-size, same-mtime
-  edits, at the cost of reading and hashing every lock file on disk during
-  planning and adding `blake3` to `datamile-media`. `FileStat { mtime, size }`
-  matches `datamile-cache`'s existing change detector at `stat()` cost while
-  `serde_json::from_slice` catches truncated partial writes.
-- **Separate `reverse` map in `ExternalIndex`**: Storing `HashMap<EntityKey,
-  Vec<PathBuf>>` speeds up `unindex_entity` at the cost of maintaining two
-  synchronized maps and duplicating `RootState.files`. External dependency maps
-  are small (cover art and stray metadata), so `retain` over `BTreeMap<PathBuf,
-  BTreeSet<EntityKey>>` keeps one source of truth.
-- **Keep watcher compilation independent behind a per-entity mutex**:
-  Serializing `watcher` and `update` per entity instead of unifying on
-  `run_server_update` preserves duplicate ingest/broadcast code and risks
-  deadlocks against `state_writer`. Routing the watcher into `run_server_update`
-  eliminates the duplicate pipeline.
+- **Content `blake3` hashing on locks during planning**: Hashing every lock JSON
+  on every `update` pass reads every lock file in the library during planning.
+  `FileStat { mtime, size }` catches edits and deletions at `stat()` cost, while
+  `write_atomic` prevents partial lock files.
+- **Separate reverse map in `ExternalIndex`**: Storing `HashMap<EntityKey,
+  Vec<PathBuf>>` duplicates `RootState.files` and adds sync overhead. `retain`
+  over `BTreeMap<PathBuf, BTreeSet<EntityKey>>` keeps one source of truth.
+- **Per-entity mutex between watcher and `update`**: Keeping duplicate
+  compile/ingest/broadcast code in `watcher.rs` behind a per-entity mutex risks
+  deadlocks with `state_writer`. Submitting watcher targets to
+  `run_server_update` leaves one pipeline.
 
 ## Risks & Limits
 
-- **Cross-root nesting `walk_files` amplification**: Because `walk_files` is
-  recursive, an outer entity (e.g. `movie` at `/media/films/Inception`) that
-  contains an inner entity (`album` at `.../soundtrack`) includes the inner
-  dir's non-lock files in its `RootState.files`. Editing a soundtrack track will
-  also mark the parent `movie` dirty once (while `collect_media_changes` uses the
-  nearest known ancestor per media type). Acceptable for occasional nested
-  collections; avoidable in the future by teaching `walk_files` a skip list of
-  other root dirs if deep trees become common.
-- **Watcher coalescing & burst control**: Rapid multi-file edits or deletes must
-  coalesce inside `UpdateScope::Entities(BTreeSet<EntityKey>)` and `PendingUpdate`
-  rather than spawning full passes per event. Only missing/unrecognized dirs
-  trigger scoped `(media_type, init)` discovery.
-- **Stale-entity debounce window on `x`**: Between a file edit and the 100ms
-  watcher debounce + recompile completing, `x` (online or offline) reads the
-  prior lock from the index. Callers needing guaranteed freshness run `datamile update`
-  first.
-- **Lock-failure isolation**: Compile or read-only failures record `UpdateEvent::Failed`
-  with `Some(key)` and leave the entity's previous `RootState` entry untouched so
-  the next pass retries; they never abort sibling entities or crash the daemon.
-
-## Docs and invariants
-
-- Update `docs/vocabulary.md`: document `EntityKey`, `lock_stat`, shared entity
-  dirs, `x` reading index (`state.json` offline) without staleness checks, and
-  remove `POST /api/select`.
-- Update `docs/lua-api.md` §4.1, §6, §7, and §11: reflect per-type uniqueness
-  and nesting, multi-lock dirs, compile-time ban on reading `*.lock.json`, and
-  `--dir` / `--media` target resolution.
-- Update `core/datamile-media/src/schema.rs` docstrings (`reject_nesting`).
+- **Cross-root nesting `walk_files` amplification**: Recursive `walk_files` on
+  an outer entity (`movie`) containing an inner entity (`album`) includes the
+  inner dir's non-lock files in its `files` map, causing one parent recompile on
+  inner source edits.
+- **Watcher debounce window**: Between a filesystem edit and the 100ms debounce
+  plus compile completing, `POST /api/x` reads the prior lock in the index.
+  Callers requiring immediate freshness run `datamile update` first.
+- **Compile failure isolation**: Compile or read-only errors emit
+  `UpdateEvent::Failed` with `Some(dir)` and preserve the prior `RootState`
+  entry so the next pass retries without crashing sibling entities or the daemon.
 
 ## Implementation
 
 ### Files
 
-- `core/datamile-cache/src/stat.rs` and `lib.rs`: define `EntityKey`, skip
-  `*.lock.json` in `walk_files`, add `lock_stat: Option<FileStat>` to
-  `RootState`, update `root_is_dirty` / tests.
-- `core/datamile-logic/src/engine.rs` and `tests.rs`:
-  `remove_entity_by_type_and_path`, multi-owner `playable_lookup` (`Vec<PlayableLookupItem>`),
-  multi-owner `image_lookup` (`BTreeMap<(String, String), ImageLookupItem>`).
-- `core/datamile-lua/src/lib.rs` and `functions/fs/mod.rs`: `CompileGuard` in
-  `EngineContext` rejecting `*.lock.json` reads/walks during compile.
-- `core/datamile-media/src/schema.rs`: per-type nesting only, remove cross-type
-  `claimed` collision check.
-- `core/datamile-media/src/compiler.rs`: wrap `compile_root_impl` in
-  `CompileGuard`, compute `CompiledRoot.lock_stat`, format read-only write errors.
-- `core/datamile-media/src/deps.rs`: `ExternalIndex = BTreeMap<PathBuf, BTreeSet<EntityKey>>`,
-  `UpdateScope` enum, `record_roots` taking `(dir, files, lock_stat)`.
-- `core/datamile-media/src/update.rs`: `plan_work` checks `lock_stat` + JSON
-  parse, records `lock_stat` for all compiled roots (modified or not), handles
-  `UpdateScope::Entities`.
-- `core/datamile-media/src/watcher.rs`: remove duplicate compile/ingest/broadcast
-  pipeline; resolve `EntityKey`s (using `ExternalIndex` directly without
-  `state.roots`) and submit to `run_server_update`.
-- `core/datamile-media/src/backend.rs`: update `force_update_entity`
-  (`media_type: Some(...)`) and `playing_target` (query `"album"`).
-- `core/datamile-media/src/tests.rs`: invert cross-type collision test, add
-  multi-lock, `lock_stat`, read-only, `CompileGuard`, and watcher-pipeline tests.
-- `core/datamile-server/src/backend.rs` and `lib.rs`: `UpdateRequest.entities`,
-  re-export `EntityKey`.
-- `core/datamile-server/src/mpd_bridge.rs`: filter `playable_lookup` for `"album"`.
-- `core/datamile-server/src/api/images.rs`: deterministic lowest-`(media_type, dir)`
-  owner selection.
-- `core/datamile/src/main.rs` and `tests`: shared target resolution against
-  daemon `/api/x/resolve` or offline `state.json` (no `discover_roots` / `scan_library`).
+| Action | Path | Change |
+| --- | --- | --- |
+| Modify | `core/datamile-cache/src/stat.rs`, `lib.rs` | Define and re-export `EntityKey`; skip `*.lock.json` in `walk_files`; add `lock_stat: Option<FileStat>` to `RootState`; pass `media_type` into `root_is_dirty` |
+| Modify | `core/datamile-cache/src/stat/tests.rs` | Test `walk_files` skipping `*.lock.json`, `RootState` deserializing missing `lock_stat`, and `root_is_dirty` lock checks |
+| Modify | `core/datamile-logic/src/engine.rs`, `lib.rs`, `tests.rs` | `remove_entity_by_type_and_path`, multi-owner `playable_lookup` (`Vec`), CAS `image_lookup` (`CachedImageLookup`, `ImageSpecMeta`), update tests |
+| Modify | `core/datamile-lua/src/lib.rs`, `functions/fs/mod.rs` | RAII `CompileGuard` on `EngineContext`; enforce `*.lock.json` ban in `record_dependency`; filter `*.lock.json` in `fs` enumerators during compile |
+| Modify | `core/datamile-lua/src/functions/fs/tests.rs`, `tests/memo.rs` | Test `CompileGuard` blocking readers and filtering `d.fs.files`/`d.fs.first` |
+| Modify | `core/datamile-media/src/schema.rs` | Remove cross-type `claimed` map; scope `reject_nesting` per `media_type`; update docstrings |
+| Modify | `core/datamile-media/src/compiler.rs` | Hold `CompileGuard` in `compile_root_impl`; populate `CompiledRoot.lock_stat`; format read-only write errors |
+| Modify | `core/datamile-media/src/deps.rs` | `ExternalIndex` on `EntityKey`; `UpdateScope` enum + merge matrix; `StateEntry = (PathBuf, RootFiles, FileStat)` |
+| Modify | `core/datamile-media/src/update.rs` | `plan_work` passes `media_type` to `root_is_dirty`; record `lock_stat` for all compiled roots; handle `UpdateScope::Entities`; call `remove_entity_by_type_and_path` |
+| Modify | `core/datamile-media/src/watcher.rs` | Replace duplicate compile/ingest/broadcast pipeline with `EntityKey`/`Paths` resolution submitted to `run_server_update` without holding locks |
+| Modify | `core/datamile-media/src/backend.rs`, `lib.rs` | `force_update_entity` sets `UpdateRequest.entities`; re-export `EntityKey` |
+| Modify | `core/datamile-media/src/tests.rs` | Invert cross-type collision/nesting tests; add multi-lock, `lock_stat`, read-only, `CompileGuard`, and watcher-pipeline tests |
+| Modify | `core/datamile-server/Cargo.toml`, `lib.rs`, `backend.rs` | Add `datamile-cache` dependency; re-export `EntityKey`; add `UpdateRequest.entities` |
+| Modify | `core/datamile-server/src/mpd_bridge.rs` | Filter `playable_lookup` for `"album"` |
+| Modify | `core/datamile-server/src/api/images.rs` | Try `CachedImageLookup.sources` in order on cold-cache `master.qoi` miss |
+| Modify | `core/datamile-server/src/api/x.rs`, `tests.rs` | Shared target resolver backing `POST /api/x`; server tests for resolution matrix, `mpd_bridge`, and CAS `image_lookup` fallback |
+| Modify | `docs/vocabulary.md`, `docs/lua-api.md` | Update §4.1, §6, §7, §8, and vocabulary after implementation |
 
 ### Phases
 
-Each phase compiles and passes `devenv shell -- lint` and `devenv shell -- tests`.
+Each phase compiles cleanly and passes `devenv shell -- lint` and `devenv shell -- tests`:
 
-1. **Identity & lookups**: `EntityKey` in `datamile-cache`, `remove_entity_by_type_and_path`
-   and multi-owner `playable_lookup` / `image_lookup` in `datamile-logic`,
-   `mpd_bridge` `"album"` filter, deterministic image owner, `force_update_entity`
-   fix, per-type discovery in `schema.rs`.
-2. **Freshness & compile guard**: `walk_files` skipping `*.lock.json`,
-   `RootState.lock_stat`, `CompiledRoot.lock_stat`, `CompileGuard` in
-   `datamile-lua`, read-only failure isolation, record-on-all-compiled in
-   `update.rs`.
-3. **Single write path**: `ExternalIndex` on `EntityKey`, `UpdateScope` +
-   `UpdateRequest.entities`, route `watcher.rs` through `run_server_update`.
-4. **Target resolution**: shared resolver for `datamile x` (offline `state.json`
-   path without `select`/`scan_library`) and daemon index, plus docs.
+1. **Identity, discovery, and lookups**: `EntityKey` in `datamile-cache` (+ `datamile-server/Cargo.toml` and `lib.rs` re-exports), `remove_entity_by_type_and_path` (updating `update.rs`, `watcher.rs`, `engine.rs`, and `tests.rs`), `playable_lookup` `Vec`, CAS `CachedImageLookup` in `engine.rs` and `images.rs`, `mpd_bridge` `"album"` filter, per-type discovery in `schema.rs`.
+2. **Freshness and `CompileGuard`**: `walk_files` skipping `*.lock.json`, `RootState.lock_stat`, `root_is_dirty` lock checks, `CompiledRoot.lock_stat`, `CompileGuard` in `datamile-lua` (`record_dependency` + enumerator filtering), read-only error isolation, record-on-all-compiled in `update.rs`.
+3. **Single write path**: `ExternalIndex` on `EntityKey`, `UpdateScope` + `UpdateRequest.entities` + `force_update_entity`, route `watcher.rs` through `run_server_update`.
+4. **Target resolution & docs**: Shared resolver for `POST /api/x` (paired with `specs/actions/spec.md` phases 2–3), plus `docs/vocabulary.md` and `docs/lua-api.md` updates.
 
 ### Tests
 
-- `datamile-cache`: `walk_files` skips `*.lock.json`; `RootState` without
-  `lock_stat` deserializes as `None`; `lock_stat` mismatch marks dirty.
-- `datamile-logic`: `remove_entity_by_type_and_path` leaves sibling type in
-  shared dir intact; multi-owner `playable_lookup` & `image_lookup` survive
-  removing one owner.
-- `datamile-lua`: `CompileGuard` blocks `d.fs.read_json` / `read_toml` / `read`
-  on foreign and own `*.lock.json`, and clears on compile error (`?` return).
-- `datamile-media`: two media roots claiming one dir and nesting across roots
-  both succeed; same-type nesting fails; `ExternalIndex` retains both types on
-  shared external edit; dirty root compiling to identical bytes updates
-  `lock_stat`; read-only lock write fails only that entity; watcher edit submits
-  into `run_server_update` without racing.
-- `datamile-server`: `images.rs` picks deterministic owner; `mpd_bridge` picks
-  `"album"` from multi-owner URI.
-- `datamile`: CLI integration tests for every row of *Edge cases* (including
-  offline `state.json` parity when a manifest was deleted leaving an orphan lock).
-
-### Breakage inventory
-
-- `core/datamile-logic/src/tests.rs` (`remove_entity_by_path` assertion) updates
-  to `remove_entity_by_type_and_path`.
-- `core/datamile-media/src/tests.rs` (`discovery_rejects_two_types_claiming_one_directory`,
-  `discovery_rejects_nested_roots`) updates to assert cross-type sharing/nesting
-  succeeds while same-type nesting still fails.
-
-## Non-goals
-
-- Playback sessions and the `datamile-mpv` crate.
-- Lock-as-input: an entity whose tags come from another entity's lock needs a
-  build graph with wave recompilation and cycle rejection.
-- Pruning dead locks (see *Locks are never deleted*).
-
+- `datamile-cache`: `walk_files` skips `*.lock.json`; `RootState` without `lock_stat` deserializes as `None`; `root_is_dirty` detects missing lock and `lock_stat` mismatch.
+- `datamile-logic`: `remove_entity_by_type_and_path` leaves sibling media type in shared dir intact; multi-owner `playable_lookup` and CAS `image_lookup` survive removing one owner.
+- `datamile-lua`: `CompileGuard` blocks `d.fs.read_json`/`read_toml`/`read`/`exists` on `*.lock.json`, filters `*.lock.json` out of `d.fs.files`/`d.fs.first`, and drops cleanly on `?` errors.
+- `datamile-media`: shared-dir and cross-type nested discovery succeed while same-type nesting fails; `ExternalIndex` preserves both `EntityKey`s on shared external edit; dirty root compiling to identical bytes updates `lock_stat`; read-only lock write fails only that entity; watcher edit submits one `run_server_update` request with the resolved `EntityKey`.
+- `datamile-server`: `images.rs` recovers `master.qoi` from the second surviving owner when the first owner's file is gone; `mpd_bridge` picks `"album"` from multi-owner URI; `POST /api/x` satisfies every row of *Edge cases*.

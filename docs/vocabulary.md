@@ -14,7 +14,8 @@ named first and the others are listed under "Conflicts and retired terms".
 - **`d` / `datamile`** — aliases of the same global API table.
 - **`d.config`** — server, storage and MPD settings.
 - **interface** — a named Lua function that launches a client.
-- **action** — a named Lua function invoked by name, scoped to media.
+- **action** — a named Lua function invoked by name, optionally scoped to
+  media types.
 
 ## Media schema
 
@@ -22,13 +23,14 @@ named first and the others are listed under "Conflicts and retired terms".
   type and how its entities are discovered. Its name is the media type.
 - **media type** — the name of a media root (`album`, `book`, `movie`).
   The key used in locks, indexes, actions and the WS payload.
-- **media entity** — one instance of a media root: one entity dir, one
+- **media entity** — one instance of a media root: one entity key, one
   lock, one id. Entities of different media types may share an entity dir.
-  One dir × one media type is one entity. The short form **entity** means
-  the same.
-- **entity dir** — the directory holding an entity's
+  The short form **entity** means the same.
+- **entity key** — `(media type, entity dir)`: the unique identity of one
+  media entity.
+- **entity dir** — the canonical directory holding an entity's
   `<media_type>.lock.json`. One dir may hold several media types' locks,
-  one entity dir per media type.
+  one entity per media type.
 - **init** — the absolute root directory a media root scans for entities.
   It is not `init.lua`.
 - **select** — returns the directories that are entities.
@@ -53,20 +55,23 @@ named first and the others are listed under "Conflicts and retired terms".
 - **manifest** — the source file the compiler reads (`album.toml` in the
   album config). Called **entity manifest** when it could be confused with
   the logic manifest.
-- **lock** — the compiled `<media_type>.lock.json`.
+- **lock** — the compiled `<media_type>.lock.json`. Always an output, never
+  an input.
 - **compile** — evaluate an entity manifest into a lock.
 - **discovery** — find entity dirs from a media root's `select`.
 - **update** — discovery plus incremental compilation.
 - **pass** — one update run.
 - **cache root** — content-keyed image and object cache.
-- **state file** — per-root bookkeeping under the state dir.
-- **entity index** — the in-memory catalog built from the state files and the
-  locks: one record per entity with its playable URIs and image addresses.
-  Action targets, `POST /api/select` and `datamile x` resolve through it. A
-  lock sitting on disk is not evidence of an entry.
-- **stale** — an entity whose state entry no longer matches its dir: a file
-  changed, a file or the dir vanished, or no entry exists. A stale entity is
-  recompiled before it is used; a fresh one is never touched.
+- **state file** — per-media-root bookkeeping under the state cache dir,
+  keyed by canonical entity dir.
+- **entity index** — the daemon's catalog of compiled entities built from
+  state entries and locks: one record per entity with its playable URIs and
+  CAS image references. Action targets and playback resolve through it. A lock
+  sitting on disk without a state entry is not in the index.
+- **stale** — an entity whose state entry no longer matches disk: an input
+  file changed, an input or the dir vanished, the lock file changed or is
+  missing, or no entry exists. Update passes recompile stale entities and skip
+  fresh ones.
 - **hot reload** — a file event triggers recompilation or a config reload.
 
 ## Logic
@@ -88,21 +93,24 @@ named first and the others are listed under "Conflicts and retired terms".
 
 ## Actions and interfaces
 
-- **action** — a named Lua function with `media`, `run`, `label` and
-  `description`.
-- **generic action** — `media = nil`; not tied to a media type.
-- **scoped action** — `media` is a non-empty string or a list of them.
-- **action set** — the resolved catalog shipped to clients:
-  `{ generic, media }`.
-- **intermediary** / **ctx** — the table passed to an action: `lock`,
-  `options`, `isatty`. `ctx.lock` is the targeted entity's lock file, parsed:
-  `{ <media type>: { id, location, tags, objects, images, nodes } }`. Its
-  only top-level key is the media type, so `ctx.lock[media]` is the entity.
-  A run with no target has `ctx.lock = nil`.
-- **item** — retired. An action used to receive a list of resolved items.
-  It now receives `ctx.lock`, the lock file itself, and nothing else about
-  the entity.
-- **option** — the trailing `-- <args>` passed as `ctx.options`.
+- **action** — a named Lua function with `run`, and optional `media`, `label`
+  and `description`.
+- **generic action** — `media = nil`; not tied to a media type. Runs
+  without a target or against a resolved entity.
+- **scoped action** — `media` is a non-empty string or a list of them; used
+  for validation, client presentation, and default selection when `--media`
+  is omitted.
+- **action map** — the resolved catalog shipped to clients: a map keyed by
+  canonical action name with `{ label, description, media? }`.
+- **ctx** — the single table passed to an action's `run(ctx)`: `{ lock,
+  media, options, isatty }`. `ctx.lock` is the targeted entity's parsed lock
+  (`{ <media type>: { id, location, tags, objects, images, nodes } }`), and
+  `ctx.media` is its media type; both are `nil` when targetless.
+- **intermediary** — `datamile x intermediary`: prints the resolved `ctx`
+  array as JSON.
+- **run** — one execution of an action for a single `(dir, media)` pair (or
+  one targetless execution); also the Lua function field on `d.action`.
+- **option** — the trailing `-- <args>` string array passed as `ctx.options`.
 
 ## Server and transport
 
@@ -110,11 +118,9 @@ named first and the others are listed under "Conflicts and retired terms".
 - **instance lock** — one daemon per user, a kernel lock at
   `~/.local/state/datamile/instance.lock`.
 - **identity** — the daemon's config path, version and reload state; the
-  CLI checks it before trusting the daemon.
+  CLI checks it before delegating.
 - **`INIT`**, **`LOGIC_UPDATE`**, **`MEDIA_UPDATED`**, **`VIEW_DATA`**,
   **`SHELF_DATA`**, **`GROUP_RESULT`**, **`MPD_STATUS`** — WS messages.
-- **select** — `POST /api/select`; resolves action targets from the entity
-  index.
 - **MPD** — the music player daemon; **queue** and **playback** are its
   state.
 
@@ -132,26 +138,30 @@ named first and the others are listed under "Conflicts and retired terms".
   collection. Prefer **logic library** for the unit and **collection** for
   the whole.
 - **root** — overloaded: a media root's `init`, an entity dir, or the
-  filesystem root. Prefer **media root** or **entity dir**; avoid bare
-  "root".
+  filesystem root. Prefer **media root**, **entity dir**, or **entity key**;
+  avoid bare "root".
 - **manifest** — the entity manifest (`album.toml`) versus the logic
   manifest. Always qualify.
 - **index** — overloaded: the **entity index** (entities the daemon knows)
-  versus the **dependency index** (external file → roots that read it).
+  versus the **dependency index** (external file → entities that read it).
   Qualify it.
-- **state entry** — one entity's row in a state file: the files under its
-  dir except `*.lock.json`, plus its external dependencies, each with mtime
-  and size, plus the digest of its lock as the last compile wrote it. This
-  is what makes staleness checkable without a pass.
+- **state entry** — one entity's row in a state file: the input files under
+  its dir except `*.lock.json`, plus its external dependencies, each with
+  mtime and size, plus the mtime and size of its lock file. This is what
+  makes staleness checkable without compiling.
 - **media manifest** — the evaluated set of media roots, held in Rust as
   `MediaManifest`.
 - **getter** — a `__DATAMILE_GET_*` Lua function Rust calls after `init.lua`
   returns, to pull declarations out of `REGISTRY`.
 - **fingerprints** — the map from file to mtime and size inside a state
   entry.
-- **type** — in the CLI, replaced by **media** (`--type` → `--media`).
-  Code keeps `media_type` for the key.
-- **directory** — in the CLI, replaced by **dir** (`--directory` →
+- **item** — retired (`ctx.items`). An action now receives `ctx.lock` and
+  `ctx.media` for one entity at a time.
+- **select** (action route) — retired (`POST /api/select`, `POST /api/actions/{name}`).
+  Actions resolve and run via `POST /api/x`.
+- **type** — in `datamile x`, replaced by **media** (`--type` → `--media`).
+  `compile` and `update` keep `--type`; code keeps `media_type` for the key.
+- **directory** — in `datamile x`, replaced by **dir** (`--directory` →
   `--dir`), which is an entity dir.
 - **`--library`** — retired. It meant "every entity under the first init
   dir". Do not reuse the name; `--dir` is the target.

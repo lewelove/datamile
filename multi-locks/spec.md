@@ -137,7 +137,10 @@ Changes:
   | `Paths { pa, ma }` | `All { None }` | mirror of row 2 | `Paths { pa ∪ pb, ma }` if `ma==mb` else `All { None }` | widen `All { ma }` if `ma` matches all `eb` else `All { None }` |
   | `Entities(ea)` | `All { None }` | mirror of row 2 | mirror of row 3 | `Entities(ea ∪ eb)` |
 
-  `in_scope` checks `Entities` by exact `EntityKey` membership; `run_pass` and
+  `in_scope` checks `Entities` by exact `EntityKey` membership; the
+  `"no root entity matches the given path"` bail in `update.rs` applies only to
+  `UpdateScope::Paths`, not `UpdateScope::Entities` (so a vanished watcher
+  target reconciles as a removal rather than failing the pass); `run_pass` and
   `run_update_pass` take `UpdateScope` directly (removing the separate
   `media_type` parameter) and claim the config digest only on
   `UpdateScope::All { media_type: None }` with zero failures.
@@ -164,6 +167,9 @@ pub type ExternalIndex = BTreeMap<PathBuf, BTreeSet<EntityKey>>;
 `core/datamile-media/src/watcher.rs` stops compiling, ingesting, writing state,
 and broadcasting `MEDIA_UPDATED` directly:
 
+- `MediaState::init_dirs()` (`core/datamile-media/src/state.rs`) derives watch
+  dirs from `self.media_roots()` rather than `self.roots` so empty `init`
+  directories at boot are watched for newly added entity dirs.
 - Config dependency changes reload config and manifest, then submit
   `UpdateScope::All { media_type: None }` to `run_server_update` if needed.
 - Non-config filesystem events resolve targets without holding `logic`,
@@ -225,7 +231,8 @@ pub struct CachedImageLookup {
 pub image_lookup: HashMap<String, CachedImageLookup>,
 ```
 
-- Upserting inserts or updates `(EntityKey, abs_source_path)` inside `sources`.
+- Upserting replaces an existing entry for `EntityKey` in `sources` (updating
+  its path in place) or pushes `(EntityKey, abs_source_path)` if absent.
 - Removing an entity removes only entries matching `EntityKey` and removes the
   `address` key only when `sources` becomes empty.
 - On a cold-cache miss in `core/datamile-server/src/api/images.rs`,
@@ -374,6 +381,7 @@ the daemon's `LogicEngine` index (`MediaManifest`, `ActionMap`, and
 | Modify | `core/datamile-lua/src/functions/fs/tests.rs`, `tests/memo.rs` | Test `CompileGuard` blocking readers and filtering `d.fs.files`/`d.fs.first` |
 | Modify | `core/datamile-media/src/schema.rs` | Remove cross-type `claimed` map; scope `reject_nesting` per `media_type`; update docstrings |
 | Modify | `core/datamile-media/src/compiler.rs` | Hold `CompileGuard` in `compile_root_impl`; populate `CompiledRoot.lock_stat`; format read-only write errors |
+| Modify | `core/datamile-media/src/state.rs` | Derive `init_dirs()` from `self.media_roots()` |
 | Modify | `core/datamile-media/src/deps.rs` | `ExternalIndex` on `EntityKey`; `UpdateScope` enum + merge matrix; `StateEntry = (PathBuf, RootFiles, FileStat)` |
 | Modify | `core/datamile-media/src/update.rs` | `plan_work` passes `media_type` to `root_is_dirty`; record `lock_stat` for all compiled roots; handle `UpdateScope::Entities`; call `remove_entity_by_type_and_path` |
 | Modify | `core/datamile-media/src/watcher.rs` | Replace duplicate compile/ingest/broadcast pipeline with `EntityKey`/`Paths` resolution submitted to `run_server_update` without holding locks |
@@ -387,17 +395,18 @@ the daemon's `LogicEngine` index (`MediaManifest`, `ActionMap`, and
 
 ### Phases
 
-Each phase compiles cleanly and passes `devenv shell -- lint` and `devenv shell -- tests`:
+Each phase must be a separate commit that compiles cleanly and passes
+`devenv shell -- lint` and `devenv shell -- tests`:
 
 1. **Identity, discovery, and lookups**: `EntityKey` in `datamile-cache` (+ `datamile-server/Cargo.toml` and `lib.rs` re-exports), `remove_entity_by_type_and_path` (updating `update.rs`, `watcher.rs`, `engine.rs`, and `tests.rs`), `playable_lookup` `Vec`, CAS `CachedImageLookup` in `engine.rs` and `images.rs`, `mpd_bridge` `"album"` filter, per-type discovery in `schema.rs`.
 2. **Freshness and `CompileGuard`**: `walk_files` skipping `*.lock.json`, `RootState.lock_stat`, `root_is_dirty` lock checks, `CompiledRoot.lock_stat`, `CompileGuard` in `datamile-lua` (`record_dependency` + enumerator filtering), read-only error isolation, record-on-all-compiled in `update.rs`.
-3. **Single write path**: `ExternalIndex` on `EntityKey`, `UpdateScope` + `UpdateRequest.entities` + `force_update_entity`, route `watcher.rs` through `run_server_update`.
+3. **Single write path**: `MediaState::init_dirs()` from `media_roots()`, `ExternalIndex` on `EntityKey`, `UpdateScope` + `UpdateRequest.entities` + `force_update_entity`, route `watcher.rs` through `run_server_update`.
 4. **Target resolution & docs**: Shared resolver for `POST /api/x` (paired with `specs/actions/spec.md` phases 2–3), plus `docs/vocabulary.md` and `docs/lua-api.md` updates.
 
 ### Tests
 
 - `datamile-cache`: `walk_files` skips `*.lock.json`; `RootState` without `lock_stat` deserializes as `None`; `root_is_dirty` detects missing lock and `lock_stat` mismatch.
-- `datamile-logic`: `remove_entity_by_type_and_path` leaves sibling media type in shared dir intact; multi-owner `playable_lookup` and CAS `image_lookup` survive removing one owner.
+- `datamile-logic`: `remove_entity_by_type_and_path` leaves sibling media type in shared dir intact; multi-owner `playable_lookup` and CAS `image_lookup` survive removing one owner and replace existing `EntityKey` entries without duplicates.
 - `datamile-lua`: `CompileGuard` blocks `d.fs.read_json`/`read_toml`/`read`/`exists` on `*.lock.json`, filters `*.lock.json` out of `d.fs.files`/`d.fs.first`, and drops cleanly on `?` errors.
 - `datamile-media`: shared-dir and cross-type nested discovery succeed while same-type nesting fails; `ExternalIndex` preserves both `EntityKey`s on shared external edit; dirty root compiling to identical bytes updates `lock_stat`; read-only lock write fails only that entity; watcher edit submits one `run_server_update` request with the resolved `EntityKey`.
 - `datamile-server`: `images.rs` recovers `master.qoi` from the second surviving owner when the first owner's file is gone; `mpd_bridge` picks `"album"` from multi-owner URI; `POST /api/x` satisfies every row of *Edge cases*.

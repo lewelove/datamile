@@ -92,7 +92,8 @@ and the unread `config` field is dropped.
 
 ### 2. Declaration validation and presentation resolution
 
-Shape validation runs in `__DATAMILE_GET_ACTIONS`:
+Shape validation runs in `__DATAMILE_GET_ACTIONS`, returning
+`ActionDeclarations` on `EvaluatedDomainData.actions`:
 
 - `name` must be a non-empty string.
 - `media` must be `nil`, a non-empty string, or a non-empty list of non-empty
@@ -111,9 +112,10 @@ d.action("open_book", { media = "book", run = print })
 error: action 'open_book' declares unknown media type 'book'
 ```
 
-After `validate_media_schema` succeeds, Rust calls `__DATAMILE_RESOLVE_ACTIONS`
-to evaluate `label(m)` and `description(m)` callbacks for each verified media
-type:
+After `validate_media_schema` succeeds, Rust calls
+`DomainLuaEngine::resolve_actions(&self, decls: &ActionDeclarations) -> Result<ActionMap>`
+(invoking `__DATAMILE_RESOLVE_ACTIONS`) to evaluate `label(m)` and
+`description(m)` callbacks for each verified media type:
 
 - A callback returning `nil`, `""`, or a non-string, or raising a Lua error,
   fails config load with the action name and media type
@@ -148,8 +150,10 @@ pub struct ActionCtx {
 ### 4. Derived action map
 
 A single `ActionMap = BTreeMap<String, ActionEntry>` replaces
-`HashMap<String, ActionDef>` across `EvaluatedDomainData`,
-`ResolvedDomainConfig`, `ServerConfig`, `INIT`, and `LOGIC_UPDATE`. The unused
+`HashMap<String, ActionDef>` across `ResolvedDomainConfig`, `ServerConfig`,
+`INIT`, and `LOGIC_UPDATE`. `EvaluatedDomainData.actions` holds
+`ActionDeclarations`, which callers resolve into `ActionMap` via
+`DomainLuaEngine::resolve_actions` after `validate_media_schema`. The unused
 `MediaState.actions` field is removed.
 
 ```rust
@@ -278,6 +282,9 @@ Usage: `datamile x <name> [--dir <entity-dir>...] [--media <media_type>...] [-- 
   checks `GET /api/identity` (matching canonical `config_path`, `version`, and
   `reload_error == None`). If no daemon holds `InstanceLock`, it exits non-zero
   with `error: datamile daemon is not running; start it with 'datamile server'`.
+- `datamile x` evaluates `init.lua` directly via `DomainLuaEngine` (the same
+  lightweight loader as `core/datamile/src/interface.rs`, without calling
+  `reload_config_and_logic`, `discover_roots`, or `scan_library`).
 - Before calling `POST /api/x`, the CLI canonicalizes every `--dir` locally
   (expanding `~` and resolving relative paths against the shell's working
   directory). When `--dir` is omitted, the CLI checks the action's declaration:
@@ -287,11 +294,10 @@ Usage: `datamile x <name> [--dir <entity-dir>...] [--media <media_type>...] [-- 
 - For `datamile x intermediary`: prints `runs` mapped to
   `[{ lock, media, options, isatty, error? }]` as JSON to stdout and exits `1`
   if any entry has `error`.
-- For all other actions: loads `init.lua` to obtain the Lua `run` functions
-  (without discovery or library scanning) and executes `run(ctx)` locally in
-  the CLI process for every `XRun` where `error` is `None`, setting
-  `ctx.isatty = std::io::stdin().is_terminal()`. Errors from `XRun.error` or
-  local `run(ctx)` are printed to stderr; remaining runs proceed, and the CLI
+- For all other actions: executes `run(ctx)` locally in the CLI process via
+  `DomainLuaEngine::execute_action` for every `XRun` where `error` is `None`,
+  setting `ctx.isatty = std::io::stdin().is_terminal()`. Errors from `XRun.error`
+  or local `run(ctx)` are printed to stderr; remaining runs proceed, and the CLI
   exits `1` if any run failed.
 
 ### 7. LAN binding, host check, and origin policy
@@ -304,7 +310,8 @@ Usage: `datamile x <name> [--dir <entity-dir>...] [--media <media_type>...] [-- 
   `192.168.0.0/16`, ignoring ports. User entries in `server.allowed_origins`
   (hostnames or `ip/prefix` CIDR strings, validated at config load via
   `std::net::IpAddr`) extend this allowlist. Malformed entries fail config load
-  with the offending string.
+  with the offending string. Host/origin port stripping must preserve IPv6
+  brackets (`[::1]:8000` -> `[::1]`).
 - One middleware runs across all `/api/*` mutating routes (`POST`/`PUT`/`DELETE`),
   including `POST /api/x`, `/api/reset`, `/api/update`, `/api/state`,
   `/api/media/*/update/*`, and `/api/playback/*`:
@@ -392,14 +399,14 @@ lookups exist when the shared `POST /api/x` resolver lands.
 | --- | --- | --- |
 | Modify | `core/datamile-lua-domain/src/config.lua` | Canonicalize `-` -> `_`, reject duplicates, drop `config` field, store raw declarations |
 | Modify | `core/datamile-lua-domain/src/core.lua` | Validate declaration shapes in `__DATAMILE_GET_ACTIONS`; evaluate `label`/`description` callbacks in `__DATAMILE_RESOLVE_ACTIONS` |
-| Modify | `core/datamile-lua-domain/src/config.rs` | Replace `ActionDef` action map with `ActionPresentation`, `ActionEntry`, `ActionMap`, `ActionCtx`, `ActionDeclaration`; add `allowed_origins: Vec<String>` to `ServerConfig` |
-| Modify | `core/datamile-lua-domain/src/engine.rs` | `EvaluatedDomainData.actions` and `ResolvedDomainConfig.actions` become `ActionMap`; add `resolve_actions`; update `execute_action(&self, name: &str, ctx: &ActionCtx)` |
-| Modify | `core/datamile-lua-domain/src/lib.rs` | Re-export `ActionEntry`, `ActionMap`, `ActionPresentation`, `ActionCtx` |
+| Modify | `core/datamile-lua-domain/src/config.rs` | Add `ActionDeclarations`, `ActionPresentation`, `ActionEntry`, `ActionMap`, `ActionCtx`; add `allowed_origins: Vec<String>` to `ServerConfig` |
+| Modify | `core/datamile-lua-domain/src/engine.rs` | `EvaluatedDomainData.actions` holds `ActionDeclarations`; `ResolvedDomainConfig.actions` becomes `ActionMap`; add `resolve_actions`; update `execute_action(&self, name: &str, ctx: &ActionCtx)` |
+| Modify | `core/datamile-lua-domain/src/lib.rs` | Re-export `ActionDeclarations`, `ActionEntry`, `ActionMap`, `ActionPresentation`, `ActionCtx` |
 | Modify | `core/datamile-lua-domain/src/tests.rs` | Update action tests for `ActionMap`, `ActionCtx`, duplicate canonical names, and callback validation |
 | Modify | `core/datamile-media/src/schema.rs` | Add action media validation to `validate_media_schema` using `require_media` |
 | Modify | `core/datamile-media/src/ingest.rs` | Include `"path": root` in entity `dict` |
 | Modify | `core/datamile-media/src/state.rs` | Remove `MediaState.actions` |
-| Modify | `core/datamile-media/src/backend.rs` | Pass `server.host` and `server.allowed_origins` in `ServerConfig`; remove `ActionTargetQuery` impl (`resolve_action_targets`, `param_targets`, `playing_target`, `item_for`); update `execute_action` signature |
+| Modify | `core/datamile-media/src/backend.rs` | Call `resolve_actions` after `validate_media_schema`; pass `server.host` and `server.allowed_origins` in `ServerConfig`; remove `ActionTargetQuery` impl (`resolve_action_targets`, `param_targets`, `playing_target`, `item_for`); update `execute_action` signature |
 | Modify | `core/datamile-media/src/watcher.rs` | Broadcast `ActionMap` in `LOGIC_UPDATE` |
 | Modify | `core/datamile-media/src/tests.rs` | Update `validate_media_schema` calls (7 sites) and `MediaState` literals (3 sites); add action schema & `dict.path` tests |
 | Modify | `core/datamile-server/src/state.rs` | Add `host: String` and `allowed_origins: Vec<String>` to `ServerConfig`; type `ServerConfig.actions` as `ActionMap` |
@@ -410,8 +417,8 @@ lookups exist when the shared `POST /api/x` resolver lands.
 | Delete | `core/datamile-server/src/api/select.rs` | Replaced by `api/x.rs` |
 | Modify | `core/datamile-server/src/api/mod.rs` | Wire `/api/x`, remove `/api/actions/{name}` and `/api/select` |
 | Modify | `core/datamile-server/src/api/websocket.rs`, `system.rs` | Serialize `ActionMap` directly |
-| Modify | `core/datamile-server/src/tests.rs` | Update `MockBackend` and `ServerConfig` fixtures; add `/api/x` and `Host`/`Origin`/CORS tests |
-| Modify | `core/datamile/src/main.rs` | Narrow `XArgs` (`--dir`, `--media`, trailing `--` options); require live daemon; resolve `.`/`~` locally; call `POST /api/x` with `execute: false`; run `execute_action` locally or print `intermediary` |
+| Modify | `core/datamile-server/src/tests.rs` | Add `Host: 127.0.0.1:8000` to existing POST test requests; update `MockBackend` and `ServerConfig` fixtures; add `/api/x` and `Host`/`Origin`/CORS tests |
+| Modify | `core/datamile/src/main.rs` | Narrow `XArgs` (`--dir`, `--media`, trailing `--` options); require live daemon; load config via `DomainLuaEngine`; resolve `.`/`~` locally; call `POST /api/x` with `execute: false`; run `execute_action` locally or print `intermediary` |
 | Modify | `core/datamile/Cargo.toml` | Add `assert_cmd` / `tempfile` dev-dependencies if needed for CLI tests |
 | Create | `core/datamile/tests/x_cli.rs` | CLI integration tests against a live test server instance |
 | Create | `interfaces/web-app/src/library/actions.ts` | Pure TypeScript `hasAction(actions, name, mediaType)` and `actionPresentation(actions, name, mediaType)` helpers |
@@ -423,12 +430,30 @@ lookups exist when the shared `POST /api/x` resolver lands.
 
 ### Phases
 
-Each phase compiles cleanly and passes `devenv shell -- lint` and `devenv shell -- tests`:
+Each phase must be a separate commit that compiles cleanly and passes
+`devenv shell -- lint` and `devenv shell -- tests`:
 
-1. **Lua & schema**: `ActionEntry`/`ActionMap`/`ActionCtx`, `d.action` canonicalization and collision check, `__DATAMILE_GET_ACTIONS` + `__DATAMILE_RESOLVE_ACTIONS`, `validate_media_schema` action check, `ServerConfig.host` and `ServerConfig.allowed_origins` parsing/validation, `MediaState` and `ingest.rs` `dict.path`.
-2. **Backend, routes, & LAN security**: Remove `ActionTargetQuery` and `actions.rs`/`select.rs`, add `api/x.rs` (`POST /api/x`), wire `config.host` binding + `Host`/`Origin` middleware + `CorsLayer`, update `core/datamile/src/main.rs` `XArgs` and `execute_action` calls so the workspace compiles end-to-end.
-3. **CLI `datamile x` & integration tests**: Daemon-required check (`InstanceLock` + `/api/identity`), local `--dir` canonicalization and cwd fallback, `POST /api/x { execute: false }`, local `run(ctx)` execution, `intermediary` JSON array output, `core/datamile/tests/x_cli.rs`.
-4. **Web app & docs**: Pure `actions.ts` lookup module + `bun test` coverage, updated `collection.svelte.ts` and Svelte components, `docs/` and `README.md` updates.
+1. **Lua & schema**: `d.action` canonicalization and collision check,
+   `__DATAMILE_GET_ACTIONS` -> `ActionDeclarations`, `__DATAMILE_RESOLVE_ACTIONS`
+   via `resolve_actions`, `ActionPresentation`/`ActionEntry`/`ActionMap`/`ActionCtx`
+   in `datamile-lua-domain`, `validate_media_schema` action check,
+   `ServerConfig.allowed_origins` parsing/validation, `ingest.rs` `dict.path`,
+   and `backend.rs` projecting `ActionMap` into existing `ActionDef` so
+   downstream crates keep compiling for this commit.
+2. **Routes, `ActionMap` cutover, & LAN security**: Switch `ServerConfig.actions`
+   and `execute_action` to `ActionMap`/`ActionCtx` across `datamile-media`,
+   `datamile-server`, and `main.rs`, delete `MediaState.actions`, `actions.rs`,
+   `select.rs`, and `ActionTargetQuery`, add `api/x.rs` (`POST /api/x`), bind
+   `config.host`, install `Host`/`Origin` middleware + `CorsLayer`, and update
+   `datamile-server/src/tests.rs`.
+3. **CLI `datamile x` & integration tests**: Daemon-required check
+   (`InstanceLock` + `/api/identity`), lightweight `DomainLuaEngine` config
+   evaluation (matching `interface.rs`), local `--dir` canonicalization and cwd
+   fallback, `POST /api/x { execute: false }`, local `run(ctx)` execution,
+   `intermediary` JSON array output, `core/datamile/tests/x_cli.rs`.
+4. **Web app & docs**: `ActionMap` store, pure `actions.ts` lookup module +
+   `bun test` coverage, updated `ModalDrawer.svelte`/`NavigationBar.svelte`/`App.svelte`
+   call sites, `docs/` + `README.md` updates.
 
 ### Tests
 
@@ -445,7 +470,7 @@ Each phase compiles cleanly and passes `devenv shell -- lint` and `devenv shell 
 - `datamile-server` (`core/datamile-server/src/tests.rs`):
   - `POST /api/x` returns `200 { runs }` for targetless generic (`execute: true` and `false`), scoped multi-dir/multi-media cross-product, and per-run Lua errors (`runs[i].error`).
   - `POST /api/x` returns `400` on relative/unexpanded `dirs`, missing `dirs` for scoped action, `execute: false` with `Origin` or `Sec-Fetch-Site` header, or unregistered `media`; `404` on unknown action; `415` on non-JSON; `422` on malformed JSON.
-  - `Host` / `Origin` middleware + `CorsLayer` allows `localhost`, `127.0.0.1`, `[::1]`, `192.168.0.0/16` (any port), and configured `allowed_origins`; returns `403` for `Host: evil.com:8000`, `Origin: null`, and `Origin: https://example.com` across `/api/x`, `/api/reset`, and `/api/playback/clear`.
+  - `Host` / `Origin` middleware + `CorsLayer` allows `localhost`, `127.0.0.1`, `[::1]`, `[::1]:8000`, `192.168.0.0/16` (any port), and configured `allowed_origins`; returns `403` for `Host: evil.com:8000`, `Origin: null`, and `Origin: https://example.com` across `/api/x`, `/api/reset`, and `/api/playback/clear`.
   - `INIT` and `LOGIC_UPDATE` broadcast `ActionMap`.
 - `datamile` (`core/datamile/tests/x_cli.rs`):
   - Fails non-zero naming `datamile server` when daemon is not running.

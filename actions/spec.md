@@ -1,38 +1,40 @@
 # Actions: media-scoped action contract
 
 Status: proposed. Not approved. Records the feedback from the 2026-11-24
-session.
+session and removes the execution guard so `--media` acts purely as a lock
+selector.
 
 ## Intent
 
-Datamile must stay media agnostic. Today the action registry is one flat
-namespace and the web app hardcodes `type: "album"`. An action should
-declare which media roots it belongs to, present a different label and
-description per root, and receive the root it runs for.
+Datamile must stay media-agnostic. Today the action registry is one flat
+namespace and the web app hardcodes `type: "album"`. An action should declare
+which media roots it belongs to (for validation, UI presentation, and default
+selection when `--media` is omitted), present a different label and description
+per media type, and receive both the literal lock JSON and resolved media type.
 
 ## Terms
 
 Every word here is defined in `docs/vocabulary.md`: media type, media root,
 `init`, media entity, entity dir, id, entity manifest, media manifest, logic
-manifest, lock, entity index, `REGISTRY`, getter, `location.path` and `ctx`.
-The only shape this document fixes is `ctx.lock`, which is the targeted
-entity's lock file, parsed (see *No `ctx.media`*).
+manifest, lock, entity index, `REGISTRY`, getter, `location.path`, and `ctx`.
+`EntityKey` and `datamile x` target resolution are defined in
+`specs/multi-locks/spec.md`.
 
 ## The model
 
-- `media = nil` -> generic. Not tied to a root. `nil` means no media was
-  written; it never falls back to `album`.
-- `media = "album"` -> one root.
-- `media = {"album", "movie"}` -> several roots.
-The key of `actions.media`, every value of `--media`, the `media` argument of
-`run` and the single key of a lock are the same media-type string.
+- `media = nil` -> generic. Not tied to a specific media root. `nil` means no
+  `media` key was declared; it never falls back to `"album"`.
+- `media = "album"` -> one media type.
+- `media = {"album", "movie"}` -> several media types.
+The key of `actions.media`, every value of `--media`, `ctx.media`, and the
+single top-level key of a lock file are the same media-type string.
 
 - `label` / `description`: `nil`, a non-empty string, or
-  `function(media)` returning a non-empty string. Nothing else.
-- `run`: `function(ctx, media)`. Lua ignores extra arguments, so a generic
-  action can write `function(ctx)`.
-- WYSIWYG: whatever the declaration receives is what the resolver passes.
-  `label(media)`, `description(media)`, `run(ctx, media)`.
+  `function(media)` returning a non-empty string.
+- `run`: `function(ctx)` taking one argument.
+- `ctx`: `{ lock, media, options, isatty }`. `ctx.lock` is the literal parsed
+  `<dir>/<media>.lock.json` JSON (`WYSIWYG`), and `ctx.media` is the resolved
+  media-type string (`nil` only when no entity was targeted).
 
 ```lua
 d.action("open_terminal", {
@@ -43,8 +45,8 @@ d.action("open_terminal", {
   description = function(media)
     return "Open a terminal in the " .. media .. " directory"
   end,
-  run = function(ctx, media)
-    d.system({ "alacritty" }, { cwd = ctx.lock[media].location.path, detach = true })
+  run = function(ctx)
+    d.system({ "alacritty" }, { cwd = ctx.lock[ctx.media].location.path, detach = true })
   end,
 })
 
@@ -58,43 +60,33 @@ d.action("open_config_in_terminal", {
 
 ## Decisions
 
-### 1. One declaration per name; a second is an error
+### 1. One declaration per canonical name; collisions fail config load
 
-`d.action(name, ...)` stores and never merges. A second declaration of the
-same name fails config load.
+`d.action(name, ...)` normalizes `-` -> `_` on `name` (the canonical key used
+by the registry, `datamile x`, `/api/x`, and `/api/x/resolve`), stores without
+merging, and rejects any duplicate canonical name at call time:
 
 ```lua
 -- actions/album.lua
-d.action("open_terminal", { media = "album", run = album_terminal })
+d.action("open-terminal", { media = "album", run = album_terminal })
 -- actions/movie.lua
 d.action("open_terminal", { media = "movie", run = movie_terminal })
--- error: action 'open_terminal' is declared twice
+-- error: action 'open_terminal' is declared twice (canonicalized from 'open-terminal')
 ```
 
-The error is loud because the fix is local: one declaration lists every
-media the action operates on. Detection sits in `d.action` itself, which
-rejects a name already present in `REGISTRY.actions`, so it fires at the
-call and not at expansion.
-
 Consequence: `run` is required on every declaration. The current
-`run = t.run or existing.run` merge goes away, and `label` /
-`description` default to `nil` instead of inheriting.
+`run = t.run or existing.run` merge goes away, and `label` / `description`
+default to `nil` instead of inheriting.
 
 ### 2. Resolution happens after `init.lua`, not in `d.action`
 
-`d.action` only stores the declaration. `__DATAMILE_GET_ACTIONS` (already
-called after evaluation) produces the action set from the declaration
-itself:
+`d.action` only stores the declaration. `__DATAMILE_GET_ACTIONS` (called after
+`init.lua` returns, once both actions and `REGISTRY.media_roots` are final)
+produces `ActionSet` from the declarations:
 
 - `media = nil` -> one entry in `generic`.
 - `media = "album"` -> one entry under `media.album`.
 - `media = {"album", "movie"}` -> one entry under each declared media.
-
-Nothing walks the root list. An action appears under the media it declares
-and nowhere else.
-
-Why after `init.lua`: both the declarations and the media roots are final
-only once it returns.
 
 ```lua
 -- album.lua   d.media.root("album", ...)
@@ -102,64 +94,51 @@ only once it returns.
 -- actions.lua d.action("open_config_in_terminal", { run = ... })  -- media = nil
 ```
 
-Roots may be declared after the action, in another `require`, so
-`{"album", "movie"}` can only be checked against them once `init.lua`
-returns. This mirrors `__DATAMILE_GET_LOGIC_MANIFEST`, which is also
-resolved after evaluation.
+### 3. Validation (media checked before callbacks run)
 
-### 3. Validation
-
-Shape, in the getter:
+Shape, in `__DATAMILE_GET_ACTIONS`:
 
 - `name` must be a non-empty string.
-- `media` must be `nil`, a non-empty string, or a table of non-empty
-  strings. An empty string or an empty table is an error.
-- Dedup repeated entries in one media list.
+- `media` must be `nil`, a non-empty string, or a table of non-empty strings.
+  An empty string or an empty table is an error.
+- Repeated entries in one `media` list are deduplicated.
 - `run` is required and must be a function.
-- `label` / `description` must be `nil`, a non-empty string, or a
-  function returning a non-empty string. A function returning `nil` is an
-  error: there is no "hide this action for this media".
-- `label` nil -> fall back to the action name. `description` nil -> omit.
-- A function is called once per media during resolution; for a generic
-  action it is called once with `nil`. A bad return fails config load.
+- `label` / `description` must be `nil`, a non-empty string, or a function
+  returning a non-empty string. A function returning `nil` or `""` is an error
+  (there is no "hide this action for this media").
+- `label` `nil` falls back to the canonical action name; `description` `nil` is
+  omitted.
+- Before calling `label(m)` or `description(m)`, `__DATAMILE_GET_ACTIONS`
+  verifies `REGISTRY.media_roots[m] ~= nil` (skipping callbacks for unknown
+  media types so Rust's `validate_media_schema` reports the clean schema error
+  instead of a Lua traceback inside the user's callback).
 
-Media names are checked in Rust, where the media manifest is already in hand
-and where filters, groupers, orders, libraries, shelves and cabinets are
-checked. Actions join that loop and reuse its message instead
-of growing a second validator in Lua:
+Media names are checked in Rust inside `validate_media_schema`
+(`&MediaManifest, &LogicManifest, &ActionSet`), reusing `require_media`:
 
 ```console
 d.action("open_book", { media = "book", run = print })   -- no book root
 error: action 'open_book' declares unknown media type 'book'
 ```
 
-### 4. No `ctx.media`
+### 4. `ctx = { lock, media, options, isatty }`
 
-`ctx` holds `lock`, `options` and `isatty` (true when stdin is a terminal).
-`ctx.lock` is the parsed lock file of the targeted entity, and everything
-about that entity is inside it. The media type is the second `run` argument,
-`nil` for generic actions, and it is the key into the lock:
-`ctx.lock[media]`. The engine always calls `run(ctx, media)`.
+`ctx` holds:
 
-`ctx.lock` is `nil` when the run has no target. A generic action invoked
-without an entity, such as `open_config_in_terminal`, gets `ctx.lock = nil`
-and reads nothing from it.
+- `lock`: the literal parsed `<dir>/<media>.lock.json` object (1-to-1 with
+  the file on disk and `GET /api/media/{type}/{id}`), or `nil` when no entity
+  was targeted.
+- `media`: the resolved/selected media-type string (even for generic actions
+  when targeting an entity, e.g. `"vinyl"`), or `nil` when targetless.
+- `options`: an array of strings built from everything after `--` (e.g.
+  `ctx.options = { "--how", "--fast" }`). `--query` is removed.
+- `isatty`: boolean (`true` when CLI `stdin` is a terminal; `false` on HTTP).
 
-`options` is an array of strings built from everything after `--`:
+`run(ctx)` always takes one argument. The Lua registry keeps one `run`
+function per canonical action name; the per-media projection materializes only
+`{ label, description }`.
 
-```console
-$ datamile x open_terminal --dir /media/abbey-road -- --how --fast
-  ctx.options = { "--how", "--fast" }
-```
-
-Rust splits the argv and hands Lua that list; nothing parses it further.
-`--query` no longer exists, so `--` is the only source of options.
-
-Because `run` carries the media, the Lua registry keeps one run per
-action, not one per media. The per-media projection materializes only
-`{label, description}`.
-
-### 5. Client shape: generic bucket plus nested per media
+### 5. Client shape: `generic` bucket plus nested `media`
 
 ```json
 "actions": {
@@ -177,303 +156,258 @@ action, not one per media. The per-media projection materializes only
 }
 ```
 
-Client lookup, with `type` the media type of the entity being rendered:
+Client lookup (`mediaType` is the media type of the entity being rendered):
 
 ```text
-action(name, type):
-  if type is not null and actions.media[type] has name: return it
+action(name, mediaType):
+  if mediaType is not null and actions.media[mediaType] has name: return it
   return actions.generic[name] or nothing
 ```
 
-The `generic` branch can only fire for an action declared with `media = nil`,
-because names are unique across declarations: a name found under
-`media[type]` never also exists in `generic`.
+A name in `media[mediaType]` never exists in `generic` because canonical action
+names are unique across declarations.
 
-The client change touches these files (plus adding `location` to the entity
-dict in `ingest.rs` so the client always has `location.path` synchronously):
-
-- `core/datamile-media/src/ingest.rs`: include `"location": entity.get("location")`
-  in `dict` so `collection.dict[id].location.path` is available without waiting
-  for `ensureFullAlbum`.
-- `interfaces/web-app/src/api.ts`: `executeAction(name, media, dir, options?)`
-  posts `{ name, dir, media, options }` to `/api/x`. Eight call sites pass
-  `(media, dir)` (or `(null, null)` for targetless generic actions): four in
-  `ModalDrawer.svelte`, three in `App.svelte`, one in `NavigationBar.svelte`.
-- `interfaces/web-app/src/library/collection.svelte.ts`: `hasAction` becomes
-  `action(name, type)` over the nested set, and the store keeps the media
-  type of the rendered entity instead of `json.media?.album`.
-- `interfaces/web-app/src/types.ts`: `INIT` and `LOGIC_UPDATE` carry the nested
-  `ActionSet`, `AlbumDictEntry` includes `location`, and every
-  `Record<string, ActionDef>` reader changes.
-- `ModalDrawer.svelte` and `NavigationBar.svelte`: the eleven
-  `collection.actions[name]?.label` reads become `action(name, type)?.label`.
-
-The reason it is unavoidable: the flat map the client reads today is exactly
-what this document replaces.
-
-### 6. Rust keeps one structure, and splits index lookup from execution
+### 6. Rust structs, routes, and CORS policy
 
 ```rust
-struct ActionDef {
-    label: String,
-    description: Option<String>,
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ActionDef {
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
-struct ActionSet {
-    generic: BTreeMap<String, ActionDef>,
-    media: BTreeMap<String, BTreeMap<String, ActionDef>>,
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ActionSet {
+    pub generic: BTreeMap<String, ActionDef>,
+    pub media: BTreeMap<String, BTreeMap<String, ActionDef>>,
 }
 ```
 
-`ActionDef` carries presentation only. The function to call stays in the
-Lua registry, one per action name. The structs live in
-`datamile-lua-domain/src/config.rs`; `datamile-server` re-exports them,
-`EvaluatedDomainData.actions` takes the same type, and the dead
-`MediaState.actions` copy is deleted.
+`ActionDef` and `ActionSet` live in `core/datamile-lua-domain/src/config.rs`
+and are re-exported by `datamile-server`. `EvaluatedDomainData.actions`,
+`ResolvedDomainConfig.actions`, and `ServerConfig.actions` all hold `ActionSet`;
+the unused `MediaState.actions` field is deleted, and `websocket.rs` /
+`system.rs` / `watcher.rs` serialize `ActionSet` directly without conversion.
 
-Two routes keep the daemon as the owner of the live entity index while letting
-CLI actions keep the user's terminal (`isatty`, `/dev/tty`, `stdio = "inherit"`):
+Two routes replace `POST /api/actions/{name}` and `POST /api/select`. Both
+canonicalize `name` (`-` -> `_`), canonicalize `dir`, and delegate resolution to
+the same shared Rust resolver defined by `specs/multi-locks/spec.md`
+(*Target resolution*):
 
 1. **`POST /api/x`** (HTTP / web-app clients — daemon executes the action):
-   ```text
-   POST /api/x        { "name": "open_terminal", "dir": "/media/abbey-road",
-                        "media": "album", "options": [] }
-     -> target: album/abbey-road                     from the entity index
-     -> gate:   actions.media["album"]["open_terminal"] exists   allowed
-     -> run:    REGISTRY.actions.open_terminal(ctx, "album")
-        ctx = { lock = { album = { ... } }, options = {}, isatty = false }
-   ```
-   - For a **scoped** action, `dir` and `media` are both required.
-   - For a **generic** action (`actions.generic`), `dir` and `media` may both
-     be `null` / omitted (targetless invocation -> `ctx.lock = nil, media = nil`,
-     e.g. `open_config_in_terminal` from the nav bar). Supplying one without the
-     other is a `400 Bad Request`. When both are supplied, the entity is
-     resolved and handed to `run(ctx, nil)`.
+   - Request (`application/json`):
+     `{ "name": String, "dir": Option<String>, "media": Option<String>, "options": Vec<String> }`
+     (`options` defaults to `[]`).
+   - Target rules:
+     - `dir: null, media: null` + generic action -> runs once targetless
+       (`ctx.lock = nil, ctx.media = nil`).
+     - `dir: null, media: null` + scoped action -> `400 Bad Request` (`dir` is
+       required for scoped actions).
+     - `dir: null, media: Some(_)` -> `400 Bad Request` (`media` without `dir`).
+     - `dir: Some(d), media: Some(m)` -> resolves `(canon(d), m)` literally (no
+       guard).
+     - `dir: Some(d), media: None` -> Option B resolution on `canon(d)`.
+   - Responses:
+     - `200 OK`: `{ "status": "ok", "media": Option<String>, "dir": Option<String> }`
+     - `400 Bad Request`: `{ "error": String }` (missing/partial target, invalid `media`)
+     - `404 Not Found`: `{ "error": String }` (unknown action, or `(dir, media)` not in index)
+     - `500 Internal Server Error`: `{ "error": String }` (Lua runtime error)
 
 2. **`POST /api/x/resolve`** (CLI target resolution — CLI executes locally):
-   - Takes `{ "name": String, "dirs": Vec<String>, "media": Vec<String>, "explicit_target": bool }`
-     (or per-run query) and validates the action guard + resolves locks from the
-     daemon's live entity index without running Lua.
-   - `datamile x` requests the resolved `(lock, media)` run list from
-     `/api/x/resolve` when the daemon holds `InstanceLock` (or builds it locally
-     via `scan_library` when offline), then calls `backend.execute_action`
-     **inside the CLI process** so `isatty = std::io::stdin().is_terminal()`,
-     `/dev/tty` prompts (`embed`, `rename`), and `stdio = "inherit"` work
-     identically whether the daemon is running or not.
-   - `datamile x intermediary` prints the resolved `ctx` array (the exact
-     payloads each run receives).
+   - Request (`application/json`):
+     `{ "name": String, "dirs": Vec<String>, "media": Vec<String> }`
+     (empty `dirs` + empty `media` on a generic action = targetless; empty `dirs`
+     with scoped action or non-empty `media` defaults `dirs` to `["."]`).
+   - Response (`200 OK`):
+     `{ "runs": [{ "media": Option<String>, "dir": Option<String>, "lock": Value /* null when targetless */, "error": Option<String> }] }`
+     (or `400` / `404` `{ "error": String }` for unknown action or unregistered
+     `media` before dir resolution).
+   - `datamile x` requests `/api/x/resolve` when the daemon holds `InstanceLock`
+     (or resolves locally via `init.lua` + `state.json` when offline, without
+     `discover_roots` or `scan_library`), then runs `execute_action` **in the
+     CLI process** so `isatty`, `/dev/tty` prompts, and `stdio = "inherit"` work
+     identically online and offline.
+   - `datamile x intermediary` prints the resolved `ctx` array as JSON.
 
-These replace `POST /api/actions/{name}` and `POST /api/select`. Both routes
-share the same resolver and guard logic:
-
-- A dir and media pair the index does not hold is an error naming
-  `datamile update`.
-- `ServerConfig.actions: ActionSet` in `datamile-server/src/state.rs`. The WS
-  `INIT` / `LOGIC_UPDATE` serialize it as-is, with `BTreeMap` ordering, so the
-  `HashMap`-to-`BTreeMap` conversion in `websocket.rs` is deleted.
-- `run(ctx, media)` crosses these interfaces: `MediaBackend::execute_action`
-  and its media implementation gain `media: Option<&str>`,
-  `DomainLuaEngine::execute_action` passes it as the second `run_fn.call`
-  argument, both Rust callers (`api/x.rs` and `main.rs`) build
-  `ctx = { lock, options, isatty }` instead of `{ items, options, isatty }`,
-  and the server test mock follows.
+**CORS & origin policy (`core/datamile-server/src/lib.rs`, `datamile-lua-domain/src/config.rs`)**:
+- Add `allowed_origins: Vec<String>` to `ServerConfig` (`d.config({ server = { allowed_origins = { ... } } })`), accepting hostnames and `ip/bit_mask` CIDR notation.
+- Built-in defaults always allow loopback (`localhost`, `127.0.0.1`, `[::1]`)
+  and `192.168.0.0/16`, **ignoring ports** (so Vite-proxied LAN devices and
+  same-LAN clients continue to work). User entries in `server.allowed_origins`
+  **extend** these defaults (e.g. `"10.0.0.0/8"`, `"box.local"`).
+- `CorsLayer` rejects origins outside the allowed set, and `POST /api/x`
+  requires `application/json`, preventing arbitrary public websites from making
+  drive-by requests to `d.system`.
 
 ### 7. No `config` field
 
-`d.action` stores `config = t.config or existing.config or {}` and nothing
-reads it. `ActionDef` carries `label` and `description` only, so the field is
-dropped in the same change. A declaration that still passes `config` is
-ignored, like any other key `d.action` does not read.
-
-## Structuring away the `generic` collision
-
-The collision only exists when media types are direct siblings of the
-generic bucket:
-
-```json
-"actions": { "generic": { ... }, "album": { ... } }
-```
-
-A media root named `generic` is legal (`[a-z0-9_-]`), so the two would
-share a key. Two structural fixes:
-
-1. **Two namespaces**: `actions.generic` for generic
-   actions, `actions.media[type]` for scoped ones. A media root named
-   `generic` is `actions.media.generic`; the generic bucket is
-   `actions.generic`. Different levels, no overlap, no reserved name.
-   Rust `ActionSet { generic, media }` serializes to exactly this.
-
-2. **Array of groups**:
-   ```json
-   "actions": [
-     { "media": null, "actions": { ... } },
-     { "media": "album", "actions": { ... } }
-   ]
-   ```
-   Collision-proof by construction, no reserved keys, but lookup scans
-   the array and a future scope shape needs a schema.
-
-Rejected: flat `actions[type]` with `generic` reserved. That is a rule
-enforced by validation, not a structure.
-
-## What per-type separation buys
-
-The action set is per media type for **presentation, validation and the
-execution gate**, not for dispatch:
-
-- The client offers only the actions declared for the entity it renders.
-  A movie must not show `open_terminal` when no movie action declares it.
-- A scoped action invoked for a type it was not declared for is an error,
-  not a silent no-op.
-- `label` / `description` can differ per type.
-
-The split does not reach dispatch: the lock's single top-level key is the
-media type, so a run could read it from `ctx.lock`. The cross product of
-`--dir` and `--media` keeps every run homogeneous anyway, so `media` is
-definite for a scoped action.
-
-Dropped alternative: no second `run` argument, the run reads the lock's key.
-It saves one parameter. `run(ctx, media)` stays because `media` is the key
-into the lock (`ctx.lock[media]`), and because a scoped action receives the
-declared media the gate already checked.
-
-A generic action receives `media = nil` and takes the type from the lock's
-only key (if targeted), or receives `ctx.lock = nil` when targetless.
-
-## Multi-lock dirs
-
-A dir holds one entity per media type that selects it, so two locks in one dir
-are two entities. That is recorded in `specs/multi-locks/spec.md`, which owns
-discovery, target resolution, staleness and the lock lifecycle.
+`d.action` previously stored `config = t.config or existing.config or {}` and
+nothing read it. `ActionDef` carries `label` and `description` only, and the
+unused `config` field is dropped. Passing `config` in a declaration is ignored.
 
 ## Invocation
 
-`x` is the subcommand that runs one action by name:
+`datamile x <name> [--dir <entity-dir>...] [--media <media_type>...] [-- <options>...]`
 
-```console
-$ datamile x open_terminal --dir /media/abbey-road --media album
-```
+- `--type` becomes `--media`, `--directory` becomes `--dir`, and `--query`,
+  `--playing`, `--id`, `--recursive`, and `--library` are dropped. Options come
+  exclusively from after `--`.
+- Target resolution, Option B inference when `--media` is omitted,
+  canonicalization, offline `state.json` parity, cross-product execution, and
+  exit code are defined in `specs/multi-locks/spec.md` (*Target resolution*).
+- `--media` is purely a selector of `<dir>/<media>.lock.json`—never an execution
+  guard. `ctx.media` receives the resolved media type literally (`nil` only
+  when targetless).
 
-It exists today with a wider set of target flags. This document narrows it to
-`--dir` and `--media`: `--type` becomes `--media`, `--directory` becomes
-`--dir`, the other target flags are dropped, and options come from after
-`--`. Target selection, the cross product and the exit code are defined in
-`specs/multi-locks/spec.md`, *Target resolution*. This document adds one rule:
-the action's declared media is a guard.
+## Alternatives Considered
 
-- A pair whose media type the action does not declare is an error for that
-  pair, and the remaining pairs still run.
-- A generic action (`media = nil`) accepts any media type the dir resolves to
-  and receives `media = nil`. When invoked with neither `--dir` nor `--media`,
-  it runs once with `ctx.lock = nil` and `media = nil`.
-- The targeted run receives the entity's lock as `ctx.lock`.
+- **Guard execution on `action.media`**: Refusing `--dir X --media Y` when an
+  action didn't declare `Y` broke generic actions on typed drawers and prevented
+  running existing tools across newly added lock shapes. Using `action.media`
+  for validation, UI menus, and Option B default filtering—while treating
+  explicit `--media` as a literal selector—keeps defaults safe without blocking
+  explicit commands.
+- **`ctx = { entity, media }` + `run(ctx)` vs `ctx = { lock }` + `run(ctx, media)`**:
+  Dropping the second `run` argument removes four layers of trait churn, while
+  keeping `ctx.lock` (literal lock JSON) preserves 1-to-1 WYSIWYG parity with
+  lock files on disk and `/api/media/{type}/{id}`. Adding `ctx.media` avoids
+  `next(ctx.lock)` boilerplate in multi-media and generic actions.
+- **Single daemon-only `/api/x` with daemon PTY forwarding vs `/api/x` + `/api/x/resolve`**:
+  Interactive tools (`embed`, `rename`, `lyrics`, `theme`) open `/dev/tty` and
+  rely on `stdio = "inherit"`. Keeping resolution on the daemon (`/api/x/resolve`)
+  and execution in the CLI process preserves native terminal behaviour without
+  a PTY proxy.
+- **Flat `actions` map with client filtering vs nested `ActionSet`**:
+  `ActionSet { generic, media }` allows per-media `label(media)` and
+  `description(media)` without reserving `"generic"` as a forbidden media name.
+- **Per-media action declarations merging by name**: Merging `d.action`
+  across files hid overwrites silently; requiring one declaration per canonical
+  name keeps each action's full media scope in one place.
 
-A dir holding `{album,cd,vinyl}.lock.json`:
+## Risks & Limits
 
-```console
-$ datamile x open_terminal --dir /media/abbey-road --media album
-$ datamile x open_terminal --dir /media/abbey-road --media cd
-error: action 'open_terminal' does not declare 'cd'
-```
+- **Drive-by browser `POST /api/x` to `d.system`**: Closed by restricting
+  `CorsLayer` to loopback + `192.168.0.0/16` + explicit `server.allowed_origins`
+  and requiring `application/json` (forcing CORS preflight). Note: any trusted
+  device within `192.168.0.0/16` (or `allowed_origins`) can invoke configured
+  actions.
+- **Daemon-spawned generic actions (`isatty = false`)**: Targetless actions
+  invoked via HTTP (`open_config_in_terminal`) run in the daemon's environment
+  and cwd; actions assuming a graphical display or terminal launcher require
+  those environment variables on the daemon service unit.
+- **Breaking existing action configs**: Any existing `actions.lua` reading
+  `ctx.items` or string-based `ctx.options` must migrate before upgrading.
 
 ## Known consequences
 
-- An action runs once per run, which is one `(dir, media)` pair (or once with
-  `ctx.lock = nil` for a targetless generic action). An action that used to
-  receive a list of entities receives one entity per run and is invoked again
-  for the next one.
-- The old selectors leave `x`. A caller that used `--query`, `--playing`,
-  `--id`, `--recursive` or `--library` passes the entity dir with `--dir` and
-  the media type with `--media` instead.
-- `POST /api/actions/{name}` and `POST /api/select` are replaced by
-  `POST /api/x` (daemon execution for HTTP clients) and `POST /api/x/resolve`
-  (index lookup for local CLI execution).
-- Existing user configs (such as `~/.config/datamile/actions.lua`) must be
-  updated for `ctx.lock[media]` and `ctx.options` as a string array.
+- An action runs once per `(dir, media)` pair (or once with `ctx.lock = nil,
+  ctx.media = nil` when targetless generic).
+- The old selectors leave `x`; callers pass `--dir` and `--media` instead.
+- `POST /api/actions/{name}` and `POST /api/select` are retired in favour of
+  `POST /api/x` and `POST /api/x/resolve`.
+- Existing user configs (e.g. `~/.config/datamile/actions.lua`) must migrate
+  from `ctx.items` / string `ctx.options` to `ctx.lock[ctx.media]` / string-array
+  `ctx.options`:
+  ```lua
+  -- before:
+  local is_force = ctx.options:find("%-f") or ctx.options:find("%-%-force")
+  for _, entry in ipairs(ctx.items) do ... entry.path ... end
+
+  -- after:
+  local is_force = d.list.contains(ctx.options, "-f") or d.list.contains(ctx.options, "--force")
+  local path = ctx.lock[ctx.media].location.path
+  ```
 
 ## Non-goals
 
-- Changing the logic manifest (`filters`, `groupers`, `orders`, logic
-  libraries, `shelves`, `cabinets`) to the per-media-type shape that `actions`
-  uses.
-- Making the web app render entities of any media type beyond passing the
-  rendered entity's type.
-
-## Reversals
-
-Three decisions were reversed during review.
-
-- A second `d.action` for one name is an error, not a shadow. Shadowing lost
-  the earlier media silently, and the call site could not see the loss.
-- `label` / `description` are a string or a function of `media`, not a table.
-  A function covers per-media interpolation without a new declaration form.
-- `--media` is never inferred from the dir. Inferring it needs a multi-branch
-  resolution rule, and one explicit flag needs none.
+- Changing the logic manifest (`filters`, `groupers`, `orders`, `libraries`,
+  `shelves`, `cabinets`) to the `ActionSet` shape.
+- Making the web app render entities of arbitrary non-album media types beyond
+  passing the rendered entity's media type and `location.path`.
 
 ## Implementation
 
 ### Files
 
-- `core/datamile-lua-domain/src/config.lua`: `d.action` stores without
-  merging, rejects a duplicate name, drops `config`.
-- `core/datamile-lua-domain/src/core.lua`: `__DATAMILE_GET_ACTIONS` returns
-  the nested set.
-- `core/datamile-lua-domain/src/config.rs`: `ActionDef` and `ActionSet`.
-- `core/datamile-lua-domain/src/engine.rs`: `ctx` becomes
-  `{ lock, options, isatty }`, and `run` receives `media: Option<&str>`.
-- `core/datamile-media/src/schema.rs`: `validate_media_schema` also checks
-  action media names and reuses `require_media`.
-- `core/datamile-media/src/ingest.rs`: include `location` in entity `dict`.
-- `core/datamile-media/src/state.rs`: `MediaState.actions` is deleted.
-- `core/datamile-server/src/state.rs`: `ServerConfig.actions: ActionSet`.
-- `core/datamile-server/src/api/x.rs`: new, `/api/x` and `/api/x/resolve`.
-- `core/datamile-server/src/api/actions.rs` and `select.rs`: deleted.
-- `core/datamile-server/src/api/websocket.rs` and `system.rs`: send the set
-  as-is, without the `HashMap` to `BTreeMap` conversion.
-- `core/datamile/src/main.rs`: `XArgs` narrowed, `x` resolves via
-  `/api/x/resolve` (or local scan) and runs locally; `intermediary` prints the
-  resolved `ctx` array.
-- `interfaces/web-app/src/api.ts`, `types.ts`,
-  `library/collection.svelte.ts`,
+- `core/datamile-lua-domain/src/config.lua`: normalize `name` (`-` -> `_`),
+  store without merging, reject duplicate canonical names, drop `config`.
+- `core/datamile-lua-domain/src/core.lua`: `__DATAMILE_GET_ACTIONS` validates
+  shape, skips label/description callbacks for unregistered media roots, returns
+  `ActionSet`.
+- `core/datamile-lua-domain/src/config.rs`: `ActionDef`, `ActionSet`, and
+  `ServerConfig.allowed_origins` (`Vec<String>`).
+- `core/datamile-lua-domain/src/engine.rs`: `EvaluatedDomainData.actions` and
+  `ResolvedDomainConfig.actions` become `ActionSet`; `execute_action` calls
+  `run(ctx)` with `{ lock, media, options, isatty }`.
+- `core/datamile-media/src/schema.rs`: `validate_media_schema` takes
+  `(&MediaManifest, &LogicManifest, &ActionSet)` and checks action media via
+  `require_media` (updating callers in `media/backend.rs` and 7 `media/tests.rs`
+  sites).
+- `core/datamile-media/src/ingest.rs`: include `"location": entity.get("location")`
+  in `dict` so `location.path` is available synchronously in `collection.dict`.
+- `core/datamile-media/src/state.rs`: remove unused `MediaState.actions`.
+- `core/datamile-media/src/backend.rs` and `watcher.rs`: update `ServerConfig`
+  construction, remove `param_targets` / `playing_target` / `item_for` /
+  `resolve_action_targets`, send `ActionSet` in `LOGIC_UPDATE`.
+- `core/datamile-server/src/state.rs`, `backend.rs`, and `lib.rs`: `ActionSet` on
+  `ServerConfig`, remove `ActionTargetQuery` and `resolve_action_targets`,
+  re-export `ActionDef`/`ActionSet`, enforce `server.allowed_origins` CIDR/host
+  CORS policy.
+- `core/datamile-server/src/api/mod.rs`, `x.rs`, `websocket.rs`, `system.rs`:
+  add `api/x.rs` (`/api/x` and `/api/x/resolve`), wire routes in `api/mod.rs`,
+  delete `api/actions.rs` and `api/select.rs`, serialize `ActionSet` directly.
+- `core/datamile/src/main.rs` and tests: narrow `XArgs` (`--dir`, `--media`,
+  trailing `--` options), share target resolver via `/api/x/resolve` or offline
+  `state.json`, execute locally; `intermediary` prints resolved `ctx` array.
+- `interfaces/web-app/src/api.ts`, `types.ts`, `library/collection.svelte.ts`,
   `modules/HomeView/ModalDrawer/ModalDrawer.svelte`,
-  `modules/NavigationBar.svelte`, `App.svelte`.
-- `docs/lua-api.md` sections 9, 10.1 and 11, and `README.md`.
+  `modules/NavigationBar.svelte`, `App.svelte`: `ActionSet` types, `location` on
+  `AlbumDictEntry`, `action(name, mediaType)` lookup, `executeAction(name, media, dir, options?)`
+  across all 8 `hasAction` call sites (`App.svelte` ×3, `ModalDrawer.svelte` ×4,
+  `NavigationBar.svelte` ×1) and 5 label reads (`ModalDrawer.svelte` ×4,
+  `NavigationBar.svelte` ×1).
+- `docs/vocabulary.md`, `docs/lua-api.md` (§9, §10.1, §10.2, §11), and `README.md`.
 
 ### Phases
 
-Each phase builds, and `devenv shell -- lint` passes at the end of it.
+Each phase compiles and passes `devenv shell -- lint` and `devenv shell -- tests`
+(with phases 1–4 landing together before release so server and web app stay in
+sync on the wire):
 
-1. Shape: `ActionDef` and `ActionSet`, the getter, `d.action`, and `ctx`. The
-   old wire is kept by converting at the edge, so the daemon and the client
-   still talk.
-2. Validation: actions join `validate_media_schema`.
-3. Route: `POST /api/x` and `POST /api/x/resolve` replace `actions` and
-   `select`, and `x` uses `/api/x/resolve` with local execution.
-4. Client: the nested set, `action(name, type)`, `location` in `dict`, and the
-   typed `executeAction`.
-5. Docs.
-
-Nothing ships before phase 4 lands. The wire and the client must change in the
-same release, or the client renders no action at all.
+1. **Lua & schema**: `ActionDef` / `ActionSet`, `d.action` normalization &
+   collision check, `__DATAMILE_GET_ACTIONS`, `validate_media_schema` 3rd
+   parameter, `ServerConfig.allowed_origins`.
+2. **Routes & CORS**: `POST /api/x`, `POST /api/x/resolve`, shared target
+   resolver, delete `actions.rs` / `select.rs` / `ActionTargetQuery`, CIDR CORS
+   layer, `location` in `ingest.rs` `dict`.
+3. **CLI**: narrowed `XArgs`, `/api/x/resolve` + offline `state.json` execution,
+   `intermediary` JSON output, CLI integration tests.
+4. **Web app & docs**: `ActionSet` store, `action(name, mediaType)`, updated
+   call sites, `bun test` unit tests for lookup logic, `docs/` + `README.md`.
 
 ### Tests
 
-- `datamile-lua-domain`: duplicate name errors; `media = ""` and `media = {}`
-  error; a label function returning nil errors; the function is called once
-  per declared media with that media; a generic action produces one entry in
-  `generic`; `ctx.lock = nil` for a run with no target.
-- `datamile-media`: an unknown media type in a declaration is rejected by
-  `validate_media_schema` with the shared message; a generic action accepts
-  any resolved media type.
-- `datamile-server`: `/api/x` resolves `dir` and `media`, allows targetless
-  generic invocation (`dir = null, media = null`), rejects partial targets with
-  400, gates a scoped pair, returns the CLI error text, rejects an unknown
-  entity with a message naming `datamile update`, `/api/x/resolve` returns locks
-  for CLI runs, and `INIT` and `LOGIC_UPDATE` both carry the nested set.
-- `interfaces/web-app`: the lookup falls back to `generic`; `action(name, type)`
-  hides an action declared for another media type.
-- `datamile`: one failing pair still runs the rest and the command exits
-  non-zero; generic action with no `--dir` or `--media` runs locally with
-  `ctx.lock = nil` and `isatty` preserved.
-
+- `datamile-lua-domain`: duplicate canonical name (`foo-bar` vs `foo_bar`)
+  errors; `media = ""` and `media = {}` error; repeated media dedups; label
+  function returning `nil` or `""` errors; label/description receive each
+  declared media string; generic action lands in `generic`; legacy `config = {}`
+  is ignored without error.
+- `datamile-media`: unknown media in `d.action` (even with `label = function(...)`)
+  fails cleanly in `validate_media_schema` with `"declares unknown media type"`;
+  `ingest.rs` `dict` includes `location`.
+- `datamile-server`: `/api/x` and `/api/x/resolve` return exact schemas and
+  status codes (`200`, `400` on missing/partial target or invalid `--media`, `404`
+  on unknown action or unindexed entity naming `datamile update`); targetless
+  generic works; explicit `media` runs regardless of action's declared `media`;
+  `INIT` / `LOGIC_UPDATE` carry `ActionSet`; `CorsLayer` allows `localhost`,
+  `192.168.0.0/16` (any port), and configured `allowed_origins`, while rejecting
+  public origins.
+- `datamile`: CLI cross product order, Option B omission filtering, offline
+  `state.json` parity, non-zero exit when any run fails while remaining runs
+  execute, targetless generic runs with `ctx.lock = nil, ctx.media = nil,
+  isatty = true`.
+- `interfaces/web-app` (`bun test` + `bun run lint`): `action(name, type)`
+  prefers `media[type]`, falls back to `generic`, and hides actions declared
+  for other media types.
 

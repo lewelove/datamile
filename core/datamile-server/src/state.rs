@@ -7,6 +7,7 @@ use datamile_lua_domain::{ActionMap, InterfaceDef};
 use datamile_mpd::{MpdConfig, MpdEngine};
 use tokio::sync::{RwLock, broadcast, watch};
 
+use crate::AllowList;
 use crate::backend::MediaBackend;
 
 pub enum ImageClaim {
@@ -90,6 +91,9 @@ pub struct ServerState {
     pub ui_state: RwLock<serde_json::Value>,
     pub tx: broadcast::Sender<String>,
     pub config: RwLock<ServerConfig>,
+    /// The `Host`/`Origin` allowlist the guard and the CORS policy read. A
+    /// reload replaces it in place, so a new origin works without a restart.
+    pub allow: std::sync::RwLock<AllowList>,
     pub mpd_engine: MpdEngine,
     pub image_tasks: Arc<ImageTaskRegistry>,
     /// Last file reported by MPD, used to resolve `playing` action targets.
@@ -98,4 +102,16 @@ pub struct ServerState {
     /// so a CLI refuses to delegate to a daemon with a stale config.
     pub reload_error: RwLock<Option<String>>,
     pub backend: Arc<dyn MediaBackend>,
+}
+
+impl ServerState {
+    /// Rebuilds the allowlist from `server.host` and `server.allowed_origins`.
+    /// A config reload calls this after it swaps the config.
+    pub fn reload_allow(&self, host: &str, allowed_origins: &[String]) {
+        *self
+            .allow
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            AllowList::from_config(host, allowed_origins);
+    }
 }

@@ -299,19 +299,23 @@ async fn test_state_with_backend(
 ) -> Arc<ServerState> {
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let (broadcast_tx, _) = tokio::sync::broadcast::channel(1);
+    let config = MockBackend::new()
+        .reload_config_and_logic(&mut LogicEngine::new(
+            PathBuf::new(),
+            LogicManifest::default(),
+        ))
+        .expect("config");
+    let allow = std::sync::RwLock::new(crate::AllowList::from_config(
+        &config.host,
+        &config.allowed_origins,
+    ));
 
     Arc::new(ServerState {
         logic: Arc::new(tokio::sync::RwLock::new(logic)),
         ui_state: tokio::sync::RwLock::new(json!({})),
         tx: broadcast_tx,
-        config: tokio::sync::RwLock::new(
-            MockBackend::new()
-                .reload_config_and_logic(&mut LogicEngine::new(
-                    PathBuf::new(),
-                    LogicManifest::default(),
-                ))
-                .expect("config"),
-        ),
+        config: tokio::sync::RwLock::new(config),
+        allow,
         mpd_engine: MpdEngine::new(tx),
         image_tasks: Arc::new(ImageTaskRegistry::default()),
         now_playing: tokio::sync::RwLock::new("Artist/Album/01.flac".to_string()),
@@ -616,7 +620,7 @@ async fn x_runs_a_generic_action_targetless() {
         Arc::clone(&backend),
     )
     .await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     for execute in [true, false] {
         let response = app
@@ -658,7 +662,7 @@ async fn x_resolves_a_multi_media_cross_product() {
         (BOOK, "a", dir.path()),
     ]))
     .await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     let response = app
         .oneshot(json_request(
@@ -695,7 +699,7 @@ async fn x_resolves_a_multi_dir_cross_product() {
         (ALBUM, "b", second.path()),
     ]))
     .await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     let response = app
         .oneshot(json_request(
@@ -727,7 +731,7 @@ async fn x_reports_a_per_run_action_error() {
     let dir = tempfile::tempdir().expect("temp");
     write_lock(dir.path(), ALBUM, "a");
     let state = test_state(self::engine_at(&[(ALBUM, "a", dir.path())])).await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     let response = app
         .oneshot(json_request(
@@ -751,7 +755,7 @@ async fn x_reports_a_per_run_action_error() {
 #[tokio::test]
 async fn x_rejects_bad_requests() {
     let state = test_state(engine_with(&[])).await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     let cases = [
         (
@@ -787,7 +791,7 @@ async fn x_rejects_bad_requests() {
 #[tokio::test]
 async fn x_rejects_a_browser_delegation() {
     let state = test_state(engine_with(&[])).await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     for header in [
         ("origin", "http://localhost:5173"),
@@ -815,7 +819,7 @@ async fn x_rejects_a_browser_delegation() {
 #[tokio::test]
 async fn x_rejects_a_non_json_body() {
     let state = test_state(engine_with(&[])).await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     let text = Request::post("/api/x")
         .header("host", "127.0.0.1:8000")
@@ -843,7 +847,7 @@ async fn x_rejects_a_non_json_body() {
 async fn x_reports_unresolved_targets_in_the_run() {
     let dir = tempfile::tempdir().expect("temp");
     let state = test_state(engine_with(&[])).await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     let response = app
         .clone()
@@ -934,7 +938,7 @@ fn client_authority_dials_a_reachable_address() {
 #[tokio::test]
 async fn mutating_routes_require_an_allowed_host() {
     let state = test_state(engine_with(&[])).await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     for path in ["/api/reset", "/api/x", "/api/playback/clear"] {
         let evil = Request::post(path)
@@ -971,11 +975,11 @@ async fn mutating_routes_require_an_allowed_host() {
 #[tokio::test]
 async fn mutating_routes_allow_configured_origins() {
     let state = test_state(engine_with(&[])).await;
-    {
-        let mut config = state.config.write().await;
-        config.allowed_origins = vec!["box.lan".to_string(), "10.0.0.0/8".to_string()];
-    }
-    let app = crate::secured_router(state).await;
+    state.reload_allow(
+        "127.0.0.1",
+        &["box.lan".to_string(), "10.0.0.0/8".to_string()],
+    );
+    let app = crate::secured_router(state);
 
     for host in ["box.lan:8000", "10.1.2.3:8000"] {
         let request = Request::post("/api/reset")
@@ -1006,11 +1010,11 @@ async fn mutating_routes_allow_configured_origins() {
 #[tokio::test]
 async fn mutating_routes_allow_a_bare_address_entry() {
     let state = test_state(engine_with(&[])).await;
-    {
-        let mut config = state.config.write().await;
-        config.allowed_origins = vec!["10.0.0.5".to_string(), "[fd00::1]".to_string()];
-    }
-    let app = crate::secured_router(state).await;
+    state.reload_allow(
+        "127.0.0.1",
+        &["10.0.0.5".to_string(), "[fd00::1]".to_string()],
+    );
+    let app = crate::secured_router(state);
 
     for host in ["10.0.0.5:8000", "[fd00::1]:8000"] {
         let request = Request::post("/api/reset")
@@ -1027,11 +1031,43 @@ async fn mutating_routes_allow_a_bare_address_entry() {
     assert_eq!(x_status(&app, other).await, StatusCode::FORBIDDEN);
 }
 
+/// A config reload refreshes the allowlist that both the Host guard and the
+/// CORS policy read, so a new origin works without a daemon restart.
+#[tokio::test]
+async fn reloading_the_allowlist_reaches_the_guard_and_the_cors_policy() {
+    let state = test_state(engine_with(&[])).await;
+    let app = crate::secured_router(Arc::clone(&state));
+
+    let before = Request::post("/api/reset")
+        .header("host", "box.lan:8000")
+        .header("origin", "https://box.lan:5173")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(x_status(&app, before).await, StatusCode::FORBIDDEN);
+
+    state.reload_allow("127.0.0.1", &["box.lan".to_string()]);
+
+    let after = Request::post("/api/reset")
+        .header("host", "box.lan:8000")
+        .header("origin", "https://box.lan:5173")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(after).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .expect("cors header"),
+        "https://box.lan:5173"
+    );
+}
+
 /// `Origin: null` and public origins are rejected on mutating routes.
 #[tokio::test]
 async fn mutating_routes_require_an_allowed_origin() {
     let state = test_state(engine_with(&[])).await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     for origin in ["null", "https://example.com"] {
         let request = Request::post("/api/reset")
@@ -1080,7 +1116,7 @@ async fn init_and_logic_update_broadcast_the_action_map() {
         json!("Open Album")
     );
 
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
     let response = app.oneshot(empty_post("/api/reset")).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -1096,7 +1132,7 @@ async fn init_and_logic_update_broadcast_the_action_map() {
 #[tokio::test]
 async fn router_rejects_an_empty_image_cache_request() {
     let state = test_state(engine_with(&[])).await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     let response = app
         .oneshot(json_request(
@@ -1290,7 +1326,7 @@ async fn router_reports_identity() {
 async fn update_stream_reports_a_start_failure_as_events() {
     let state =
         test_state_with_backend(engine_with(&[]), Arc::new(MockBackend::failing())).await;
-    let app = crate::secured_router(state).await;
+    let app = crate::secured_router(state);
 
     let response = app
         .oneshot(json_request("/api/update", &json!({"force": false})))

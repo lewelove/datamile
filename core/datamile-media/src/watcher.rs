@@ -214,6 +214,7 @@ async fn reload_config(server: &Arc<ServerState>) {
             };
             let new_host = new_config.host.clone();
             let new_port = new_config.port;
+            server.reload_allow(&new_host, &new_config.allowed_origins);
             *server.config.write().await = new_config;
             *server.reload_error.write().await = None;
 

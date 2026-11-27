@@ -923,6 +923,7 @@ async fn make_server() -> Server {
             allowed_origins: Vec::new(),
             port: datamile_server::DEFAULT_PORT,
         }),
+        allow: std::sync::RwLock::new(datamile_server::AllowList::default()),
         mpd_engine: MpdEngine::new(mpd_tx),
         image_tasks: Arc::new(ImageTaskRegistry::default()),
         now_playing: tokio::sync::RwLock::new(String::new()),

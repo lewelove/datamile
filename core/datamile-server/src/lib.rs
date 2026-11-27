@@ -133,12 +133,17 @@ pub async fn run(backend: Arc<dyn MediaBackend>) -> Result<()> {
         .host
         .parse()
         .with_context(|| format!("server.host '{}' is not an IP address", config.host))?;
+    let allow = std::sync::RwLock::new(AllowList::from_config(
+        &config.host,
+        &config.allowed_origins,
+    ));
 
     let state = Arc::new(ServerState {
         logic,
         ui_state: RwLock::new(ui_state),
         tx: tx.clone(),
         config: RwLock::new(config),
+        allow,
         mpd_engine,
         image_tasks: Arc::new(ImageTaskRegistry::default()),
         now_playing: RwLock::new(String::new()),
@@ -157,7 +162,7 @@ pub async fn run(backend: Arc<dyn MediaBackend>) -> Result<()> {
         log::error!("Startup auto-update error: {e}");
     }
 
-    let app = secured_router(Arc::clone(&state)).await;
+    let app = secured_router(Arc::clone(&state));
 
     let addr = SocketAddr::new(host, port);
     log::info!("Datamile Server listening on http://{addr}");
@@ -167,22 +172,24 @@ pub async fn run(backend: Arc<dyn MediaBackend>) -> Result<()> {
 }
 
 /// The API router with the `Host`/`Origin` guard and the matching CORS policy.
-/// One allowlist is built at startup and shared by both, so they never disagree.
-pub async fn secured_router(state: Arc<ServerState>) -> Router {
-    let allow = {
-        let config = state.config.read().await;
-        AllowList::from_config(&config.host, &config.allowed_origins)
-    };
+/// Both read the same allowlist, which a config reload refreshes in place.
+pub fn secured_router(state: Arc<ServerState>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate({
-            let allow = allow.clone();
-            move |origin, _parts| allow.origin_allowed(origin)
+            let state = Arc::clone(&state);
+            move |origin, _parts| {
+                state
+                    .allow
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .origin_allowed(origin)
+            }
         }))
         .allow_methods(Any)
         .allow_headers([header::CONTENT_TYPE]);
 
-    api::router(state)
-        .layer(axum::middleware::from_fn_with_state(allow, guard))
+    api::router(Arc::clone(&state))
+        .layer(axum::middleware::from_fn_with_state(state, guard))
         .layer(cors)
 }
 
@@ -201,15 +208,16 @@ enum AllowEntry {
     Cidr(IpAddr, u8),
 }
 
-/// Everything a `Host` or `Origin` header may name.
-#[derive(Clone)]
-struct AllowList {
+/// Everything a `Host` or `Origin` header may name. `ServerState` holds one
+/// behind a lock so a config reload can replace it in place.
+#[derive(Clone, Default)]
+pub struct AllowList {
     bound: Option<IpAddr>,
     extra: Vec<AllowEntry>,
 }
 
 impl AllowList {
-    fn from_config(host: &str, allowed_origins: &[String]) -> Self {
+    pub(crate) fn from_config(host: &str, allowed_origins: &[String]) -> Self {
         Self {
             bound: host.parse().ok(),
             extra: allowed_origins
@@ -353,10 +361,24 @@ fn strip_port(value: &str) -> &str {
     }
 }
 
-async fn guard(State(allow): State<AllowList>, request: Request, next: Next) -> Response {
-    if is_mutating_api(request.method(), request.uri().path())
-        && let Err(error) = check_request(&allow, request.headers())
-    {
+async fn guard(
+    State(state): State<Arc<ServerState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let denied = {
+        let allow = state
+            .allow
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if is_mutating_api(request.method(), request.uri().path()) {
+            check_request(&allow, request.headers()).err()
+        } else {
+            None
+        }
+    };
+
+    if let Some(error) = denied {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": error }))).into_response();
     }
 

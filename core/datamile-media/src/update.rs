@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
-use datamile_cache::{hash_files, load_state, root_is_dirty, walk_files};
+use datamile_cache::{EntityKey, hash_files, load_state, root_is_dirty, walk_files};
 use datamile_logic::LogicEngine;
 use datamile_server::{ServerState, UpdateRequest};
 use rayon::prelude::*;
@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::compiler::{CompiledRoot, compile_root};
-use crate::deps::{MediaShared, UpdateScope, index_root, state_entries, unindex_root};
+use crate::deps::{
+    MediaShared, UpdateScope, index_entity, state_entries, unindex_entity,
+};
 use crate::schema::{DiscoveredRoot, Discovery, discover_roots};
 use crate::state::{MediaState, config_hash_path, open_engine, state_path};
 
@@ -220,6 +222,9 @@ impl PassResult {
 pub struct PassOutcome {
     pub result: PassResult,
     pub compiled: Vec<CompiledRoot>,
+    /// Entities whose lock bytes changed or that are new. Only these are
+    /// broadcast, so a re-verified root stays quiet for clients.
+    pub changed: BTreeSet<EntityKey>,
     pub removed: Vec<(String, PathBuf)>,
 }
 
@@ -238,11 +243,23 @@ type PerTypeUpdates = HashMap<
 >;
 
 fn in_scope(root: &DiscoveredRoot, scope: &UpdateScope) -> bool {
+    let covers_type = |media_type: &Option<String>| {
+        media_type
+            .as_ref()
+            .is_none_or(|name| name == &root.media_type)
+    };
+
     match scope {
-        UpdateScope::All => true,
-        UpdateScope::Paths(paths) => paths
+        UpdateScope::All { media_type } => covers_type(media_type),
+        UpdateScope::Paths { paths, media_type } => {
+            covers_type(media_type)
+                && paths
+                    .iter()
+                    .any(|path| root.dir.starts_with(path) || path.starts_with(&root.dir))
+        }
+        UpdateScope::Entities(entities) => entities
             .iter()
-            .any(|path| root.dir.starts_with(path) || path.starts_with(&root.dir)),
+            .any(|key| key.media_type == root.media_type && key.dir == root.dir),
     }
 }
 
@@ -410,7 +427,6 @@ fn plan_work(
     plans: &[MediaRootPlan],
     roots: &[DiscoveredRoot],
     scope: &UpdateScope,
-    media_type: Option<&str>,
     force: ForceMode,
 ) -> Planned {
     let mut planned = Planned {
@@ -441,9 +457,7 @@ fn plan_work(
         }
 
         for root in found {
-            if media_type.is_some_and(|filter| filter != root.media_type)
-                || !in_scope(root, scope)
-            {
+            if !in_scope(root, scope) {
                 continue;
             }
             planned.scoped += 1;
@@ -479,7 +493,14 @@ fn record_state(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     for root in compiled {
-        index_root(&mut index, &root.dir, &root.dependencies);
+        index_entity(
+            &mut index,
+            &EntityKey {
+                media_type: root.media_type.clone(),
+                dir: root.dir.clone(),
+            },
+            &root.dependencies,
+        );
     }
 
     for (media_type, entries) in state_entries(compiled) {
@@ -499,7 +520,13 @@ fn record_state(
 
     let mut by_type: BTreeMap<&str, Vec<&Path>> = BTreeMap::new();
     for (media_type, dir) in removals {
-        unindex_root(&mut index, dir);
+        unindex_entity(
+            &mut index,
+            &EntityKey {
+                media_type: media_type.clone(),
+                dir: dir.clone(),
+            },
+        );
         by_type
             .entry(media_type.as_str())
             .or_default()
@@ -540,7 +567,6 @@ fn record_state(
 pub fn run_pass(
     shared: &Arc<MediaShared>,
     scope: &UpdateScope,
-    media_type: Option<&str>,
     force: ForceMode,
     jobs: Option<usize>,
     sink: &dyn UpdateSink,
@@ -573,7 +599,6 @@ pub fn run_pass(
         &plans,
         &discovery.roots,
         scope,
-        media_type,
         if force_all {
             ForceMode::Force
         } else {
@@ -582,8 +607,9 @@ pub fn run_pass(
     );
 
     // A `--path` that matches no root entity would otherwise report a clean
-    // pass and exit zero having done nothing.
-    if matches!(scope, UpdateScope::Paths(_)) && scoped == 0 && removals.is_empty() {
+    // pass and exit zero having done nothing. An entity key that vanished is a
+    // removal, not a bad request.
+    if matches!(scope, UpdateScope::Paths { .. }) && scoped == 0 && removals.is_empty() {
         bail!("no root entity matches the given path");
     }
 
@@ -598,6 +624,17 @@ pub fn run_pass(
     let (compiled, failures) =
         compile_roots(&state, &dirty, jobs, &active_writes, &known, sink);
     result.failed += failures;
+
+    let changed: BTreeSet<EntityKey> = compiled
+        .iter()
+        .filter(|root| {
+            root.modified || !known.contains(&(root.media_type.clone(), root.dir.clone()))
+        })
+        .map(|root| EntityKey {
+            media_type: root.media_type.clone(),
+            dir: root.dir.clone(),
+        })
+        .collect();
 
     {
         let mut writes = shared
@@ -633,7 +670,7 @@ pub fn run_pass(
 
     // Only a pass that compiled everything may claim the config digest, or the
     // next full pass would trust it and skip the roots this one did not touch.
-    let claims_config = matches!(scope, UpdateScope::All) && media_type.is_none();
+    let claims_config = matches!(scope, UpdateScope::All { media_type: None });
     if claims_config && result.failed == 0 {
         let _ = datamile_fs::write_atomic(&digest_path, &digest);
     }
@@ -650,6 +687,7 @@ pub fn run_pass(
     Ok(PassOutcome {
         result,
         compiled,
+        changed,
         removed: removals,
     })
 }
@@ -704,6 +742,16 @@ fn ingest_outcome(
             continue;
         }
 
+        // The index always takes the fresh data; only a changed lock is worth
+        // telling clients about.
+        let key = EntityKey {
+            media_type: compiled.media_type.clone(),
+            dir: compiled.dir.clone(),
+        };
+        if !outcome.changed.contains(&key) {
+            continue;
+        }
+
         let entry = per_type.entry(compiled.media_type.clone()).or_default();
         if let Some(dict) = logic.entity_dict(&compiled.media_type, &compiled.id) {
             entry.0.insert(compiled.id.clone(), dict.to_owned());
@@ -737,15 +785,10 @@ fn shelves_for(logic: &LogicEngine, media_type: &str) -> HashMap<String, Vec<Str
     clippy::too_many_arguments,
     reason = "the pass mirrors the pending-update fields one to one"
 )]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the media type filter is moved into the blocking pass"
-)]
 async fn run_update_pass(
     state: Arc<ServerState>,
     shared: Arc<MediaShared>,
     scope: UpdateScope,
-    media_type: Option<String>,
     force: ForceMode,
     jobs: Option<usize>,
     event_txs: Vec<tokio::sync::mpsc::Sender<String>>,
@@ -763,14 +806,7 @@ async fn run_update_pass(
 
     let shared_for_pass = Arc::clone(&shared);
     let outcome = tokio::task::spawn_blocking(move || {
-        run_pass(
-            &shared_for_pass,
-            &scope,
-            media_type.as_deref(),
-            force,
-            jobs,
-            &sinks,
-        )
+        run_pass(&shared_for_pass, &scope, force, jobs, &sinks)
     })
     .await??;
 
@@ -816,19 +852,65 @@ async fn run_update_pass(
     Ok(result)
 }
 
+/// The scope a request asks for: explicit entity keys win, then a path, then
+/// everything. Entity dirs are canonicalized so they compare equal to the
+/// entity index keys.
+#[must_use]
+pub fn scope_for_request(request: &UpdateRequest) -> UpdateScope {
+    if !request.entities.is_empty() {
+        let entities = request
+            .entities
+            .iter()
+            .map(|key| EntityKey {
+                media_type: key.media_type.clone(),
+                dir: canonical_or_self(&key.dir),
+            })
+            .collect();
+        return UpdateScope::Entities(entities);
+    }
+
+    request
+        .path
+        .as_deref()
+        .map(datamile_fs::expand_path)
+        .map_or_else(
+            || UpdateScope::All {
+                media_type: request.media_type.clone(),
+            },
+            |path| UpdateScope::Paths {
+                paths: HashSet::from([canonical_or_self(&path)]),
+                media_type: request.media_type.clone(),
+            },
+        )
+}
+
 pub async fn run_server_update(
     state: Arc<ServerState>,
     shared: Arc<MediaShared>,
     request: UpdateRequest,
     event_txs: Vec<tokio::sync::mpsc::Sender<String>>,
 ) -> Result<PassResult> {
-    let scope = request.path.map_or(UpdateScope::All, |path| {
-        let mut set = HashSet::new();
-        let path = datamile_fs::expand_path(&path);
-        set.insert(path.canonicalize().unwrap_or(path));
-        UpdateScope::Paths(set)
-    });
+    run_scope_update(
+        state,
+        shared,
+        scope_for_request(&request),
+        ForceMode::from(request.force),
+        request.jobs,
+        event_txs,
+    )
+    .await
+}
 
+/// Runs one scope through the single serialized pipeline. The watcher submits
+/// here too, so it never compiles, writes state or broadcasts on its own.
+pub async fn run_scope_update(
+    state: Arc<ServerState>,
+    shared: Arc<MediaShared>,
+    mut scope: UpdateScope,
+    mut force: ForceMode,
+    mut jobs: Option<usize>,
+    mut event_txs: Vec<tokio::sync::mpsc::Sender<String>>,
+) -> Result<PassResult> {
     {
         let mut lock = shared
             .update_lock
@@ -837,15 +919,14 @@ pub async fn run_server_update(
         if lock.is_running {
             if let Some(pending) = lock.pending.as_mut() {
                 pending.scope.merge(scope);
-                pending.force |= request.force;
-                pending.jobs = request.jobs.or(pending.jobs);
+                pending.force |= force == ForceMode::Force;
+                pending.jobs = jobs.or(pending.jobs);
                 pending.event_txs.extend(event_txs);
             } else {
                 lock.pending = Some(crate::deps::PendingUpdate {
                     scope,
-                    media_type: request.media_type,
-                    force: request.force,
-                    jobs: request.jobs,
+                    force: force == ForceMode::Force,
+                    jobs,
                     event_txs,
                 });
             }
@@ -854,19 +935,12 @@ pub async fn run_server_update(
         lock.is_running = true;
     }
 
-    let mut scope = scope;
-    let mut media_type = request.media_type;
-    let mut force = ForceMode::from(request.force);
-    let mut jobs = request.jobs;
-    let mut event_txs = event_txs;
-
     let mut last;
     loop {
         let result = run_update_pass(
             Arc::clone(&state),
             Arc::clone(&shared),
             scope.clone(),
-            media_type.clone(),
             force,
             jobs,
             event_txs.clone(),
@@ -893,7 +967,6 @@ pub async fn run_server_update(
             break;
         };
         scope = next.scope;
-        media_type = next.media_type;
         force = ForceMode::from(next.force);
         jobs = next.jobs;
         event_txs = next.event_txs;
@@ -911,13 +984,22 @@ pub fn run_local(
     jobs: Option<usize>,
     sink: &dyn UpdateSink,
 ) -> Result<PassResult> {
-    let scope = path.map_or(UpdateScope::All, |path| {
-        let mut set = HashSet::new();
-        set.insert(path);
-        UpdateScope::Paths(set)
-    });
+    let media_type = media_type.map(str::to_string);
+    let scope = match path {
+        Some(path) => UpdateScope::Paths {
+            paths: HashSet::from([path]),
+            media_type,
+        },
+        None => UpdateScope::All { media_type },
+    };
 
-    run_pass(shared, &scope, media_type, force, jobs, sink).map(|outcome| outcome.result)
+    run_pass(shared, &scope, force, jobs, sink).map(|outcome| outcome.result)
+}
+
+/// A path that no longer exists keeps its raw form, so a vanished target still
+/// compares against the state entry it must remove.
+pub(crate) fn canonical_or_self(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Streams a pass from the daemon, rendering each event through `sink`.

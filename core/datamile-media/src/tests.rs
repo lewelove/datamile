@@ -9,24 +9,32 @@
     reason = "`_fixture` holds a TempDir guard that tests are meant to read through"
 )]
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use datamile_cache::EntityKey;
 use datamile_logic::{LogicEngine, SortOrder};
 use datamile_lua_domain::{DomainLuaEngine, LogicManifest};
 use datamile_mpd::MpdEngine;
-use datamile_server::{ImageTaskRegistry, MediaBackend, ServerConfig, ServerState};
+use datamile_server::{
+    ImageTaskRegistry, MediaBackend, ServerConfig, ServerState, UpdateRequest,
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use crate::backend::MediaEngineBackend;
 use crate::compiler::compile_root;
-use crate::deps::{MediaShared, UpdateScope};
+use crate::deps::{
+    ExternalIndex, MediaShared, UpdateScope, index_entity, unindex_entity,
+};
 use crate::lua_bridge::register_native_helpers;
 use crate::schema::{discover_roots, read_media_manifest, validate_media_schema};
 use crate::state::{COMPILE_ROOT_LUA, MEDIA_LUA, MediaState, state_path};
-use crate::update::{ForceMode, LogSink, PassResult, UpdateEvent, UpdateSink, run_pass};
+use crate::update::{
+    ForceMode, LogSink, PassResult, UpdateEvent, UpdateSink, run_pass, scope_for_request,
+};
+use crate::watcher::resolve_targets;
 
 fn engine_and_data(
     config_path: &Path,
@@ -865,8 +873,7 @@ async fn make_server() -> Server {
     let shared = backend.shared();
     run_pass(
         &shared,
-        &UpdateScope::All,
-        None,
+        &UpdateScope::All { media_type: None },
         ForceMode::Force,
         None,
         &LogSink,
@@ -945,8 +952,7 @@ async fn state_file_is_byte_stable_across_passes() {
 
     run_pass(
         &shared,
-        &UpdateScope::All,
-        None,
+        &UpdateScope::All { media_type: None },
         ForceMode::Preserve,
         None,
         &LogSink,
@@ -1070,6 +1076,45 @@ async fn config_change_reloads_the_logic_manifest() {
     );
 }
 
+/// A watcher edit inside a known root resolves to exactly that one entity key.
+#[tokio::test]
+async fn watcher_resolves_a_track_edit_to_one_entity_key() {
+    let server = make_server().await;
+    let track = server._fixture.lib.join("A/01.flac");
+    write(&track, "changed audio");
+
+    let scope = {
+        let shared = server.backend.shared();
+        let state = shared
+            .state
+            .read()
+            .expect("state")
+            .clone()
+            .expect("media state");
+        let logic = server.state.logic.read().await;
+        let engine = crate::state::open_engine(&state).expect("engine");
+        resolve_targets(
+            &shared,
+            &state,
+            &engine,
+            &logic,
+            std::slice::from_ref(&track),
+        )
+    };
+
+    let dir = server._fixture.lib.join("A");
+    let dir = dir.canonicalize().expect("canonical dir");
+    let expected = EntityKey {
+        media_type: "album".to_string(),
+        dir,
+    };
+
+    assert_eq!(
+        scope,
+        Some(UpdateScope::Entities(BTreeSet::from([expected])))
+    );
+}
+
 #[tokio::test]
 async fn external_dependency_change_recompiles_only_its_root() {
     let server = make_server().await;
@@ -1101,12 +1146,10 @@ impl UpdateSink for Recorder {
 fn pass(
     shared: &Arc<MediaShared>,
     scope: &UpdateScope,
-    media_type: Option<&str>,
     force: ForceMode,
 ) -> (PassResult, Vec<UpdateEvent>) {
     let recorder = Recorder::default();
-    let outcome =
-        run_pass(shared, scope, media_type, force, None, &recorder).expect("pass");
+    let outcome = run_pass(shared, scope, force, None, &recorder).expect("pass");
     (
         outcome.result,
         recorder.events.into_inner().expect("events"),
@@ -1136,7 +1179,11 @@ fn pass_emits_a_started_and_a_finished_event() {
     make_album(&f.lib, "A", &["01.flac"]);
     let shared = shared_for(&f);
 
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     assert!(matches!(events.first(), Some(UpdateEvent::Started { .. })));
     assert!(matches!(events.last(), Some(UpdateEvent::Finished { .. })));
@@ -1161,13 +1208,21 @@ fn external_file_is_clean_on_the_second_pass() {
     make_album(&f.lib, "A", &["01.flac"]);
     let shared = shared_for(&f);
 
-    let (_, first) = pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    let (_, first) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
     assert_eq!(
         event_count(&first, |event| matches!(event, UpdateEvent::Added { .. })),
         1
     );
 
-    let (result, second) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, second) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
     assert_eq!(result.failed, 0);
     assert!(matches!(
         second.as_slice(),
@@ -1184,11 +1239,19 @@ fn external_file_change_recompiles_exactly_once() {
     let f = fixture();
     make_album(&f.lib, "A", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     write(&f.external.join("genre.toml"), "genre = \"Jazz\"\n");
 
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
     assert_eq!(result.updated, 1);
     assert_eq!(
         event_count(&events, |event| matches!(
@@ -1198,7 +1261,11 @@ fn external_file_change_recompiles_exactly_once() {
         1
     );
 
-    let (result, _) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, _) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
     assert_eq!(result.updated, 0, "a second pass must not recompile");
 }
 
@@ -1209,11 +1276,19 @@ fn removed_root_loses_its_entry_and_keeps_its_lock() {
     let f = fixture();
     make_album(&f.lib, "A", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     std::fs::remove_file(f.lib.join("A/album.toml")).expect("remove marker");
 
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
     assert_eq!(result.removed, 1);
 
     let removed = events
@@ -1240,7 +1315,11 @@ fn returning_root_is_added_and_its_lock_is_not_rewritten() {
     let f = fixture();
     make_album(&f.lib, "A", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     let lock = lock_path(&f.lib, "A");
     let before = std::fs::read(&lock).expect("lock");
@@ -1251,7 +1330,11 @@ fn returning_root_is_added_and_its_lock_is_not_rewritten() {
 
     std::fs::remove_file(state_file(&f, "album", &f.lib)).expect("drop state");
 
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
     assert_eq!(result.added, 1);
     assert_eq!(
         event_count(&events, |event| matches!(event, UpdateEvent::Added { .. })),
@@ -1274,16 +1357,23 @@ fn scoped_pass_reports_global_removals() {
     make_album(&f.lib, "A", &["01.flac"]);
     make_album(&f.lib, "B", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     std::fs::remove_dir_all(f.lib.join("B")).expect("remove B");
     write(&f.lib.join("A/01.flac"), "changed audio");
 
     let mut paths = std::collections::HashSet::new();
     paths.insert(f.lib.join("A"));
-    let scope = UpdateScope::Paths(paths);
+    let scope = UpdateScope::Paths {
+        paths,
+        media_type: None,
+    };
 
-    let (result, events) = pass(&shared, &scope, None, ForceMode::Preserve);
+    let (result, events) = pass(&shared, &scope, ForceMode::Preserve);
 
     assert_eq!(result.updated, 1, "A is in scope and changed");
     assert_eq!(result.removed, 1, "B is out of scope but still removed");
@@ -1302,12 +1392,20 @@ fn failed_compile_keeps_the_state_entry() {
     let f = fixture();
     make_album(&f.lib, "A", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     let before = std::fs::read(state_file(&f, "album", &f.lib)).expect("state file");
 
     write(&f.lib.join("A/album.toml"), "this is not toml [[[");
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
 
     assert_eq!(result.failed, 1);
     assert_eq!(
@@ -1327,7 +1425,11 @@ fn lock_stat_is_recorded_and_a_missing_lock_recompiles() {
     let f = fixture();
     make_album(&f.lib, "A", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     let key = f.lib.join("A").to_string_lossy().to_string();
     let entry = datamile_cache::load_state(&state_file(&f, "album", &f.lib))
@@ -1342,11 +1444,19 @@ fn lock_stat_is_recorded_and_a_missing_lock_recompiles() {
 
     std::fs::remove_file(lock_path(&f.lib, "A")).expect("delete the lock");
 
-    let (result, _) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, _) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
     assert_eq!(result.updated, 1, "a missing lock makes the entity dirty");
     assert!(lock_path(&f.lib, "A").exists(), "the pass rewrote the lock");
 
-    let (result, _) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, _) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
     assert_eq!(result.updated, 0, "the rewritten lock is clean");
     assert_eq!(result.unchanged, 1);
 }
@@ -1358,7 +1468,11 @@ fn recompile_to_identical_bytes_refreshes_the_lock_stat() {
     let f = fixture();
     make_album(&f.lib, "A", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     // A stale stat, as if the lock had been rewritten with the same bytes.
     let path = state_file(&f, "album", &f.lib);
@@ -1368,7 +1482,11 @@ fn recompile_to_identical_bytes_refreshes_the_lock_stat() {
         Some(datamile_cache::FileStat::default());
     datamile_cache::save_state(&states, &path).expect("save");
 
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
     assert_eq!(result.failed, 0);
     assert_eq!(
         event_count(&events, |event| matches!(
@@ -1379,7 +1497,11 @@ fn recompile_to_identical_bytes_refreshes_the_lock_stat() {
         "identical bytes are not an update"
     );
 
-    let (result, _) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, _) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
     assert_eq!(
         result.unchanged, 1,
         "the refreshed stat makes the root clean"
@@ -1397,7 +1519,11 @@ fn read_only_entity_fails_alone_and_keeps_its_state_entry() {
     make_album(&f.lib, "A", &["01.flac"]);
     make_album(&f.lib, "B", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     let state_file_path = state_file(&f, "album", &f.lib);
     let before = datamile_cache::load_state(&state_file_path).expect("state");
@@ -1411,7 +1537,11 @@ fn read_only_entity_fails_alone_and_keeps_its_state_entry() {
     std::fs::set_permissions(f.lib.join("A"), std::fs::Permissions::from_mode(0o500))
         .expect("chmod");
 
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
 
     std::fs::set_permissions(f.lib.join("A"), std::fs::Permissions::from_mode(0o700))
         .expect("chmod back");
@@ -1449,7 +1579,11 @@ fn corrupt_state_file_fails_without_a_dir() {
     let file = state_file(&f, "album", &f.lib);
     write(&file, "not json");
 
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
 
     assert_eq!(result.failed, 1);
     let failed = events
@@ -1472,7 +1606,11 @@ fn scoped_pass_does_not_claim_the_config_digest() {
     make_album(&f.lib, "A", &["01.flac"]);
     make_album(&f.lib, "B", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     // A config edit that changes every lock, then a pass scoped to A only.
     let mut dsl = album_dsl(&f.lib, &f.cache, &f.state_dir, &f.external);
@@ -1483,12 +1621,18 @@ fn scoped_pass_does_not_claim_the_config_digest() {
     paths.insert(f.lib.join("A"));
     pass(
         &shared,
-        &UpdateScope::Paths(paths),
-        None,
+        &UpdateScope::Paths {
+            paths,
+            media_type: None,
+        },
         ForceMode::Preserve,
     );
 
-    pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
 
     let lock = read_lock(&lock_path(&f.lib, "B"));
     assert_eq!(
@@ -1538,9 +1682,17 @@ fn clean_pass_counts_unchanged_roots() {
     make_album(&f.lib, "A", &["01.flac"]);
     make_album(&f.lib, "B", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
 
     assert_eq!(result.discovered, 2);
     assert_eq!(
@@ -1579,7 +1731,11 @@ fn failed_state_removal_is_not_reported_as_removed() {
     make_album(&f.lib, "A", &["01.flac"]);
     make_album(&f.lib, "B", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     std::fs::remove_dir_all(f.lib.join("B")).expect("remove B");
 
@@ -1590,7 +1746,11 @@ fn failed_state_removal_is_not_reported_as_removed() {
     std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o500))
         .expect("chmod");
 
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
 
     std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o700))
         .expect("chmod back");
@@ -1616,15 +1776,21 @@ fn scoped_pass_with_no_matching_root_is_an_error() {
     let f = fixture();
     make_album(&f.lib, "A", &["01.flac"]);
     let shared = shared_for(&f);
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     let mut paths = std::collections::HashSet::new();
     paths.insert(f.lib.join("missing"));
 
     let Err(error) = run_pass(
         &shared,
-        &UpdateScope::Paths(paths),
-        None,
+        &UpdateScope::Paths {
+            paths,
+            media_type: None,
+        },
         ForceMode::Preserve,
         None,
         &LogSink,
@@ -1635,6 +1801,187 @@ fn scoped_pass_with_no_matching_root_is_an_error() {
     assert!(
         format!("{error}").contains("no root entity"),
         "unexpected error: {error}"
+    );
+}
+
+// ---------------------------------------------------------- update scope ----
+
+fn key(media_type: &str, dir: &str) -> EntityKey {
+    EntityKey {
+        media_type: media_type.to_string(),
+        dir: PathBuf::from(dir),
+    }
+}
+
+fn keys(entries: &[(&str, &str)]) -> BTreeSet<EntityKey> {
+    entries.iter().map(|(media, dir)| key(media, dir)).collect()
+}
+
+fn all(media_type: Option<&str>) -> UpdateScope {
+    UpdateScope::All {
+        media_type: media_type.map(str::to_string),
+    }
+}
+
+fn paths(media_type: Option<&str>, entries: &[&str]) -> UpdateScope {
+    UpdateScope::Paths {
+        paths: entries.iter().map(PathBuf::from).collect(),
+        media_type: media_type.map(str::to_string),
+    }
+}
+
+fn scoped(entries: &[(&str, &str)]) -> UpdateScope {
+    UpdateScope::Entities(keys(entries))
+}
+
+/// Coalesced requests keep the narrowest scope covering both, and widen to a
+/// full pass as soon as the two disagree on a media type or a path.
+#[test]
+fn update_scope_merge_follows_the_matrix() {
+    let album = "album";
+    let movie = "movie";
+    let cases = [
+        // An existing full pass absorbs everything.
+        (all(None), all(None), all(None)),
+        (all(None), all(Some(album)), all(None)),
+        (all(None), paths(Some(album), &["/x"]), all(None)),
+        (all(None), scoped(&[(album, "/x")]), all(None)),
+        // An incoming full pass absorbs every existing scope.
+        (all(Some(album)), all(None), all(None)),
+        (paths(Some(album), &["/x"]), all(None), all(None)),
+        (scoped(&[(album, "/x")]), all(None), all(None)),
+        // Same media type stays narrow, a different one widens.
+        (all(Some(album)), all(Some(album)), all(Some(album))),
+        (all(Some(album)), all(Some(movie)), all(None)),
+        (
+            all(Some(album)),
+            paths(Some(album), &["/x"]),
+            all(Some(album)),
+        ),
+        (all(Some(album)), paths(Some(movie), &["/x"]), all(None)),
+        (all(Some(album)), paths(None, &["/x"]), all(None)),
+        (all(Some(album)), scoped(&[(album, "/x")]), all(Some(album))),
+        (all(Some(album)), scoped(&[(movie, "/x")]), all(None)),
+        (
+            paths(Some(album), &["/x"]),
+            all(Some(album)),
+            all(Some(album)),
+        ),
+        (paths(Some(album), &["/x"]), all(Some(movie)), all(None)),
+        (
+            paths(Some(album), &["/x"]),
+            paths(Some(album), &["/y"]),
+            paths(Some(album), &["/x", "/y"]),
+        ),
+        (
+            paths(Some(album), &["/x"]),
+            paths(Some(movie), &["/y"]),
+            all(None),
+        ),
+        (
+            paths(Some(album), &["/x"]),
+            scoped(&[(album, "/y")]),
+            all(Some(album)),
+        ),
+        (
+            paths(Some(album), &["/x"]),
+            scoped(&[(movie, "/y")]),
+            all(None),
+        ),
+        (scoped(&[(album, "/x")]), all(Some(album)), all(Some(album))),
+        (scoped(&[(album, "/x")]), all(Some(movie)), all(None)),
+        (
+            scoped(&[(album, "/x")]),
+            paths(Some(album), &["/y"]),
+            all(Some(album)),
+        ),
+        (
+            scoped(&[(album, "/x")]),
+            paths(Some(movie), &["/y"]),
+            all(None),
+        ),
+        (
+            scoped(&[(album, "/x")]),
+            scoped(&[(album, "/y")]),
+            scoped(&[(album, "/x"), (album, "/y")]),
+        ),
+    ];
+
+    for (existing, incoming, expected) in cases {
+        let mut merged = existing.clone();
+        merged.merge(incoming.clone());
+        assert_eq!(merged, expected, "{existing:?} + {incoming:?}");
+    }
+}
+
+/// Explicit entity keys win over the path, so forcing one entity never
+/// recompiles its sibling media types in the same directory.
+#[test]
+fn request_entities_take_precedence_over_path_and_media_type() {
+    let request = UpdateRequest {
+        path: Some("/media/A".to_string()),
+        media_type: Some("movie".to_string()),
+        entities: vec![key("album", "/media/A")],
+        force: true,
+        jobs: None,
+    };
+
+    assert_eq!(
+        scope_for_request(&request),
+        scoped(&[("album", "/media/A")])
+    );
+}
+
+/// A vanished watcher target reconciles as a removal instead of failing the
+/// pass on "no root entity matches the given path".
+#[test]
+fn entities_scope_reports_a_removed_target_as_a_removal() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    let shared = shared_for(&f);
+    pass(&shared, &all(None), ForceMode::Force);
+
+    let dir = f.lib.join("A").canonicalize().expect("canonical dir");
+    std::fs::remove_dir_all(&dir).expect("remove root");
+
+    let scope = UpdateScope::Entities(keys(&[("album", &dir.to_string_lossy())]));
+    let (result, _) = pass(&shared, &scope, ForceMode::Preserve);
+
+    assert_eq!(result.removed, 1);
+    assert_eq!(result.failed, 0);
+}
+
+/// One external file read by two entities keeps both owners; dropping one owner
+/// leaves the other in place.
+#[test]
+fn external_index_keeps_every_owner_of_a_shared_file() {
+    let shared_file = PathBuf::from("/media/genre.toml");
+    let album_a = key("album", "/media/A");
+    let album_b = key("album", "/media/B");
+    let mut index = ExternalIndex::new();
+
+    index_entity(&mut index, &album_a, std::slice::from_ref(&shared_file));
+    index_entity(&mut index, &album_b, std::slice::from_ref(&shared_file));
+    assert_eq!(
+        index[&shared_file],
+        keys(&[("album", "/media/A"), ("album", "/media/B")])
+    );
+
+    unindex_entity(&mut index, &album_a);
+    assert_eq!(index[&shared_file], keys(&[("album", "/media/B")]));
+}
+
+/// An `init` with no discovered entity is still watched, otherwise an album
+/// pasted into an empty library is never seen.
+#[test]
+fn init_dirs_include_a_media_root_with_no_entities() {
+    let f = fixture();
+    let (state, _) = media_state(&f);
+
+    assert!(state.roots.is_empty());
+    assert_eq!(
+        state.init_dirs(),
+        vec![f.lib.canonicalize().expect("canonical init")]
     );
 }
 
@@ -1767,7 +2114,11 @@ fn media_roots_with_different_inits_do_not_invalidate_each_other() {
     make_show(&f.shows, "S");
     let shared = two_type_shared(&f);
 
-    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
 
     let album_state = state_path(&f.cache, &f.config, "album", &f.albums);
     let show_state = state_path(&f.cache, &f.config, "show", &f.shows);
@@ -1777,7 +2128,11 @@ fn media_roots_with_different_inits_do_not_invalidate_each_other() {
 
     write(&f.albums.join("A/01.flac"), "changed audio");
 
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
     assert_eq!(result.updated, 1, "only the album root recompiles");
     assert_eq!(
         event_count(&events, |event| {
@@ -1805,7 +2160,11 @@ async fn watcher_discovered_root_is_clean_on_the_next_pass() {
     let _ = handle(&server, &[new_dir]).await;
 
     let shared = server.backend.shared();
-    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    let (result, events) = pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Preserve,
+    );
 
     assert_eq!(result.failed, 0);
     assert_eq!(

@@ -1,19 +1,20 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use datamile_logic::{LogicEngine, SortOrder};
+use datamile_cache::EntityKey;
+use datamile_logic::LogicEngine;
 use datamile_server::ServerState;
 use serde_json::json;
 
-use crate::compiler::CompiledRoot;
-use crate::deps::{MediaShared, state_entries};
+use crate::deps::{MediaShared, UpdateScope};
 use crate::state::{MediaState, open_engine};
+use crate::update::{ForceMode, canonical_or_self};
 
-/// All hot-reload guards run here, in Rust: self-writes, config reloads,
-/// external dependencies, known-root ancestors, vanished markers and new
-/// subtrees.
+/// Turns filesystem events into update scopes. The watcher resolves targets
+/// here and hands them to the serialized update pipeline; it never compiles,
+/// writes state or broadcasts on its own.
 pub async fn handle_fs_events(
     shared: Arc<MediaShared>,
     paths: &[PathBuf],
@@ -40,7 +41,11 @@ pub async fn handle_fs_events(
         .iter()
         .any(|path| is_config_change(path, &config_dir, &dependencies))
     {
-        reload_config(server).await;
+        // A config change may invalidate every lock, so the reload submits one
+        // full pass.
+        if reload_config(server).await {
+            submit(server, &shared, UpdateScope::All { media_type: None }).await;
+        }
         return;
     }
 
@@ -53,138 +58,85 @@ pub async fn handle_fs_events(
         return;
     };
 
-    let logic = server.logic.read().await;
-
-    // Every Lua VM access lives in this block so no non-Send value is alive at
-    // the await below.
-    let Some((prepared, compiled, removed_roots)) = (|| {
+    // Resolution reads the Lua selectors and the logic index; both are held
+    // only until the scope is built, never across the update await.
+    let scope = {
+        let logic = server.logic.read().await;
         let Ok(engine) = open_engine(&state) else {
             log::error!("Failed to open the media engine for hot reload");
-            return None;
+            return;
         };
-
-        let mut targeted: HashSet<(String, PathBuf)> = HashSet::new();
-        let mut removed_roots: Vec<(String, PathBuf)> = Vec::new();
-
-        let known: HashSet<(String, PathBuf)> = logic
-            .all_entities()
-            .map(|record| (record.media_type.clone(), record.path.clone()))
-            .collect();
-
-        collect_external_dependencies(&shared, &state, &relevant, &mut targeted);
-        collect_media_changes(
-            &state,
-            &engine,
-            &logic,
-            &relevant,
-            &mut targeted,
-            &mut removed_roots,
-        );
-        drop(logic);
-
-        let mut compiled: Vec<CompiledRoot> = Vec::new();
-        for (media_type, dir) in &targeted {
-            if removed_roots.iter().any(|(_, removed)| removed == dir) {
-                continue;
-            }
-            match crate::compiler::compile_root(
-                &engine,
-                media_type,
-                dir,
-                &state.cache_root,
-                None,
-            ) {
-                Ok(root) => {
-                    if root.modified
-                        && let Ok(mut writes) = shared.active_writes.lock()
-                    {
-                        let lock = root.dir.join(format!("{media_type}.lock.json"));
-                        writes.insert(lock.clone());
-                        writes
-                            .insert(lock.canonicalize().unwrap_or_else(|_| lock.clone()));
-                    }
-                    compiled.push(root);
-                }
-                Err(e) => log::error!("Recompilation failed for {}: {e}", dir.display()),
-            }
-        }
-
-        // Unchanged bytes on an already indexed root must not broadcast.
-        let compiled: Vec<CompiledRoot> = compiled
-            .into_iter()
-            .filter(|root| {
-                root.modified
-                    || !known.contains(&(root.media_type.clone(), root.dir.clone()))
-            })
-            .collect();
-
-        if compiled.is_empty() && removed_roots.is_empty() {
-            return None;
-        }
-
-        let prepared = prepare_entities(&state, &engine, &compiled);
-        Some((prepared, compiled, removed_roots))
-    })() else {
-        return;
+        resolve_targets(&shared, &state, &engine, &logic, &relevant)
     };
 
-    ingest_and_broadcast(&shared, &state, server, prepared, compiled, removed_roots)
-        .await;
+    if let Some(scope) = scope {
+        submit(server, &shared, scope).await;
+    }
 }
 
-type PreparedEntity = (
-    String,
-    String,
-    crate::ingest::ParsedEntity,
-    serde_json::Value,
-);
-
-type PerTypeUpdates = HashMap<
-    String,
-    (
-        HashMap<String, Box<serde_json::value::RawValue>>,
-        Vec<String>,
-    ),
->;
-
-/// Parses and evaluates compiled roots before any async work, so the Lua VM
-/// never has to be held across an await.
-fn prepare_entities(
+/// The scope a set of changed paths asks for, or `None` when nothing indexed is
+/// affected. Anything that may have removed an entity widens to a paths scope,
+/// so the pass can report the removal instead of failing on a stale target.
+#[must_use]
+pub(crate) fn resolve_targets(
+    shared: &MediaShared,
     state: &MediaState,
     engine: &datamile_lua_domain::DomainLuaEngine,
-    compiled: &[CompiledRoot],
-) -> Vec<PreparedEntity> {
-    let mut prepared = Vec::new();
+    logic: &LogicEngine,
+    paths: &[PathBuf],
+) -> Option<UpdateScope> {
+    let mut entities: BTreeSet<EntityKey> = BTreeSet::new();
+    let mut vanished: HashSet<PathBuf> = HashSet::new();
 
-    for root in compiled {
-        let Some(schema) = state.root_schema(&root.media_type) else {
-            continue;
-        };
-
-        let music_directory = state.mpd_base();
-        let Ok(parsed) = crate::ingest::parse_lock(
-            &root.media_type,
-            &root.lock_json,
-            schema,
-            music_directory.as_deref(),
-        ) else {
-            log::error!("Failed to parse lock for {}", root.dir.display());
-            continue;
-        };
-        let Some(parsed) = parsed else {
-            continue;
-        };
-
-        let eval = serde_json::from_str::<serde_json::Value>(&root.lock_json)
-            .ok()
-            .and_then(|lock| lock.get(&root.media_type).cloned())
-            .and_then(|entity| engine.evaluate_logic(&root.media_type, &entity).ok())
-            .unwrap_or_else(|| json!({}));
-
-        prepared.push((root.media_type.clone(), root.id.clone(), parsed, eval));
+    for path in paths {
+        let canon = canonical_or_self(path);
+        collect_external_dependencies(shared, &canon, &mut entities);
+        collect_media_changes(
+            state,
+            engine,
+            logic,
+            &canon,
+            path,
+            &mut entities,
+            &mut vanished,
+        );
     }
 
-    prepared
+    if !vanished.is_empty() {
+        // A paths scope carries no per-entity media type, so a batch that both
+        // removed and edited widens to paths. A clean sibling in a shared dir
+        // is still only verified, never recompiled.
+        vanished.extend(entities.into_iter().map(|key| key.dir));
+        return Some(UpdateScope::Paths {
+            paths: vanished,
+            media_type: None,
+        });
+    }
+
+    if entities.is_empty() {
+        return None;
+    }
+
+    Some(UpdateScope::Entities(entities))
+}
+
+async fn submit(
+    server: &Arc<ServerState>,
+    shared: &Arc<MediaShared>,
+    scope: UpdateScope,
+) {
+    if let Err(e) = crate::update::run_scope_update(
+        Arc::clone(server),
+        Arc::clone(shared),
+        scope,
+        ForceMode::Preserve,
+        None,
+        Vec::new(),
+    )
+    .await
+    {
+        log::error!("Watcher update failed: {e}");
+    }
 }
 
 fn drain_active_writes(shared: &MediaShared, paths: &[PathBuf]) -> Vec<PathBuf> {
@@ -195,7 +147,7 @@ fn drain_active_writes(shared: &MediaShared, paths: &[PathBuf]) -> Vec<PathBuf> 
 
     let mut relevant = Vec::new();
     for path in paths {
-        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let canon = canonical_or_self(path);
         if active.remove(&canon) || active.remove(path) {
             continue;
         }
@@ -210,14 +162,15 @@ fn is_config_change(
     config_dir: &Path,
     dependencies: &HashSet<PathBuf>,
 ) -> bool {
-    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canon = canonical_or_self(path);
     dependencies.contains(&canon)
         || dependencies.contains(path)
         || canon.starts_with(config_dir)
         || path.starts_with(config_dir)
 }
 
-async fn reload_config(server: &Arc<ServerState>) {
+/// Reloads config and manifest; `true` when the new config applied.
+async fn reload_config(server: &Arc<ServerState>) -> bool {
     log::info!("Filesystem change: reloading config and logic...");
     let mut logic = server.logic.write().await;
 
@@ -249,38 +202,115 @@ async fn reload_config(server: &Arc<ServerState>) {
                 );
                 std::process::exit(0);
             }
+
+            true
         }
         Err(e) => {
             log::error!("Failed to reload config: {e:?}");
             *server.reload_error.write().await = Some(format!("{e:?}"));
+            false
         }
     }
 }
 
+/// External dependency hits read the reverse index directly: those entities are
+/// already known, so nothing has to be resolved through `select`.
 fn collect_external_dependencies(
     shared: &MediaShared,
-    state: &MediaState,
-    paths: &[PathBuf],
-    targeted: &mut HashSet<(String, PathBuf)>,
+    canon: &Path,
+    entities: &mut BTreeSet<EntityKey>,
 ) {
     let index = shared
         .external_index
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    for path in paths {
-        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
-        let roots = index.get(&canon).or_else(|| index.get(path));
+    if let Some(keys) = index.get(canon) {
+        entities.extend(keys.iter().cloned());
+    }
+}
 
-        if let Some(roots) = roots {
-            for root in roots {
-                if let Some(known) = state.roots.iter().find(|known| &known.dir == root) {
-                    targeted.insert((known.media_type.clone(), known.dir.clone()));
-                }
+fn collect_media_changes(
+    state: &MediaState,
+    engine: &datamile_lua_domain::DomainLuaEngine,
+    logic: &LogicEngine,
+    canon: &Path,
+    raw: &Path,
+    entities: &mut BTreeSet<EntityKey>,
+    vanished: &mut HashSet<PathBuf>,
+) {
+    for (media_type, init) in state.media_roots() {
+        if !canon.starts_with(&init) && !raw.starts_with(&init) {
+            continue;
+        }
+
+        if let Some(known) = known_root_ancestor(logic, &media_type, canon) {
+            handle_known_root(engine, &media_type, &known, entities, vanished);
+            continue;
+        }
+
+        // A deleted path may itself be the ancestor of indexed roots.
+        let deleted = !canon.exists();
+        for record in logic
+            .all_entities()
+            .filter(|record| record.media_type == media_type)
+        {
+            if deleted && record.path.starts_with(canon) {
+                vanished.insert(canon.to_path_buf());
             }
         }
+
+        let scan_dir = nearest_existing_dir(canon, &init);
+        match select_roots(engine, &media_type, &scan_dir) {
+            Ok(found) => {
+                for dir in found {
+                    if logic.entity_id_by_path(&media_type, &dir).is_none() {
+                        entities.insert(EntityKey {
+                            media_type: media_type.clone(),
+                            dir,
+                        });
+                    }
+                }
+            }
+            Err(e) => log::error!(
+                "select({}) failed for {media_type}: {e}",
+                scan_dir.display()
+            ),
+        }
     }
-    drop(index);
+}
+
+fn handle_known_root(
+    engine: &datamile_lua_domain::DomainLuaEngine,
+    media_type: &str,
+    known: &Path,
+    entities: &mut BTreeSet<EntityKey>,
+    vanished: &mut HashSet<PathBuf>,
+) {
+    if !known.exists() {
+        vanished.insert(known.to_path_buf());
+        return;
+    }
+
+    match select_roots(engine, media_type, known) {
+        Ok(roots) if roots.iter().any(|root| root == known) => {
+            entities.insert(EntityKey {
+                media_type: media_type.to_string(),
+                dir: known.to_path_buf(),
+            });
+        }
+        Ok(roots) => {
+            // The marker vanished (or moved): the directory is no longer a root.
+            vanished.insert(known.to_path_buf());
+            for dir in roots {
+                entities.insert(EntityKey {
+                    media_type: media_type.to_string(),
+                    dir,
+                });
+            }
+        }
+        Err(e) => log::error!("select({}) failed for {media_type}: {e}", known.display()),
+    }
 }
 
 fn known_root_ancestor(
@@ -353,234 +383,5 @@ fn nearest_existing_dir(path: &Path, init: &Path) -> PathBuf {
             return init.to_path_buf();
         }
         current = parent.to_path_buf();
-    }
-}
-
-fn collect_media_changes(
-    state: &MediaState,
-    engine: &datamile_lua_domain::DomainLuaEngine,
-    logic: &LogicEngine,
-    paths: &[PathBuf],
-    targeted: &mut HashSet<(String, PathBuf)>,
-    removed_roots: &mut Vec<(String, PathBuf)>,
-) {
-    for path in paths {
-        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
-        for init in state.init_dirs() {
-            if !canon.starts_with(&init) && !path.starts_with(&init) {
-                continue;
-            }
-
-            for media_type in media_types_for_init(state, &init) {
-                if let Some(known) = known_root_ancestor(logic, &media_type, &canon) {
-                    handle_known_root(
-                        engine,
-                        &media_type,
-                        &known,
-                        &canon,
-                        targeted,
-                        removed_roots,
-                    );
-                    continue;
-                }
-
-                // A deleted path may itself be the ancestor of known roots.
-                for record in logic
-                    .all_entities()
-                    .filter(|record| record.media_type == media_type)
-                {
-                    if record.path.starts_with(&canon) && !canon.exists() {
-                        removed_roots.push((media_type.clone(), record.path.clone()));
-                    }
-                }
-
-                let scan_dir = nearest_existing_dir(&canon, &init);
-                match select_roots(engine, &media_type, &scan_dir) {
-                    Ok(found) => {
-                        for root in found {
-                            if logic.entity_id_by_path(&media_type, &root).is_none() {
-                                targeted.insert((media_type.clone(), root));
-                            }
-                        }
-                    }
-                    Err(e) => log::error!(
-                        "select({}) failed for {media_type}: {e}",
-                        scan_dir.display()
-                    ),
-                }
-            }
-        }
-    }
-}
-
-fn media_types_for_init(state: &MediaState, init: &Path) -> Vec<String> {
-    let mut types: Vec<String> = state
-        .media
-        .roots_order
-        .iter()
-        .filter(|name| {
-            state
-                .media
-                .roots
-                .get(*name)
-                .and_then(|root| root.init.as_deref())
-                .is_some_and(|raw| {
-                    datamile_fs::resolve_path(raw, &state.config_dir)
-                        .canonicalize()
-                        .unwrap_or_else(|_| {
-                            datamile_fs::resolve_path(raw, &state.config_dir)
-                        })
-                        == init
-                })
-        })
-        .cloned()
-        .collect();
-    types.sort();
-    types.dedup();
-    types
-}
-
-fn handle_known_root(
-    engine: &datamile_lua_domain::DomainLuaEngine,
-    media_type: &str,
-    known: &Path,
-    changed: &Path,
-    targeted: &mut HashSet<(String, PathBuf)>,
-    removed_roots: &mut Vec<(String, PathBuf)>,
-) {
-    if !known.exists() {
-        removed_roots.push((media_type.to_string(), known.to_path_buf()));
-        return;
-    }
-
-    match select_roots(engine, media_type, known) {
-        Ok(roots) if roots.iter().any(|root| root == known) => {
-            targeted.insert((media_type.to_string(), known.to_path_buf()));
-        }
-        Ok(roots) => {
-            // The marker vanished (or moved): the directory is no longer a root.
-            removed_roots.push((media_type.to_string(), known.to_path_buf()));
-            for root in roots {
-                targeted.insert((media_type.to_string(), root));
-            }
-        }
-        Err(e) => log::error!(
-            "select({}) failed for {media_type} after change in {}: {e}",
-            known.display(),
-            changed.display()
-        ),
-    }
-}
-
-fn shelves_for(logic: &LogicEngine, media_type: &str) -> HashMap<String, Vec<String>> {
-    let mut shelves = HashMap::new();
-    for (key, def) in &logic.manifest.shelves {
-        if def.media != media_type {
-            continue;
-        }
-        shelves.insert(
-            key.clone(),
-            logic.request_shelf_view(media_type, key, None, SortOrder::Forward),
-        );
-    }
-    shelves
-}
-
-#[allow(
-    clippy::cognitive_complexity,
-    reason = "the removed/prepared/reindex sequence is one atomic ingest step"
-)]
-async fn ingest_and_broadcast(
-    shared: &Arc<MediaShared>,
-    state: &MediaState,
-    server: &Arc<ServerState>,
-    prepared: Vec<PreparedEntity>,
-    compiled: Vec<CompiledRoot>,
-    removed_roots: Vec<(String, PathBuf)>,
-) {
-    let mut per_type = PerTypeUpdates::new();
-
-    {
-        let mut logic = server.logic.write().await;
-
-        // A vanished root entity loses its state entry; its lock is never
-        // deleted. One write per media type, like the pass.
-        let mut removals_by_type: BTreeMap<&str, Vec<&Path>> = BTreeMap::new();
-        for (media_type, dir) in &removed_roots {
-            removals_by_type
-                .entry(media_type.as_str())
-                .or_default()
-                .push(dir.as_path());
-        }
-        for (media_type, dirs) in removals_by_type {
-            if let Err(e) = shared.remove_roots(state, media_type, &dirs) {
-                log::error!("Failed to drop the state entries for {media_type}: {e}");
-            }
-        }
-
-        for (media_type, dir) in &removed_roots {
-            if let Some(id) = logic.remove_entity_by_type_and_path(media_type, dir) {
-                per_type.entry(media_type.clone()).or_default().1.push(id);
-            }
-        }
-
-        for (media_type, id, parsed, eval) in prepared {
-            if let Err(e) =
-                logic.upsert_entity(parsed.entity, parsed.playables, parsed.images, eval)
-            {
-                log::error!("Failed to index {media_type}/{id}: {e}");
-                continue;
-            }
-
-            let entry = per_type.entry(media_type.clone()).or_default();
-            if let Some(dict) = logic.entity_dict(&media_type, &id) {
-                entry.0.insert(id, dict.to_owned());
-            }
-        }
-
-        logic.build_cache();
-
-        {
-            let mut index = shared
-                .external_index
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for root in &compiled {
-                crate::deps::index_root(&mut index, &root.dir, &root.dependencies);
-            }
-            for (_, dir) in &removed_roots {
-                crate::deps::unindex_root(&mut index, dir);
-            }
-        }
-
-        // The watcher writes through the same call as the pass: one state file
-        // write per media type.
-        for (media_type, entries) in state_entries(&compiled) {
-            if let Err(e) = shared.record_roots(state, &media_type, entries) {
-                log::error!("Failed to record the state entries for {media_type}: {e}");
-            }
-        }
-
-        drop(logic);
-    }
-
-    for (media_type, (updated, removed)) in per_type {
-        if updated.is_empty() && removed.is_empty() {
-            continue;
-        }
-        let shelves = {
-            let logic = server.logic.read().await;
-            shelves_for(&logic, &media_type)
-        };
-        let _ = server.tx.send(
-            json!({
-                "type": "MEDIA_UPDATED",
-                "media_type": media_type,
-                "updated": updated,
-                "removed": removed,
-                "shelves": shelves
-            })
-            .to_string(),
-        );
     }
 }

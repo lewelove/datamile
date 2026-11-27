@@ -4,7 +4,7 @@ use std::sync::{Mutex, RwLock};
 
 use anyhow::Result;
 use datamile_cache::{
-    FileStat, RootState, RootStates, load_state, root_files, save_state,
+    EntityKey, FileStat, RootState, RootStates, load_state, root_files, save_state,
 };
 
 use crate::compiler::CompiledRoot;
@@ -13,7 +13,7 @@ use crate::state::MediaState;
 /// Reverse index `external file -> root entities that read it`, rebuilt at boot
 /// from the state files and kept in memory for the watcher. Nothing on disk
 /// duplicates it.
-pub type ExternalIndex = BTreeMap<PathBuf, BTreeSet<PathBuf>>;
+pub type ExternalIndex = BTreeMap<PathBuf, BTreeSet<EntityKey>>;
 
 /// Rebuilds the reverse index by reading every media root's state file.
 #[must_use]
@@ -31,9 +31,12 @@ pub fn rebuild_external_index(state: &MediaState) -> ExternalIndex {
             continue;
         };
         for (dir, entry) in &states {
-            let dir = PathBuf::from(dir);
-            for file in external_files(&dir, entry) {
-                index.entry(file).or_default().insert(dir.clone());
+            let key = EntityKey {
+                media_type: media_type.clone(),
+                dir: PathBuf::from(dir),
+            };
+            for file in external_files(&key.dir, entry) {
+                index.entry(file).or_default().insert(key.clone());
             }
         }
     }
@@ -51,38 +54,137 @@ fn external_files(dir: &Path, entry: &RootState) -> Vec<PathBuf> {
         .collect()
 }
 
-pub fn index_root(index: &mut ExternalIndex, dir: &Path, external: &[PathBuf]) {
-    unindex_root(index, dir);
+pub fn index_entity(index: &mut ExternalIndex, key: &EntityKey, external: &[PathBuf]) {
+    unindex_entity(index, key);
     for file in external {
-        index
-            .entry(file.clone())
-            .or_default()
-            .insert(dir.to_path_buf());
+        index.entry(file.clone()).or_default().insert(key.clone());
     }
 }
 
-pub fn unindex_root(index: &mut ExternalIndex, dir: &Path) {
-    index.retain(|_, roots| {
-        roots.remove(dir);
-        !roots.is_empty()
+pub fn unindex_entity(index: &mut ExternalIndex, key: &EntityKey) {
+    index.retain(|_, keys| {
+        keys.remove(key);
+        !keys.is_empty()
     });
 }
 
+/// What one update pass must cover. `media_type` narrows a pass that already
+/// covers whole media roots; explicit entity keys widen nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateScope {
-    All,
-    Paths(HashSet<PathBuf>),
+    All {
+        media_type: Option<String>,
+    },
+    Paths {
+        paths: HashSet<PathBuf>,
+        media_type: Option<String>,
+    },
+    Entities(BTreeSet<EntityKey>),
 }
 
 impl UpdateScope {
+    /// Coalesces a queued request into this one, keeping the narrowest scope
+    /// that covers both.
     pub fn merge(&mut self, other: Self) {
-        match (self, other) {
-            (Self::All, _) => {}
-            (this, Self::All) => *this = Self::All,
-            (Self::Paths(a), Self::Paths(b)) => {
-                a.extend(b);
+        // The placeholder is never read: it only hands `merged` both sides by
+        // value.
+        *self = merged(
+            std::mem::replace(self, Self::All { media_type: None }),
+            other,
+        );
+    }
+}
+
+/// The merge matrix: two scopes of one shape stay narrow while they agree on a
+/// media type, and any disagreement widens to a full pass, which is always a
+/// safe superset.
+fn merged(existing: UpdateScope, incoming: UpdateScope) -> UpdateScope {
+    match (existing, incoming) {
+        (UpdateScope::All { media_type: None }, _)
+        | (_, UpdateScope::All { media_type: None }) => {
+            UpdateScope::All { media_type: None }
+        }
+
+        (
+            UpdateScope::All {
+                media_type: Some(a),
+            },
+            UpdateScope::All {
+                media_type: Some(b),
+            },
+        ) => UpdateScope::All {
+            media_type: (a == b).then_some(a),
+        },
+
+        (
+            UpdateScope::All {
+                media_type: Some(a),
+            },
+            UpdateScope::Paths { media_type: b, .. },
+        )
+        | (
+            UpdateScope::Paths { media_type: b, .. },
+            UpdateScope::All {
+                media_type: Some(a),
+            },
+        ) => UpdateScope::All {
+            media_type: (b.as_deref() == Some(a.as_str())).then_some(a),
+        },
+
+        (
+            UpdateScope::All {
+                media_type: Some(a),
+            },
+            UpdateScope::Entities(keys),
+        )
+        | (
+            UpdateScope::Entities(keys),
+            UpdateScope::All {
+                media_type: Some(a),
+            },
+        ) => collapsed_to_type(&a, &keys),
+
+        (
+            UpdateScope::Paths {
+                paths: mut pa,
+                media_type: ma,
+            },
+            UpdateScope::Paths {
+                paths: pb,
+                media_type: mb,
+            },
+        ) => {
+            if ma == mb {
+                pa.extend(pb);
+                UpdateScope::Paths {
+                    paths: pa,
+                    media_type: ma,
+                }
+            } else {
+                UpdateScope::All { media_type: None }
             }
         }
+
+        (UpdateScope::Paths { media_type, .. }, UpdateScope::Entities(keys))
+        | (UpdateScope::Entities(keys), UpdateScope::Paths { media_type, .. }) => {
+            media_type.map_or(UpdateScope::All { media_type: None }, |media_type| {
+                collapsed_to_type(&media_type, &keys)
+            })
+        }
+
+        (UpdateScope::Entities(mut ea), UpdateScope::Entities(eb)) => {
+            ea.extend(eb);
+            UpdateScope::Entities(ea)
+        }
+    }
+}
+
+/// Entity keys collapse into one media type only when all of them share it.
+fn collapsed_to_type(media_type: &str, keys: &BTreeSet<EntityKey>) -> UpdateScope {
+    let all_match = keys.iter().all(|key| key.media_type == media_type);
+
+    UpdateScope::All {
+        media_type: all_match.then(|| media_type.to_string()),
     }
 }
 
@@ -94,7 +196,6 @@ pub struct UpdateState {
 
 pub struct PendingUpdate {
     pub scope: UpdateScope,
-    pub media_type: Option<String>,
     pub force: bool,
     pub jobs: Option<usize>,
     /// One serialized event stream per attached client.

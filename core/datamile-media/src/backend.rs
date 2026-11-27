@@ -7,8 +7,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use datamile_logic::LogicEngine;
 use datamile_server::{
-    ActionTargetQuery, DEFAULT_PORT, MediaBackend, PlaybackSlice, ServerConfig,
-    ServerState, UpdateRequest,
+    ActionTargetQuery, DEFAULT_PORT, EntityKey, MediaBackend, PlaybackSlice,
+    ServerConfig, ServerState, UpdateRequest,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -396,22 +396,27 @@ impl MediaBackend for MediaEngineBackend {
         media_type: &str,
         id: &str,
     ) -> Result<bool> {
-        let path = {
+        let key = {
             let Ok(logic) = state.logic.try_read() else {
                 return Ok(false);
             };
-            logic
-                .entity_record(media_type, id)
-                .map(|record| record.path.clone())
+            logic.entity_record(media_type, id).map(|record| EntityKey {
+                media_type: record.media_type.clone(),
+                dir: record.path.clone(),
+            })
         };
 
-        let Some(path) = path else {
+        let Some(key) = key else {
             return Ok(false);
         };
 
         self.trigger_update(
             state,
-            UpdateRequest::force(Some(path.to_string_lossy().to_string())),
+            UpdateRequest {
+                entities: vec![key],
+                force: true,
+                ..UpdateRequest::default()
+            },
             Vec::new(),
         )?;
         Ok(true)

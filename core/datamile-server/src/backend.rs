@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use datamile_cache::EntityKey;
 use datamile_logic::LogicEngine;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -101,6 +102,11 @@ pub struct UpdateRequest {
     pub path: Option<String>,
     #[serde(default)]
     pub media_type: Option<String>,
+    /// Exact entity keys to recompile. Non-empty means `path` and `media_type`
+    /// are ignored, so forcing one entity never recompiles its sibling media
+    /// types in the same directory.
+    #[serde(default)]
+    pub entities: Vec<EntityKey>,
     pub force: bool,
     pub jobs: Option<usize>,
 }
@@ -109,15 +115,6 @@ impl UpdateRequest {
     #[must_use]
     pub fn preserve() -> Self {
         Self::default()
-    }
-
-    #[must_use]
-    pub fn force(path: Option<String>) -> Self {
-        Self {
-            path,
-            force: true,
-            ..Self::default()
-        }
     }
 }
 

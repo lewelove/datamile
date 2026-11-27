@@ -73,10 +73,15 @@ impl MediaState {
             .map(|(_, init)| init)
     }
 
+    /// Every declared `init`, not only the ones that discovered something, so
+    /// an empty library still watches for a first entity.
     #[must_use]
     pub fn init_dirs(&self) -> Vec<PathBuf> {
-        let mut inits: Vec<PathBuf> =
-            self.roots.iter().map(|root| root.init.clone()).collect();
+        let mut inits: Vec<PathBuf> = self
+            .media_roots()
+            .into_iter()
+            .map(|(_, init)| init)
+            .collect();
         inits.sort();
         inits.dedup();
         inits

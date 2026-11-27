@@ -2,21 +2,32 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use datamile_cache::EntityKey;
 use datamile_lua_domain::LogicManifest;
 use roaring::RoaringBitmap;
 use serde::Serialize;
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-#[derive(Clone, Debug)]
-pub struct ImageLookupItem {
-    pub entity_dir: PathBuf,
-    pub path: String,
+/// Rendering parameters shared by every owner of one content address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageSpecMeta {
     pub fit: String,
     pub filter: String,
     pub target_width: u32,
     pub target_height: u32,
 }
+
+/// The cold-cache recovery data for one content address: how to render it and
+/// every source image that produced it.
+#[derive(Clone, Debug)]
+pub struct CachedImageLookup {
+    pub spec: ImageSpecMeta,
+    pub sources: Vec<(EntityKey, PathBuf)>,
+}
+
+/// One image upsert: content address, rendering spec, absolute source path.
+pub type ImageUpsert = (String, ImageSpecMeta, PathBuf);
 
 /// One indexed media item, whatever its media type is.
 #[derive(Clone, Debug)]
@@ -65,8 +76,10 @@ pub struct LogicEngine {
     pub config_path: PathBuf,
     pub manifest: LogicManifest,
     pub types: HashMap<String, TypeIndex>,
-    pub image_lookup: HashMap<String, ImageLookupItem>,
-    pub playable_lookup: HashMap<String, PlayableLookupItem>,
+    pub image_lookup: HashMap<String, CachedImageLookup>,
+    /// Every owner of one playable URI: the same file may compile under several
+    /// media types.
+    pub playable_lookup: HashMap<String, Vec<PlayableLookupItem>>,
     pub(crate) next_uid: u32,
 }
 
@@ -146,17 +159,18 @@ impl LogicEngine {
         self.types.values().map(|index| index.entities.len()).sum()
     }
 
-    pub fn remove_entity_by_path(&mut self, path: &Path) -> Option<String> {
+    pub fn remove_entity_by_type_and_path(
+        &mut self,
+        media_type: &str,
+        path: &Path,
+    ) -> Option<String> {
         let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let index = self.types.get(media_type)?;
+        let uid = *index.path_to_uid.get(&canon)?;
+        let id = index.entities.get(&uid)?.id.clone();
 
-        let found = self.types.iter().find_map(|(media_type, index)| {
-            let uid = *index.path_to_uid.get(&canon)?;
-            let id = index.entities.get(&uid)?.id.clone();
-            Some((media_type.clone(), id))
-        })?;
-
-        self.remove_entity_by_id(&found.0, &found.1);
-        Some(found.1)
+        self.remove_entity_by_id(media_type, &id);
+        Some(id)
     }
 
     pub fn remove_entity_by_id(&mut self, media_type: &str, id: &str) {
@@ -172,13 +186,44 @@ impl LogicEngine {
         if let Some(record) = index.entities.remove(&uid) {
             index.path_to_uid.remove(&record.path);
 
+            let key = EntityKey {
+                media_type: media_type.to_string(),
+                dir: record.path.clone(),
+            };
+
             for uri in &record.playable_uris {
-                self.playable_lookup.remove(uri);
+                self.forget_playable_owner(uri, media_type, &record.id);
             }
 
             for (_, addr) in &record.image_namespaces {
-                self.image_lookup.remove(addr);
+                self.forget_image_owner(addr, &key);
             }
+        }
+    }
+
+    /// Drops one media type's ownership of a playable URI, keeping the other
+    /// owners of the same file.
+    fn forget_playable_owner(&mut self, uri: &str, media_type: &str, id: &str) {
+        let Some(items) = self.playable_lookup.get_mut(uri) else {
+            return;
+        };
+
+        items.retain(|item| item.media_type != media_type || item.media_id != id);
+        if items.is_empty() {
+            self.playable_lookup.remove(uri);
+        }
+    }
+
+    /// Drops one entity's source from a content address, keeping every other
+    /// owner that renders the same address.
+    fn forget_image_owner(&mut self, address: &str, key: &EntityKey) {
+        let Some(entry) = self.image_lookup.get_mut(address) else {
+            return;
+        };
+
+        entry.sources.retain(|(owner, _)| owner != key);
+        if entry.sources.is_empty() {
+            self.image_lookup.remove(address);
         }
     }
 
@@ -207,7 +252,7 @@ impl LogicEngine {
                     entity_dir_canon.display()
                 );
             }
-            self.remove_entity_by_path(&existing_path);
+            self.remove_entity_by_type_and_path(media_type, &existing_path);
         }
 
         let old_id = self.types.get(media_type).and_then(|index| {
@@ -236,7 +281,7 @@ impl LogicEngine {
         &mut self,
         entity: EntityRecord,
         playable_items: Vec<PlayableLookupItem>,
-        images: Vec<(String, ImageLookupItem)>,
+        images: Vec<ImageUpsert>,
         eval_res: Value,
     ) -> anyhow::Result<()> {
         let media_type = entity.media_type.clone();
@@ -246,10 +291,35 @@ impl LogicEngine {
         self.next_uid += 1;
 
         for item in playable_items {
-            self.playable_lookup.insert(item.path.clone(), item);
+            let owners = self.playable_lookup.entry(item.path.clone()).or_default();
+            let same_owner = owners.iter_mut().find(|owner| {
+                owner.media_type == item.media_type && owner.media_id == item.media_id
+            });
+            match same_owner {
+                Some(owner) => *owner = item,
+                None => owners.push(item),
+            }
         }
-        for (address, item) in images {
-            self.image_lookup.insert(address, item);
+
+        let key = EntityKey {
+            media_type: media_type.clone(),
+            dir: entity.path.clone(),
+        };
+        // The address digests the rendering spec, so an address that already
+        // exists was rendered with the same parameters; only its owners grow.
+        for (address, spec, source) in images {
+            let entry =
+                self.image_lookup
+                    .entry(address)
+                    .or_insert_with(|| CachedImageLookup {
+                        spec,
+                        sources: Vec::new(),
+                    });
+
+            match entry.sources.iter_mut().find(|(owner, _)| *owner == key) {
+                Some(slot) => slot.1 = source,
+                None => entry.sources.push((key.clone(), source)),
+            }
         }
 
         let index = self

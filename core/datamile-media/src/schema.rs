@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -141,15 +141,17 @@ pub struct Discovery {
     pub failures: Vec<(String, anyhow::Error)>,
 }
 
-/// Phase 1: discovers every root directory and enforces global uniqueness and
-/// the no-nesting rule.
+/// Phase 1: discovers every root directory and enforces the per-media-type
+/// no-nesting rule.
+///
+/// One directory may be claimed by any number of distinct media types; only
+/// nesting inside one media type is forbidden.
 pub fn discover_roots(
     engine: &DomainLuaEngine,
     manifest: &MediaManifest,
     config_dir: &Path,
 ) -> Result<Discovery> {
     let mut discovery = Discovery::default();
-    let mut claimed: HashMap<PathBuf, String> = HashMap::new();
 
     for media_type in &manifest.roots_order {
         let Some(root) = manifest.roots.get(media_type) else {
@@ -162,14 +164,6 @@ pub fn discover_roots(
         match select_media_roots(engine, media_type, init, config_dir) {
             Ok((init_path, dirs)) => {
                 for dir in dirs {
-                    if let Some(owner) = claimed.get(&dir) {
-                        bail!(
-                            "root directory {} is claimed by both '{owner}' and '{media_type}'",
-                            dir.display()
-                        );
-                    }
-                    claimed.insert(dir.clone(), media_type.clone());
-
                     discovery.roots.push(DiscoveredRoot {
                         media_type: media_type.clone(),
                         init: init_path.clone(),
@@ -232,21 +226,31 @@ fn select_media_roots(
     Ok((init_path, dirs))
 }
 
-/// Root entities may not nest, in the same media type or across media types, so
-/// every file belongs to at most one of them.
+/// Root entities of one media type may not nest, so every file belongs to at
+/// most one root entity of that type.
+///
+/// Nesting across media types stays allowed: a film entity may contain its
+/// soundtrack album entity.
 fn reject_nesting(roots: &[DiscoveredRoot]) -> Result<()> {
-    let mut dirs: Vec<&PathBuf> = roots.iter().map(|root| &root.dir).collect();
-    dirs.sort();
+    let mut sorted: Vec<&DiscoveredRoot> = roots.iter().collect();
+    sorted.sort_by(|a, b| (&a.media_type, &a.dir).cmp(&(&b.media_type, &b.dir)));
 
-    for pair in dirs.windows(2) {
+    for pair in sorted.windows(2) {
         let [parent, child] = pair else {
             continue;
         };
-        if child.starts_with(parent) {
+
+        // Different media types may nest; only same-type nesting is an error.
+        if parent.media_type != child.media_type {
+            continue;
+        }
+
+        if child.dir.starts_with(&parent.dir) {
             bail!(
-                "root entities may not nest: {} is inside {}",
-                child.display(),
-                parent.display()
+                "root entities of media type '{}' may not nest: {} is inside {}",
+                parent.media_type,
+                child.dir.display(),
+                parent.dir.display()
             );
         }
     }

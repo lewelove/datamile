@@ -7,15 +7,22 @@ use tokio::sync::broadcast;
 
 use crate::state::ServerState;
 
-fn track_meta<'a>(
+/// The media type MPD reports while `datamile-mpv` has not replaced the bridge.
+const MPD_MEDIA_TYPE: &str = "album";
+
+/// The bridge only understands albums, so a file playable under several media
+/// types resolves to its album owner.
+pub(crate) fn track_meta<'a>(
     logic: &'a datamile_logic::LogicEngine,
     file: &str,
 ) -> Option<&'a PlayableLookupItem> {
     let clean = file.trim_start_matches('/');
-    logic
+    let owners = logic
         .playable_lookup
         .get(clean)
-        .or_else(|| logic.playable_lookup.get(file))
+        .or_else(|| logic.playable_lookup.get(file))?;
+
+    owners.iter().find(|item| item.media_type == MPD_MEDIA_TYPE)
 }
 
 fn meta_str(meta: Option<&Value>, keys: &[&str]) -> Option<String> {

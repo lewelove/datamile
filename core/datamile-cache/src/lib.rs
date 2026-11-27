@@ -12,8 +12,8 @@ pub mod stat;
 mod tests;
 
 pub use stat::{
-    FileStat, RootState, RootStates, calculate_path_hash, hash_files, load_state,
-    root_files, root_is_dirty, save_state, walk_files,
+    EntityKey, FileStat, RootState, RootStates, calculate_path_hash, hash_files,
+    load_state, root_files, root_is_dirty, save_state, walk_files,
 };
 
 #[derive(Error, Debug)]

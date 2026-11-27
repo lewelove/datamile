@@ -9,6 +9,17 @@ use crate::CacheError;
 #[cfg(test)]
 mod tests;
 
+/// The unique identity of one compiled entity: its media type and entity dir.
+///
+/// One directory may hold `<media_type>.lock.json` for several media types, so
+/// the directory alone never identifies an entity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct EntityKey {
+    pub media_type: String,
+    /// Always canonicalized before storage or comparison.
+    pub dir: PathBuf,
+}
+
 /// Cheap change detector for a file: its nanosecond mtime and its size.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FileStat {

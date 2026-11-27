@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 pub use backend::{ActionTargetQuery, MediaBackend, PlaybackSlice, UpdateRequest};
+pub use datamile_cache::EntityKey;
 use datamile_logic::LogicEngine;
 use datamile_lua_domain::LogicManifest;
 pub use instance::{Identity, IdentityMismatch, InstanceLock, VERSION};

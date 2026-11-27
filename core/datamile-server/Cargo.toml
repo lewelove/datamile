@@ -10,6 +10,7 @@ repository = "https://github.com/lewelove/datamile"
 workspace = true
 
 [dependencies]
+datamile-cache = { workspace = true }
 datamile-fs = { workspace = true }
 datamile-images = { workspace = true }
 datamile-logic = { workspace = true }
@@ -30,5 +31,6 @@ tokio = { workspace = true }
 tower-http = { workspace = true }
 
 [dev-dependencies]
+image = { workspace = true }
 tempfile = { workspace = true }
 tower = "0.5"

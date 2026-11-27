@@ -10,6 +10,7 @@ repository = "https://github.com/lewelove/datamile"
 workspace = true
 
 [dependencies]
+datamile-cache = { workspace = true }
 datamile-lua-domain = { workspace = true }
 
 alphanumeric-sort = { workspace = true }

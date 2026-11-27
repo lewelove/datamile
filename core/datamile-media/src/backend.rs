@@ -55,10 +55,11 @@ impl MediaEngineBackend {
     ) -> Option<(String, String)> {
         let file = playing_file?;
         let clean = file.trim_start_matches('/');
-        let item = logic
+        let items = logic
             .playable_lookup
             .get(clean)
             .or_else(|| logic.playable_lookup.get(file))?;
+        let item = items.first()?;
         Some((item.media_type.clone(), item.media_id.clone()))
     }
 

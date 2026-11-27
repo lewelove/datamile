@@ -8,7 +8,8 @@ mod text;
 mod tests;
 
 pub use engine::{
-    EntityRecord, ImageLookupItem, LogicEngine, PlayableLookupItem, TypeIndex,
+    CachedImageLookup, EntityRecord, ImageSpecMeta, ImageUpsert, LogicEngine,
+    PlayableLookupItem, TypeIndex,
 };
 pub use sort::{SortKey, SortOrder, value_to_sort_key};
 pub use text::tag_text;

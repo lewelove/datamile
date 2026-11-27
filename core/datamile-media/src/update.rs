@@ -660,7 +660,7 @@ fn ingest_outcome(
     let mut per_type = PerTypeUpdates::new();
 
     for (media_type, dir) in &outcome.removed {
-        if let Some(id) = logic.remove_entity_by_path(dir) {
+        if let Some(id) = logic.remove_entity_by_type_and_path(media_type, dir) {
             per_type.entry(media_type.clone()).or_default().1.push(id);
         }
     }

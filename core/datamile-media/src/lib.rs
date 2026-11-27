@@ -13,6 +13,7 @@ mod tests;
 
 pub use backend::MediaEngineBackend;
 pub use compiler::{CompiledRoot, compile_root, preview_root};
+pub use datamile_cache::EntityKey;
 pub use deps::{ExternalIndex, MediaShared, rebuild_external_index};
 pub use ingest::{ParsedEntity, parse_lock};
 pub use schema::{

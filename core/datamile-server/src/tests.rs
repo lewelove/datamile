@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use datamile_logic::{EntityRecord, LogicEngine};
+use datamile_logic::{EntityRecord, ImageSpecMeta, LogicEngine, PlayableLookupItem};
 use datamile_lua_domain::LogicManifest;
 use datamile_mpd::MpdEngine;
 use serde_json::value::RawValue;
@@ -60,6 +60,39 @@ fn record(media_type: &str, id: &str, lock: &Value) -> EntityRecord {
         playable_uris: Vec::new(),
         image_namespaces: Vec::new(),
     }
+}
+
+fn playable(media_type: &str, media_id: &str, uri: &str) -> PlayableLookupItem {
+    PlayableLookupItem {
+        media_type: media_type.to_string(),
+        media_id: media_id.to_string(),
+        node_index: 0,
+        node_path: vec![("track".to_string(), 0)],
+        path: uri.to_string(),
+        meta: json!({ "title": "Track" }),
+    }
+}
+
+fn image_spec() -> ImageSpecMeta {
+    ImageSpecMeta {
+        fit: "inside".to_string(),
+        filter: "catmullrom".to_string(),
+        target_width: 16,
+        target_height: 16,
+    }
+}
+
+/// A tiny PNG so the cold-cache image path has a real source to render.
+fn write_png(path: &std::path::Path) {
+    let img = image::RgbImage::from_fn(8, 8, |x, y| {
+        image::Rgb([
+            u8::try_from(x).unwrap_or(0),
+            u8::try_from(y).unwrap_or(0),
+            0x40,
+        ])
+    });
+    img.save_with_format(path, image::ImageFormat::Png)
+        .expect("png fixture");
 }
 
 fn manifest() -> LogicManifest {
@@ -565,6 +598,93 @@ async fn router_returns_404_for_an_unknown_action() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// One file playable under several media types reports the `album` owner to
+/// MPD until `datamile-mpv` replaces the bridge.
+#[test]
+fn mpd_bridge_prefers_the_album_owner() {
+    let mut engine = engine_with(&[]);
+    engine
+        .upsert_entity(
+            record(
+                ALBUM,
+                "a",
+                &lock_json(ALBUM, "a", &[("01.flac", json!({}))]),
+            ),
+            vec![playable(ALBUM, "a", "a/01.flac")],
+            Vec::new(),
+            album_eval(),
+        )
+        .expect("album ingests");
+    engine
+        .upsert_entity(
+            record(
+                "vinyl",
+                "a",
+                &lock_json("vinyl", "a", &[("01.flac", json!({}))]),
+            ),
+            vec![playable("vinyl", "a", "a/01.flac")],
+            Vec::new(),
+            json!({}),
+        )
+        .expect("vinyl ingests");
+
+    let item = crate::mpd_bridge::track_meta(&engine, "/a/01.flac").expect("track");
+
+    assert_eq!(item.media_type, ALBUM);
+}
+
+/// A cold-cache image read falls back to the next owner that still has its
+/// source file on disk.
+#[tokio::test]
+async fn image_cold_cache_recovers_from_a_surviving_owner() {
+    let dir = tempfile::tempdir().expect("temp");
+    let cache_root = dir.path().join("cache");
+    let gone = dir.path().join("gone.png");
+    let alive = dir.path().join("alive.png");
+    write_png(&alive);
+
+    let address = "shared-address";
+    let mut engine = engine_with(&[]);
+    engine
+        .upsert_entity(
+            record(ALBUM, "a", &lock_json(ALBUM, "a", &[])),
+            Vec::new(),
+            vec![(address.to_string(), image_spec(), gone)],
+            json!({}),
+        )
+        .expect("first owner ingests");
+    engine
+        .upsert_entity(
+            record(BOOK, "a", &lock_json(BOOK, "a", &[])),
+            Vec::new(),
+            vec![(address.to_string(), image_spec(), alive)],
+            json!({}),
+        )
+        .expect("second owner ingests");
+
+    let state = test_state(engine).await;
+    state.config.write().await.cache_root = cache_root.clone();
+
+    let response = crate::api::router(state)
+        .oneshot(
+            Request::get(format!("/api/images/{address}.png"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        cache_root
+            .join("images")
+            .join(address)
+            .join("master.qoi")
+            .exists(),
+        "the surviving owner renders the master"
+    );
 }
 
 /// INIT carries both media types, even when they share an id.

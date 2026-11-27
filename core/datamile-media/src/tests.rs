@@ -287,8 +287,10 @@ fn schema_rejects_duplicate_root_names() {
     assert!(err.to_string().contains("duplicate"), "unexpected: {err}");
 }
 
+/// One directory may be compiled by several media types at once; each type
+/// keeps its own root entity there.
 #[test]
-fn discovery_rejects_two_types_claiming_one_directory() {
+fn discovery_allows_two_types_in_one_directory() {
     let root = TempDir::new().expect("temp");
     let lib = root.path().join("lib");
     write(&lib.join("A/album.toml"), "album = \"A\"\n");
@@ -314,9 +316,52 @@ fn discovery_rejects_two_types_claiming_one_directory() {
 
     let engine = engine_for(&config);
     let media = read_media_manifest(&engine).expect("manifest");
-    let err =
-        discover_roots(&engine, &media, root.path()).expect_err("collision must fail");
-    assert!(err.to_string().contains("claimed"), "unexpected: {err}");
+    let discovery = discover_roots(&engine, &media, root.path()).expect("shared dir ok");
+
+    assert_eq!(discovery.roots.len(), 2, "both media types keep the dir");
+    assert_eq!(discovery.roots[0].media_type, "album");
+    assert_eq!(discovery.roots[1].media_type, "book");
+    assert_eq!(discovery.roots[0].dir, discovery.roots[1].dir);
+}
+
+/// Nested dirs are allowed across media types: a film's soundtrack folder can
+/// be its own album.
+#[test]
+fn discovery_allows_cross_type_nesting() {
+    let root = TempDir::new().expect("temp");
+    let lib = root.path().join("lib");
+    write(&lib.join("Film/movie.toml"), "title = \"Film\"\n");
+    write(
+        &lib.join("Film/soundtrack/album.toml"),
+        "album = \"Soundtrack\"\n",
+    );
+    let config = root.path().join("init.lua");
+    write(
+        &config,
+        &format!(
+            r#"
+            d.media.root("movie", {{
+                init = "{lib}",
+                select = function(dir) return d.fs.roots(dir, "movie.toml") end,
+                id = function() return "m" end
+            }})
+            d.media.root("album", {{
+                init = "{lib}",
+                select = function(dir) return d.fs.roots(dir, "album.toml") end,
+                id = function() return "a" end
+            }})
+            "#,
+            lib = lib.display()
+        ),
+    );
+
+    let engine = engine_for(&config);
+    let media = read_media_manifest(&engine).expect("manifest");
+    let discovery = discover_roots(&engine, &media, root.path()).expect("nesting ok");
+
+    assert_eq!(discovery.roots.len(), 2);
+    assert_eq!(discovery.roots[0].media_type, "movie");
+    assert_eq!(discovery.roots[1].media_type, "album");
 }
 
 // ------------------------------------------------------------ compilation ----
@@ -1615,9 +1660,10 @@ fn concurrent_state_writers_do_not_lose_entries() {
 
 // ---------------------------------------------------------------- discovery ----
 
-/// Root entities may not nest, in one media type or across two.
+/// Root entities of one media type may not nest, so every file belongs to at
+/// most one root entity of that type.
 #[test]
-fn discovery_rejects_nested_roots() {
+fn discovery_rejects_nested_roots_within_one_media_type() {
     let root = TempDir::new().expect("temp");
     let lib = root.path().join("lib");
     write(&lib.join("album.toml"), "album = \"Outer\"\n");

@@ -99,19 +99,25 @@ async fn ensure_master_image(
         logic.image_lookup.get(address).cloned()
     };
 
-    let Some(item) = lookup_item else {
+    let Some(lookup) = lookup_item else {
         return Err(not_found);
     };
 
-    let raw_path = std::path::Path::new(&item.path);
-    let original_path = if raw_path.is_absolute() {
-        raw_path.to_path_buf()
-    } else {
-        item.entity_dir.join(raw_path)
+    // Every owner of an address renders identical bytes, so the first source
+    // that still exists on disk is as good as any other.
+    let Some((_, original_path)) = lookup
+        .sources
+        .iter()
+        .find(|(_, path)| path.exists())
+        .cloned()
+    else {
+        return Err(not_found);
     };
 
-    let fit_mode = parse_fit_mode(&item.fit).unwrap_or(FitMode::Inside);
-    let filter_type = parse_filter(&item.filter).unwrap_or(FilterType::CatmullRom);
+    let fit_mode = parse_fit_mode(&lookup.spec.fit).unwrap_or(FitMode::Inside);
+    let filter_type = parse_filter(&lookup.spec.filter).unwrap_or(FilterType::CatmullRom);
+    let (target_width, target_height) =
+        (lookup.spec.target_width, lookup.spec.target_height);
 
     let blob_path_clone = master_qoi.clone();
 
@@ -121,8 +127,8 @@ async fn ensure_master_image(
         let _guard = guard;
         let spec = ImageSpec {
             fit_mode,
-            target_width: item.target_width,
-            target_height: item.target_height,
+            target_width,
+            target_height,
             filter_type,
         };
 

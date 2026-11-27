@@ -519,7 +519,7 @@ async fn ingest_and_broadcast(
         }
 
         for (media_type, dir) in &removed_roots {
-            if let Some(id) = logic.remove_entity_by_path(dir) {
+            if let Some(id) = logic.remove_entity_by_type_and_path(media_type, dir) {
                 per_type.entry(media_type.clone()).or_default().1.push(id);
             }
         }

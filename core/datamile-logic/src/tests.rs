@@ -2,11 +2,14 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use datamile_cache::EntityKey;
 use datamile_lua_domain::LogicManifest;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use crate::engine::{EntityRecord, ImageLookupItem, LogicEngine, PlayableLookupItem};
+use crate::engine::{
+    CachedImageLookup, EntityRecord, ImageSpecMeta, LogicEngine, PlayableLookupItem,
+};
 use crate::sort::{SortKey, SortOrder, value_to_sort_key};
 use crate::text::tag_text;
 
@@ -55,8 +58,17 @@ fn eval(library: &str, filter: &str, shelf: &str, genre: &str, title: &str) -> V
 }
 
 fn playable(media_id: &str, index: usize, uri: &str) -> PlayableLookupItem {
+    playable_for(ALBUM, media_id, index, uri)
+}
+
+fn playable_for(
+    media_type: &str,
+    media_id: &str,
+    index: usize,
+    uri: &str,
+) -> PlayableLookupItem {
     PlayableLookupItem {
-        media_type: ALBUM.to_string(),
+        media_type: media_type.to_string(),
         media_id: media_id.to_string(),
         node_index: index,
         node_path: vec![("track".to_string(), index)],
@@ -65,15 +77,31 @@ fn playable(media_id: &str, index: usize, uri: &str) -> PlayableLookupItem {
     }
 }
 
-fn image() -> ImageLookupItem {
-    ImageLookupItem {
-        entity_dir: PathBuf::from("/library/a"),
-        path: "cover.jpg".to_string(),
+/// A record whose own image namespaces point at one content address.
+fn record_with_image(
+    media_type: &str,
+    id: &str,
+    path: &str,
+    address: &str,
+) -> EntityRecord {
+    EntityRecord {
+        image_namespaces: vec![("main".to_string(), address.to_string())],
+        ..record(media_type, id, path)
+    }
+}
+
+fn spec() -> ImageSpecMeta {
+    ImageSpecMeta {
         fit: "inside".to_string(),
         filter: "catmullrom".to_string(),
         target_width: 1080,
         target_height: 1080,
     }
+}
+
+/// One image upsert: address, rendering spec, and the absolute source path.
+fn image(address: &str, source: &str) -> (String, ImageSpecMeta, PathBuf) {
+    (address.to_string(), spec(), PathBuf::from(source))
 }
 
 fn engine_with_two_entities() -> LogicEngine {
@@ -83,7 +111,7 @@ fn engine_with_two_entities() -> LogicEngine {
         .upsert_entity(
             record(ALBUM, "a", "/library/a"),
             vec![playable("a", 0, "a/01.flac")],
-            vec![("a-img".to_string(), image())],
+            vec![image("a-img", "/library/a/cover.jpg")],
             eval("all", "owned", "recent", "Rock", "Beta"),
         )
         .expect("first entity ingests");
@@ -91,7 +119,7 @@ fn engine_with_two_entities() -> LogicEngine {
         .upsert_entity(
             record(ALBUM, "b", "/library/b"),
             vec![playable("b", 0, "b/01.flac")],
-            vec![("b-img".to_string(), image())],
+            vec![image("b-img", "/library/b/cover.jpg")],
             eval("all", "owned", "recent", "Jazz", "Alpha"),
         )
         .expect("second entity ingests");
@@ -315,13 +343,13 @@ fn request_group_is_flat_and_sorted() {
     assert_eq!(reversed_result[0]["value"], json!("Rock"));
 }
 
-/// Removing by path or id also drops the playable and image lookups.
+/// Removing by type and path also drops the playable and image lookups.
 #[test]
 fn removal_clears_lookups() {
     let mut engine = engine_with_two_entities();
 
     assert_eq!(
-        engine.remove_entity_by_path(&PathBuf::from("/library/a")),
+        engine.remove_entity_by_type_and_path(ALBUM, &PathBuf::from("/library/a")),
         Some("a".to_string())
     );
     assert!(!engine.playable_lookup.contains_key("a/01.flac"));
@@ -330,6 +358,178 @@ fn removal_clears_lookups() {
     engine.remove_entity_by_id(ALBUM, "b");
     assert!(engine.entity_record(ALBUM, "b").is_none());
     assert!(!engine.playable_lookup.contains_key("b/01.flac"));
+}
+
+/// Two media types may compile the same directory; removing one leaves the
+/// other indexed.
+#[test]
+fn removal_by_type_and_path_keeps_the_sibling_media_type() {
+    let mut engine = LogicEngine::new(PathBuf::from("/config/init.lua"), manifest());
+
+    engine
+        .upsert_entity(
+            record(ALBUM, "shared", "/library/shared"),
+            Vec::new(),
+            Vec::new(),
+            eval("all", "owned", "recent", "Rock", "Shared"),
+        )
+        .expect("album ingests");
+    engine
+        .upsert_entity(
+            record(BOOK, "shared", "/library/shared"),
+            Vec::new(),
+            Vec::new(),
+            json!({ "libraries": { "all": true } }),
+        )
+        .expect("book ingests");
+
+    assert_eq!(
+        engine.remove_entity_by_type_and_path(ALBUM, &PathBuf::from("/library/shared")),
+        Some("shared".to_string())
+    );
+    assert!(engine.entity_record(ALBUM, "shared").is_none());
+    assert!(engine.entity_record(BOOK, "shared").is_some());
+}
+
+/// One file can be playable under several media types; every owner is kept and
+/// only removal of the last owner drops the URI.
+#[test]
+fn playable_lookup_keeps_every_owning_media_type() {
+    let mut engine = LogicEngine::new(PathBuf::from("/config/init.lua"), manifest());
+    let uri = "shared/01.flac";
+
+    engine
+        .upsert_entity(
+            record(ALBUM, "shared", "/library/shared"),
+            vec![playable_for("album", "shared", 0, uri)],
+            Vec::new(),
+            eval("all", "owned", "recent", "Rock", "Shared"),
+        )
+        .expect("album ingests");
+    engine
+        .upsert_entity(
+            record("vinyl", "shared", "/library/shared"),
+            vec![playable_for("vinyl", "shared", 0, uri)],
+            Vec::new(),
+            json!({}),
+        )
+        .expect("vinyl ingests");
+
+    let owners: Vec<String> = engine.playable_lookup[uri]
+        .iter()
+        .map(|item| item.media_type.clone())
+        .collect();
+    assert_eq!(owners, vec!["album".to_string(), "vinyl".to_string()]);
+
+    engine.remove_entity_by_type_and_path(ALBUM, &PathBuf::from("/library/shared"));
+    let owners: Vec<String> = engine.playable_lookup[uri]
+        .iter()
+        .map(|item| item.media_type.clone())
+        .collect();
+    assert_eq!(owners, vec!["vinyl".to_string()]);
+
+    engine.remove_entity_by_type_and_path("vinyl", &PathBuf::from("/library/shared"));
+    assert!(!engine.playable_lookup.contains_key(uri));
+}
+
+/// Re-ingesting one entity replaces its own playable entry in place instead of
+/// adding a duplicate beside another media type's owner.
+#[test]
+fn playable_lookup_replaces_one_owner_without_duplicates() {
+    let mut engine = engine_with_two_entities();
+    let uri = "a/01.flac";
+
+    engine
+        .upsert_entity(
+            record(ALBUM, "a", "/library/a"),
+            vec![playable_for("album", "a", 0, uri)],
+            Vec::new(),
+            eval("all", "owned", "recent", "Rock", "Beta"),
+        )
+        .expect("re-ingest");
+
+    assert_eq!(engine.playable_lookup[uri].len(), 1);
+}
+
+/// Every owner of one image address shares a single spec and source list, and
+/// a cold-cache read can fall back to any owner that still has the file.
+#[test]
+fn image_lookup_shares_one_address_between_owners() {
+    let mut engine = LogicEngine::new(PathBuf::from("/config/init.lua"), manifest());
+    let address = "shared-img";
+
+    engine
+        .upsert_entity(
+            record_with_image(ALBUM, "a", "/library/a", address),
+            Vec::new(),
+            vec![image(address, "/library/a/cover.jpg")],
+            eval("all", "owned", "recent", "Rock", "Beta"),
+        )
+        .expect("first owner ingests");
+    engine
+        .upsert_entity(
+            record_with_image(BOOK, "a", "/library/a", address),
+            Vec::new(),
+            vec![image(address, "/library/a/other.jpg")],
+            json!({}),
+        )
+        .expect("second owner ingests");
+
+    let sources: Vec<EntityKey> = engine.image_lookup[address]
+        .sources
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect();
+    assert_eq!(
+        sources,
+        vec![
+            EntityKey {
+                media_type: ALBUM.to_string(),
+                dir: PathBuf::from("/library/a"),
+            },
+            EntityKey {
+                media_type: BOOK.to_string(),
+                dir: PathBuf::from("/library/a"),
+            },
+        ]
+    );
+
+    engine.remove_entity_by_type_and_path(BOOK, &PathBuf::from("/library/a"));
+    let surviving: &CachedImageLookup = &engine.image_lookup[address];
+    assert_eq!(surviving.sources.len(), 1, "one owner remains");
+    assert_eq!(surviving.spec, spec());
+
+    engine.remove_entity_by_type_and_path(ALBUM, &PathBuf::from("/library/a"));
+    assert!(!engine.image_lookup.contains_key(address));
+}
+
+/// Re-ingesting an owner updates its source path without adding a second
+/// entry for the same entity key.
+#[test]
+fn image_lookup_replaces_one_owner_path_in_place() {
+    let mut engine = LogicEngine::new(PathBuf::from("/config/init.lua"), manifest());
+    let address = "a-img";
+
+    engine
+        .upsert_entity(
+            record_with_image(ALBUM, "a", "/library/a", address),
+            Vec::new(),
+            vec![image(address, "/library/a/cover.jpg")],
+            eval("all", "owned", "recent", "Rock", "Beta"),
+        )
+        .expect("first ingest");
+    engine
+        .upsert_entity(
+            record_with_image(ALBUM, "a", "/library/a", address),
+            Vec::new(),
+            vec![image(address, "/library/a/scan.jpg")],
+            eval("all", "owned", "recent", "Rock", "Beta"),
+        )
+        .expect("second ingest");
+
+    let sources = &engine.image_lookup[address].sources;
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].1, PathBuf::from("/library/a/scan.jpg"));
 }
 
 /// Two media types may share an id, path lookup and removal stay isolated, and

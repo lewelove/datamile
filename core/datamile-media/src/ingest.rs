@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use datamile_logic::{EntityRecord, ImageLookupItem, PlayableLookupItem, tag_text};
+use datamile_logic::{
+    EntityRecord, ImageSpecMeta, ImageUpsert, PlayableLookupItem, tag_text,
+};
 use serde_json::Value;
 use serde_json::value::RawValue;
 
@@ -10,7 +12,7 @@ use crate::schema::{MediaNodeSchema, MediaRootSchema};
 
 const DEFAULT_IMAGE_DIM: u32 = 1080;
 
-type ImageEntries = Vec<(String, ImageLookupItem)>;
+type ImageEntries = Vec<ImageUpsert>;
 type ImageNamespaces = Vec<(String, String)>;
 
 pub struct ParsedEntity {
@@ -160,11 +162,17 @@ fn parse_images(entity: &Value, root: &Path) -> (ImageEntries, ImageNamespaces) 
                     .unwrap_or(DEFAULT_IMAGE_DIM)
             };
 
+            // The cold-cache recovery path reads the source without knowing the
+            // entity, so a relative source is resolved here, once.
+            let source = if Path::new(path).is_absolute() {
+                PathBuf::from(path)
+            } else {
+                root.join(path)
+            };
+
             images.push((
                 address.to_string(),
-                ImageLookupItem {
-                    entity_dir: root.to_path_buf(),
-                    path: path.to_string(),
+                ImageSpecMeta {
                     fit: entry
                         .get("fit")
                         .and_then(Value::as_str)
@@ -178,6 +186,7 @@ fn parse_images(entity: &Value, root: &Path) -> (ImageEntries, ImageNamespaces) 
                     target_width: dimension("width"),
                     target_height: dimension("height"),
                 },
+                source,
             ));
             namespaces.push((namespace.clone(), address.to_string()));
         }

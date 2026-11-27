@@ -27,6 +27,8 @@ pub struct MediaState {
     pub interfaces: HashMap<String, InterfaceDef>,
     pub mpd: MpdConfig,
     pub compiler_jobs: Option<usize>,
+    /// `server.host`, so a client dials the same address the daemon binds.
+    pub host: String,
     /// `server.port`, normalised to the default when the config leaves it at 0.
     pub port: u16,
 }

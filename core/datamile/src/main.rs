@@ -9,19 +9,18 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use datamile_fs::expand_path;
 use datamile_logic::LogicEngine;
-use datamile_lua_domain::{ActionCtx, DomainLuaEngine, LogicManifest, ServerConfig};
+use datamile_lua_domain::{ActionCtx, DomainLuaEngine, LogicManifest};
 use datamile_media::state::{COMPILE_ROOT_LUA, MEDIA_LUA};
 use datamile_media::{
     ForceMode, LogSink, MediaEngineBackend, MediaState, open_engine, preview_root,
 };
 use datamile_server::instance::InstanceError;
-use datamile_server::{DEFAULT_PORT, Identity, InstanceLock, MediaBackend};
+use datamile_server::{Identity, InstanceLock, MediaBackend};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
-const LOOPBACK: &str = "127.0.0.1";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -196,9 +195,10 @@ impl UpdateArgs {
                 &LogSink,
             )?
         } else {
-            check_daemon(&loopback_url(state.port), &state.config_path).await?;
+            let base_url = daemon_base_url(&state.host, state.port);
+            check_daemon(&base_url, &state.config_path).await?;
             datamile_media::update::delegate(
-                state.port,
+                &base_url,
                 path,
                 self.media_type,
                 force,
@@ -273,31 +273,16 @@ fn action_plan(
 ) -> Result<(String, Vec<String>)> {
     let engine = action_engine()?;
     let evaluated = engine.evaluate_config(config_path)?;
-    let base_url = daemon_base_url(&evaluated.config.server);
+    let server = &evaluated.config.server;
+    let base_url = daemon_base_url(&server.host, server.port);
     let declared = evaluated.actions.get(name).map(Vec::as_slice);
 
     Ok((base_url, resolve_action_dirs(raw_dirs, declared)))
 }
 
-/// The daemon binds `server.host`, so the CLI must call it there. An empty
-/// host means loopback, and an IPv6 literal needs brackets in a URL.
-fn daemon_base_url(server: &ServerConfig) -> String {
-    let host = if server.host.is_empty() {
-        LOOPBACK
-    } else {
-        server.host.as_str()
-    };
-    let host = if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    };
-
-    format!("http://{host}:{}", server_port(server.port))
-}
-
-fn loopback_url(port: u16) -> String {
-    format!("http://{LOOPBACK}:{port}")
+/// The daemon binds `server.host`, so the CLI must call it there.
+fn daemon_base_url(host: &str, port: u16) -> String {
+    format!("http://{}", datamile_server::client_authority(host, port))
 }
 
 /// The same lightweight loader `datamile interface` uses: the media DSL and
@@ -309,15 +294,6 @@ fn action_engine() -> Result<DomainLuaEngine> {
     datamile_media::lua_bridge::register_native_helpers(&engine.runtime)?;
 
     Ok(engine)
-}
-
-/// `server.port` falls back to the default when configuration leaves it at 0.
-const fn server_port(configured: u16) -> u16 {
-    if configured == 0 {
-        return DEFAULT_PORT;
-    }
-
-    configured
 }
 
 /// There is no offline resolver: without a live daemon the targets cannot be

@@ -178,6 +178,7 @@ impl MediaBackend for MediaEngineBackend {
             interfaces: evaluated.interfaces.clone(),
             mpd: mpd.clone(),
             compiler_jobs,
+            host: evaluated.config.server.host.clone(),
             port,
         };
 

@@ -909,6 +909,27 @@ async fn x_reports_unresolved_targets_in_the_run() {
     );
 }
 
+/// A client dials one normalised authority, so a wildcard bind still reaches
+/// the daemon and an IPv6 literal carries its brackets.
+#[test]
+fn client_authority_dials_a_reachable_address() {
+    for (host, port, expected) in [
+        ("127.0.0.1", 8000, "127.0.0.1:8000"),
+        ("192.168.1.50", 8000, "192.168.1.50:8000"),
+        ("0.0.0.0", 9000, "127.0.0.1:9000"),
+        ("::", 8000, "[::1]:8000"),
+        ("fd00::1", 8001, "[fd00::1]:8001"),
+        ("", 8000, "127.0.0.1:8000"),
+        ("127.0.0.1", 0, "127.0.0.1:8000"),
+    ] {
+        assert_eq!(
+            crate::client_authority(host, port),
+            expected,
+            "host '{host}' port {port}"
+        );
+    }
+}
+
 /// The guard rejects a Host that could only come from DNS rebinding.
 #[tokio::test]
 async fn mutating_routes_require_an_allowed_host() {

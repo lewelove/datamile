@@ -205,6 +205,7 @@ fn media_state(f: &Fixture) -> (MediaState, LogicManifest) {
             ..datamile_mpd::MpdConfig::default()
         },
         compiler_jobs: None,
+        host: "127.0.0.1".to_string(),
         port: datamile_server::DEFAULT_PORT,
     };
 
@@ -2183,6 +2184,7 @@ fn two_type_shared(f: &TwoTypes) -> Arc<MediaShared> {
         interfaces: evaluated.interfaces,
         mpd: datamile_mpd::MpdConfig::default(),
         compiler_jobs: None,
+        host: "127.0.0.1".to_string(),
         port: datamile_server::DEFAULT_PORT,
     };
 

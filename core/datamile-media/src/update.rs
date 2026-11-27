@@ -985,7 +985,7 @@ pub(crate) fn canonical_or_self(path: &Path) -> PathBuf {
 /// An unterminated stream is an error: a dropped `Finished` must never turn a
 /// failure into a success.
 pub async fn delegate(
-    port: u16,
+    base_url: &str,
     path: Option<PathBuf>,
     media_type: Option<String>,
     force: ForceMode,
@@ -1000,7 +1000,7 @@ pub async fn delegate(
     });
 
     let mut response = local_client()
-        .post(format!("http://127.0.0.1:{port}/api/update"))
+        .post(format!("{base_url}/api/update"))
         .json(&body)
         .send()
         .await

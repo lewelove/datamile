@@ -32,6 +32,35 @@ pub use state::{
 
 /// Port used when the config leaves `server.port` at 0.
 pub const DEFAULT_PORT: u16 = 8000;
+
+/// `server.port` falls back to the default when configuration leaves it at 0.
+#[must_use]
+pub const fn default_port(configured: u16) -> u16 {
+    if configured == 0 {
+        return DEFAULT_PORT;
+    }
+
+    configured
+}
+
+/// The `host:port` every client dials for a daemon bound to `host`.
+///
+/// A wildcard bind is not a destination, so it dials loopback; an IPv6 literal
+/// needs brackets. `server.host` is validated as an `IpAddr`, so the fallback
+/// only keeps a misconfigured host readable.
+#[must_use]
+pub fn client_authority(host: &str, port: u16) -> String {
+    let port = default_port(port);
+    let host = if host.is_empty() { "127.0.0.1" } else { host };
+
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) if ip.is_unspecified() => format!("127.0.0.1:{port}"),
+        Ok(IpAddr::V6(ip)) if ip.is_unspecified() => format!("[::1]:{port}"),
+        Ok(IpAddr::V6(ip)) => format!("[{ip}]:{port}"),
+        Ok(IpAddr::V4(ip)) => format!("{ip}:{port}"),
+        Err(_) => format!("{host}:{port}"),
+    }
+}
 use tokio::sync::{RwLock, broadcast};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
@@ -99,11 +128,7 @@ pub async fn run(backend: Arc<dyn MediaBackend>) -> Result<()> {
         (datamile_mpd::MpdEngine::new(tx), status_tx)
     };
 
-    let port = if config.port == 0 {
-        DEFAULT_PORT
-    } else {
-        config.port
-    };
+    let port = default_port(config.port);
     let host: IpAddr = config
         .host
         .parse()

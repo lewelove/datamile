@@ -19,26 +19,15 @@ pub fn execute(name: Option<String>) -> Result<()> {
         anyhow::bail!("Interface '{raw_name}' is not declared in configuration.");
     }
 
-    let host = if evaluated.config.server.host.is_empty() {
-        "127.0.0.1".to_string()
-    } else {
-        evaluated.config.server.host.clone()
-    };
-    let port = if evaluated.config.server.port == 0 {
-        8000
-    } else {
-        evaluated.config.server.port
-    };
-
-    let url = format!("http://{host}:{port}");
-    let ws_url = format!("ws://{host}:{port}/ws");
+    let server = &evaluated.config.server;
+    let authority = datamile_server::client_authority(&server.host, server.port);
 
     let ctx = json!({
         "server": {
-            "host": host,
-            "port": port,
-            "url": url,
-            "ws_url": ws_url
+            "host": server.host,
+            "port": datamile_server::default_port(server.port),
+            "url": format!("http://{authority}"),
+            "ws_url": format!("ws://{authority}/ws")
         }
     });
 

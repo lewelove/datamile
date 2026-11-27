@@ -426,7 +426,7 @@ lookups exist when the shared `POST /api/x` resolver lands.
 | Modify | `interfaces/web-app/src/types.ts`, `api.ts`, `library/collection.svelte.ts` | `ActionEntry`/`ActionMap` types, `AlbumDictEntry.path`, `executeAction(name, media, dir, options?)` targeting `POST /api/x` |
 | Modify | `interfaces/web-app/src/modules/HomeView/ModalDrawer/ModalDrawer.svelte`, `modules/NavigationBar.svelte`, `App.svelte` | Update all 8 `hasAction` and 5 label/execute call sites to pass `media` and `path` |
 | Modify | `interfaces/web-app/package.json`, `devenv.nix` | Add `"test": "bun test"` script and run it in `devenv shell -- tests` |
-| Modify | `docs/vocabulary.md`, `docs/lua-api.md`, `README.md` | Update full API docs (§2, §9, §10, §11) and `README.md` action examples after implementation |
+| Modify | `GLOSSARY.md`, `docs/lua-api.md`, `README.md` | Update full API docs (§2, §9, §10, §11) and `README.md` action examples after implementation |
 
 ### Phases
 
@@ -437,7 +437,7 @@ Each phase must be a separate commit that compiles cleanly and passes
    `__DATAMILE_GET_ACTIONS` -> `ActionDeclarations`, `__DATAMILE_RESOLVE_ACTIONS`
    via `resolve_actions`, `ActionPresentation`/`ActionEntry`/`ActionMap`/`ActionCtx`
    in `datamile-lua-domain`, `validate_media_schema` action check,
-   `ServerConfig.allowed_origins` parsing/validation, `ingest.rs` `dict.path`,
+   `ServerConfig.allowed_origins` parsing/CIDR validation, `ingest.rs` `dict.path`,
    and `backend.rs` projecting `ActionMap` into existing `ActionDef` so
    downstream crates keep compiling for this commit.
 2. **Routes, `ActionMap` cutover, & LAN security**: Switch `ServerConfig.actions`

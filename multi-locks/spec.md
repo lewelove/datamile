@@ -145,7 +145,7 @@ Changes:
   `media_type` parameter) and claim the config digest only on
   `UpdateScope::All { media_type: None }` with zero failures.
 
-### 3. Dependency index
+### 3. External index
 
 `ExternalIndex` in `core/datamile-media/src/deps.rs` becomes:
 
@@ -391,7 +391,7 @@ the daemon's `LogicEngine` index (`MediaManifest`, `ActionMap`, and
 | Modify | `core/datamile-server/src/mpd_bridge.rs` | Filter `playable_lookup` for `"album"` |
 | Modify | `core/datamile-server/src/api/images.rs` | Try `CachedImageLookup.sources` in order on cold-cache `master.qoi` miss |
 | Modify | `core/datamile-server/src/api/x.rs`, `tests.rs` | Shared target resolver backing `POST /api/x`; server tests for resolution matrix, `mpd_bridge`, and CAS `image_lookup` fallback |
-| Modify | `docs/vocabulary.md`, `docs/lua-api.md` | Update §4.1, §6, §7, §8, and vocabulary after implementation |
+| Modify | `GLOSSARY.md`, `docs/lua-api.md` | Update §4.1, §6, §7, §8, and glossary after implementation |
 
 ### Phases
 
@@ -401,7 +401,7 @@ Each phase must be a separate commit that compiles cleanly and passes
 1. **Identity, discovery, and lookups**: `EntityKey` in `datamile-cache` (+ `datamile-server/Cargo.toml` and `lib.rs` re-exports), `remove_entity_by_type_and_path` (updating `update.rs`, `watcher.rs`, `engine.rs`, and `tests.rs`), `playable_lookup` `Vec`, CAS `CachedImageLookup` in `engine.rs` and `images.rs`, `mpd_bridge` `"album"` filter, per-type discovery in `schema.rs`.
 2. **Freshness and `CompileGuard`**: `walk_files` skipping `*.lock.json`, `RootState.lock_stat`, `root_is_dirty` lock checks, `CompiledRoot.lock_stat`, `CompileGuard` in `datamile-lua` (`record_dependency` + enumerator filtering), read-only error isolation, record-on-all-compiled in `update.rs`.
 3. **Single write path**: `MediaState::init_dirs()` from `media_roots()`, `ExternalIndex` on `EntityKey`, `UpdateScope` + `UpdateRequest.entities` + `force_update_entity`, route `watcher.rs` through `run_server_update`.
-4. **Target resolution & docs**: Shared resolver for `POST /api/x` (paired with `specs/actions/spec.md` phases 2–3), plus `docs/vocabulary.md` and `docs/lua-api.md` updates.
+4. **Target resolution & docs**: Shared resolver for `POST /api/x` (paired with `specs/actions/spec.md` phases 2–3), plus `GLOSSARY.md` and `docs/lua-api.md` updates.
 
 ### Tests
 

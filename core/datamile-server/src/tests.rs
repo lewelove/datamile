@@ -1,17 +1,20 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use datamile_cache::stat::LOCK_SUFFIX;
 use datamile_logic::{EntityRecord, ImageSpecMeta, LogicEngine, PlayableLookupItem};
-use datamile_lua_domain::LogicManifest;
+use datamile_lua_domain::{
+    ActionCtx, ActionEntry, ActionMap, ActionPresentation, LogicManifest,
+};
 use datamile_mpd::MpdEngine;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::backend::{ActionTargetQuery, MediaBackend, PlaybackSlice, UpdateRequest};
+use crate::backend::{MediaBackend, PlaybackSlice, UpdateRequest};
 use crate::state::{ImageClaim, ImageTaskRegistry, ServerConfig, ServerState};
 
 const ALBUM: &str = "album";
@@ -144,9 +147,47 @@ fn album_eval() -> Value {
 }
 
 struct MockBackend {
-    payloads: Arc<Mutex<Vec<Value>>>,
+    payloads: Arc<Mutex<Vec<ActionCtx>>>,
     /// Makes `trigger_update` fail, as a pass that cannot start does.
     update_fails: bool,
+}
+
+/// One generic action, one scoped to `album`, and one that always raises.
+fn action_map() -> ActionMap {
+    let album = BTreeMap::from([(
+        ALBUM.to_string(),
+        ActionPresentation {
+            label: "Open Album".to_string(),
+            description: None,
+        },
+    )]);
+
+    BTreeMap::from([
+        (
+            "open_folder".to_string(),
+            ActionEntry {
+                label: "Open folder".to_string(),
+                description: None,
+                media: None,
+            },
+        ),
+        (
+            "open_album".to_string(),
+            ActionEntry {
+                label: "Open album".to_string(),
+                description: None,
+                media: Some(album),
+            },
+        ),
+        (
+            "fail".to_string(),
+            ActionEntry {
+                label: "Fail".to_string(),
+                description: None,
+                media: None,
+            },
+        ),
+    ])
 }
 
 impl MockBackend {
@@ -179,16 +220,13 @@ impl MediaBackend for MockBackend {
             state_root: PathBuf::from("/state"),
             resolved_dependencies: Vec::new(),
             interfaces: HashMap::new(),
-            actions: HashMap::from([(
-                "open_folder".to_string(),
-                datamile_lua_domain::ActionDef {
-                    label: "Open folder".to_string(),
-                    description: None,
-                },
-            )]),
+            actions: action_map(),
+            media_types: vec![ALBUM.to_string(), BOOK.to_string()],
             config_dir: PathBuf::from("/config"),
             config_path: PathBuf::from("/config/init.lua"),
             compiler_jobs: None,
+            host: "127.0.0.1".to_string(),
+            allowed_origins: Vec::new(),
             port: crate::DEFAULT_PORT,
         })
     }
@@ -203,31 +241,12 @@ impl MediaBackend for MockBackend {
         Vec::new()
     }
 
-    fn resolve_action_targets(
-        &self,
-        query: &ActionTargetQuery,
-        _logic: &LogicEngine,
-        _playing_file: Option<&str>,
-    ) -> Vec<Value> {
-        let media_type = query
-            .media_type
-            .clone()
-            .unwrap_or_else(|| ALBUM.to_string());
-        query.id.as_ref().map_or_else(Vec::new, |id| {
-            vec![json!({
-                "type": media_type,
-                "id": id,
-                "path": format!("/library/{media_type}/{id}"),
-                "lock": {}
-            })]
-        })
-    }
+    fn execute_action(&self, name: &str, ctx: &ActionCtx) -> anyhow::Result<()> {
+        if name == "fail" {
+            anyhow::bail!("the action raised");
+        }
 
-    fn execute_action(&self, _name: &str, payload: &Value) -> anyhow::Result<()> {
-        self.payloads
-            .lock()
-            .expect("payloads")
-            .push(payload.clone());
+        self.payloads.lock().expect("payloads").push(ctx.clone());
         Ok(())
     }
 
@@ -306,6 +325,54 @@ async fn body_json(response: axum::response::Response) -> Value {
         .await
         .expect("body");
     serde_json::from_slice(&bytes).expect("json body")
+}
+
+/// One entity per `(media type, id, entity dir)` tuple, at that exact dir.
+fn engine_at(entries: &[(&str, &str, &Path)]) -> LogicEngine {
+    let mut engine = LogicEngine::new(PathBuf::from("/config/init.lua"), manifest());
+    for (media_type, id, dir) in entries {
+        let lock = lock_json(media_type, id, &[("01.flac", json!({}))]);
+        let mut record = record(media_type, id, &lock);
+        record.path = dir.to_path_buf();
+        engine
+            .upsert_entity(record, Vec::new(), Vec::new(), album_eval())
+            .expect("entity ingests");
+    }
+    engine.build_cache();
+    engine
+}
+
+/// Writes the lock the resolver reads next to the entity.
+fn write_lock(dir: &Path, media_type: &str, id: &str) {
+    let lock = lock_json(media_type, id, &[("01.flac", json!({}))]);
+    std::fs::write(
+        dir.join(format!("{media_type}{LOCK_SUFFIX}")),
+        lock.to_string(),
+    )
+    .expect("lock file");
+}
+
+fn json_request(path: &str, body: &Value) -> Request<Body> {
+    Request::post(path)
+        .header("host", "127.0.0.1:8000")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request")
+}
+
+fn empty_post(path: &str) -> Request<Body> {
+    Request::post(path)
+        .header("host", "127.0.0.1:8000")
+        .body(Body::empty())
+        .expect("request")
+}
+
+async fn x_status(app: &axum::Router, request: Request<Body>) -> StatusCode {
+    app.clone()
+        .oneshot(request)
+        .await
+        .expect("response")
+        .status()
 }
 
 /// Object keys in the order the payload serialized them.
@@ -538,9 +605,10 @@ async fn router_reports_current_playback() {
     );
 }
 
-/// Actions receive `{ items, options, isatty }`, scoped by the `type` param.
+/// A generic action with no target runs once with no lock and no media, in both
+/// the execute and the delegate mode.
 #[tokio::test]
-async fn router_passes_items_and_type_to_actions() {
+async fn x_runs_a_generic_action_targetless() {
     let backend = Arc::new(MockBackend::new());
     let payloads = Arc::clone(&backend.payloads);
     let state = test_state_with_backend(
@@ -548,62 +616,450 @@ async fn router_passes_items_and_type_to_actions() {
         Arc::clone(&backend),
     )
     .await;
-    let app = crate::api::router(state);
+    let app = crate::secured_router(state).await;
+
+    for execute in [true, false] {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "/api/x",
+                &json!({ "name": "open_folder", "execute": execute }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["runs"][0]["media"], json!(null));
+        assert_eq!(body["runs"][0]["dir"], json!(null));
+        assert!(body["runs"][0].get("lock").is_none());
+    }
+
+    let ctx = payloads
+        .lock()
+        .expect("payloads")
+        .first()
+        .expect("one executed run")
+        .clone();
+    assert_eq!(ctx.lock, None);
+    assert_eq!(ctx.media, None);
+    assert!(!ctx.isatty);
+}
+
+/// Two media types on one directory produce one run per type.
+#[tokio::test]
+async fn x_resolves_a_multi_media_cross_product() {
+    let dir = tempfile::tempdir().expect("temp");
+    write_lock(dir.path(), ALBUM, "a");
+    write_lock(dir.path(), BOOK, "a");
+
+    let state = test_state(engine_at(&[
+        (ALBUM, "a", dir.path()),
+        (BOOK, "a", dir.path()),
+    ]))
+    .await;
+    let app = crate::secured_router(state).await;
 
     let response = app
-        .oneshot(
-            Request::post("/api/actions/open_folder?type=album&id=a")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(json_request(
+            "/api/x",
+            &json!({
+                "name": "open_folder",
+                "dirs": [dir.path().to_string_lossy()],
+                "media": [ALBUM, BOOK],
+                "execute": false
+            }),
+        ))
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let payload = {
-        let recorded = payloads.lock().expect("payloads");
-        recorded.first().expect("payload recorded").clone()
-    };
-    assert_eq!(payload["items"][0]["type"], json!(ALBUM));
-    assert_eq!(payload["items"][0]["id"], json!("a"));
-    assert_eq!(payload["isatty"], json!(false));
+    let body = body_json(response).await;
+    assert_eq!(body["runs"][0]["media"], json!(ALBUM));
+    assert_eq!(body["runs"][1]["media"], json!(BOOK));
+    assert_eq!(body["runs"][0]["lock"][ALBUM]["id"], json!("a"));
+    assert_eq!(body["runs"][1]["lock"][BOOK]["id"], json!("a"));
+}
+
+/// Two directories crossed with one media type produce one run per pair, each
+/// with the lock read from disk.
+#[tokio::test]
+async fn x_resolves_a_multi_dir_cross_product() {
+    let first = tempfile::tempdir().expect("temp");
+    let second = tempfile::tempdir().expect("temp");
+    write_lock(first.path(), ALBUM, "a");
+    write_lock(second.path(), ALBUM, "b");
+
+    let state = test_state(self::engine_at(&[
+        (ALBUM, "a", first.path()),
+        (ALBUM, "b", second.path()),
+    ]))
+    .await;
+    let app = crate::secured_router(state).await;
+
+    let response = app
+        .oneshot(json_request(
+            "/api/x",
+            &json!({
+                "name": "open_album",
+                "dirs": [
+                    first.path().to_string_lossy(),
+                    second.path().to_string_lossy()
+                ],
+                "media": [ALBUM],
+                "execute": false
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["runs"][0]["media"], json!(ALBUM));
+    assert_eq!(body["runs"][1]["media"], json!(ALBUM));
+    assert_eq!(body["runs"][0]["lock"][ALBUM]["id"], json!("a"));
+    assert_eq!(body["runs"][1]["lock"][ALBUM]["id"], json!("b"));
+}
+
+/// A failing `run(ctx)` is reported per run and does not fail the request.
+#[tokio::test]
+async fn x_reports_a_per_run_action_error() {
+    let dir = tempfile::tempdir().expect("temp");
+    write_lock(dir.path(), ALBUM, "a");
+    let state = test_state(self::engine_at(&[(ALBUM, "a", dir.path())])).await;
+    let app = crate::secured_router(state).await;
+
+    let response = app
+        .oneshot(json_request(
+            "/api/x",
+            &json!({
+                "name": "fail",
+                "dirs": [dir.path().to_string_lossy()],
+                "execute": true
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["runs"][0]["error"], json!("the action raised"));
+    assert!(body["runs"][0].get("lock").is_none());
+}
+
+/// Every request-shape failure maps to its documented status.
+#[tokio::test]
+async fn x_rejects_bad_requests() {
+    let state = test_state(engine_with(&[])).await;
+    let app = crate::secured_router(state).await;
+
+    let cases = [
+        (
+            json_request("/api/x", &json!({ "name": "open_album" })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json_request(
+                "/api/x",
+                &json!({"name": "open_folder", "dirs": ["relative"]}),
+            ),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json_request(
+                "/api/x",
+                &json!({"name": "open_folder", "media": ["movie"]}),
+            ),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json_request("/api/x", &json!({ "name": "missing" })),
+            StatusCode::NOT_FOUND,
+        ),
+    ];
+
+    for (request, expected) in cases {
+        assert_eq!(x_status(&app, request).await, expected);
+    }
+}
+
+/// `execute: false` is a CLI-only mode; a browser marker rejects it.
+#[tokio::test]
+async fn x_rejects_a_browser_delegation() {
+    let state = test_state(engine_with(&[])).await;
+    let app = crate::secured_router(state).await;
+
+    for header in [
+        ("origin", "http://localhost:5173"),
+        ("sec-fetch-site", "same-origin"),
+    ] {
+        let request = Request::post("/api/x")
+            .header("host", "127.0.0.1:8000")
+            .header("content-type", "application/json")
+            .header(header.0, header.1)
+            .body(Body::from(
+                json!({ "name": "open_folder", "execute": false }).to_string(),
+            ))
+            .unwrap();
+
+        assert_eq!(
+            x_status(&app, request).await,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            header.0
+        );
+    }
+}
+
+/// A body that is not JSON fails at the extractor, not in the handler.
+#[tokio::test]
+async fn x_rejects_a_non_json_body() {
+    let state = test_state(engine_with(&[])).await;
+    let app = crate::secured_router(state).await;
+
+    let text = Request::post("/api/x")
+        .header("host", "127.0.0.1:8000")
+        .header("content-type", "text/plain")
+        .body(Body::from("name=open_folder"))
+        .unwrap();
+    assert_eq!(
+        x_status(&app, text).await,
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+
+    let broken = Request::post("/api/x")
+        .header("host", "127.0.0.1:8000")
+        .header("content-type", "application/json")
+        .body(Body::from("{"))
+        .unwrap();
+    assert_eq!(
+        x_status(&app, broken).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+}
+
+/// A missing or unindexed target is a run error, not a request error.
+#[tokio::test]
+async fn x_reports_unresolved_targets_in_the_run() {
+    let dir = tempfile::tempdir().expect("temp");
+    let state = test_state(engine_with(&[])).await;
+    let app = crate::secured_router(state).await;
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/api/x",
+            &json!({
+                "name": "open_album",
+                "dirs": [dir.path().to_string_lossy()],
+                "execute": false
+            }),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(response).await;
+    assert!(
+        body["runs"][0]["error"]
+            .as_str()
+            .expect("error")
+            .contains("run 'datamile update'")
+    );
+
+    let missing = dir.path().join("gone");
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/api/x",
+            &json!({
+                "name": "open_folder",
+                "dirs": [missing.to_string_lossy()],
+                "execute": false
+            }),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(response).await;
+    assert!(
+        body["runs"][0]["error"]
+            .as_str()
+            .expect("error")
+            .contains("does not exist")
+    );
+
+    // An explicit media type must not replace the directory error with a lock
+    // read error.
+    let response = app
+        .oneshot(json_request(
+            "/api/x",
+            &json!({
+                "name": "open_folder",
+                "dirs": [missing.to_string_lossy()],
+                "media": [ALBUM],
+                "execute": false
+            }),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(response).await;
+    assert!(
+        body["runs"][0]["error"]
+            .as_str()
+            .expect("error")
+            .contains("does not exist")
+    );
+}
+
+/// The guard rejects a Host that could only come from DNS rebinding.
+#[tokio::test]
+async fn mutating_routes_require_an_allowed_host() {
+    let state = test_state(engine_with(&[])).await;
+    let app = crate::secured_router(state).await;
+
+    for path in ["/api/reset", "/api/x", "/api/playback/clear"] {
+        let evil = Request::post(path)
+            .header("host", "evil.com:8000")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            x_status(&app, evil).await,
+            StatusCode::FORBIDDEN,
+            "path {path}"
+        );
+    }
+
+    let missing = Request::post("/api/reset").body(Body::empty()).unwrap();
+    assert_eq!(x_status(&app, missing).await, StatusCode::FORBIDDEN);
+
+    for host in [
+        "localhost",
+        "127.0.0.1:8000",
+        "[::1]",
+        "[::1]:8000",
+        "192.168.1.5:9000",
+    ] {
+        let request = Request::post("/api/reset")
+            .header("host", host)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(x_status(&app, request).await, StatusCode::OK, "host {host}");
+    }
+}
+
+/// Configured hostnames and CIDRs extend the built-in allowlist for both the
+/// `Host` guard and the CORS policy.
+#[tokio::test]
+async fn mutating_routes_allow_configured_origins() {
+    let state = test_state(engine_with(&[])).await;
+    {
+        let mut config = state.config.write().await;
+        config.allowed_origins = vec!["box.lan".to_string(), "10.0.0.0/8".to_string()];
+    }
+    let app = crate::secured_router(state).await;
+
+    for host in ["box.lan:8000", "10.1.2.3:8000"] {
+        let request = Request::post("/api/reset")
+            .header("host", host)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(x_status(&app, request).await, StatusCode::OK, "host {host}");
+    }
+
+    let origin = Request::post("/api/reset")
+        .header("host", "127.0.0.1:8000")
+        .header("origin", "https://box.lan:5173")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(origin).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .expect("cors header"),
+        "https://box.lan:5173"
+    );
+}
+
+/// `Origin: null` and public origins are rejected on mutating routes.
+#[tokio::test]
+async fn mutating_routes_require_an_allowed_origin() {
+    let state = test_state(engine_with(&[])).await;
+    let app = crate::secured_router(state).await;
+
+    for origin in ["null", "https://example.com"] {
+        let request = Request::post("/api/reset")
+            .header("host", "127.0.0.1:8000")
+            .header("origin", origin)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            x_status(&app, request).await,
+            StatusCode::FORBIDDEN,
+            "origin {origin}"
+        );
+    }
+
+    let allowed = Request::post("/api/reset")
+        .header("host", "127.0.0.1:8000")
+        .header("origin", "http://localhost:5173")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(allowed).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .expect("cors header"),
+        "http://localhost:5173"
+    );
+}
+
+/// `INIT` and `LOGIC_UPDATE` carry the derived action map, not a flat one.
+#[tokio::test]
+async fn init_and_logic_update_broadcast_the_action_map() {
+    let state = test_state(engine_with(&[])).await;
+    let mut events = state.tx.subscribe();
+
+    let init: Value =
+        serde_json::from_str(&crate::api::websocket::init_payload(&state).await)
+            .expect("init json");
+    assert_eq!(
+        init["actions"]["open_folder"]["label"],
+        json!("Open folder")
+    );
+    assert_eq!(
+        init["actions"]["open_album"]["media"][ALBUM]["label"],
+        json!("Open Album")
+    );
+
+    let app = crate::secured_router(state).await;
+    let response = app.oneshot(empty_post("/api/reset")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let event: Value =
+        serde_json::from_str(&events.recv().await.expect("event")).expect("event json");
+    assert_eq!(event["type"], json!("LOGIC_UPDATE"));
+    assert_eq!(
+        event["actions"]["open_album"]["media"][ALBUM]["label"],
+        json!("Open Album")
+    );
 }
 
 #[tokio::test]
 async fn router_rejects_an_empty_image_cache_request() {
     let state = test_state(engine_with(&[])).await;
-    let app = crate::api::router(state);
+    let app = crate::secured_router(state).await;
 
     let response = app
-        .oneshot(
-            Request::post("/api/images/cache")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"format":"bmp","size":200,"filter":"lanczos"}"#,
-                ))
-                .unwrap(),
-        )
+        .oneshot(json_request(
+            "/api/images/cache",
+            &json!({"format": "bmp", "size": 200, "filter": "lanczos"}),
+        ))
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn router_returns_404_for_an_unknown_action() {
-    let state = test_state(engine_with(&[])).await;
-    let app = crate::api::router(state);
-
-    let response = app
-        .oneshot(
-            Request::post("/api/actions/missing")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 /// One file playable under several media types reports the `album` owner to
@@ -781,44 +1237,16 @@ async fn router_reports_identity() {
     assert_eq!(body["reload_error"], json!(null));
 }
 
-/// `/api/select` resolves action targets from the body, using the daemon's
-/// already-built index instead of a local rescan.
-#[tokio::test]
-async fn router_selects_targets_from_the_request_body() {
-    let state = test_state(engine_with(&[(ALBUM, "a", album_eval())])).await;
-    let app = crate::api::router(state);
-
-    let response = app
-        .oneshot(
-            Request::post("/api/select")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"media_type":"album","id":"a"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let items = body_json(response).await;
-    assert_eq!(items[0]["type"], json!(ALBUM));
-    assert_eq!(items[0]["id"], json!("a"));
-}
-
 /// A pass that cannot start still ends the stream with `Finished`, so the CLI
 /// reports the failure instead of a truncated stream.
 #[tokio::test]
 async fn update_stream_reports_a_start_failure_as_events() {
     let state =
         test_state_with_backend(engine_with(&[]), Arc::new(MockBackend::failing())).await;
-    let app = crate::api::router(state);
+    let app = crate::secured_router(state).await;
 
     let response = app
-        .oneshot(
-            Request::post("/api/update")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"force":false}"#))
-                .unwrap(),
-        )
+        .oneshot(json_request("/api/update", &json!({"force": false})))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);

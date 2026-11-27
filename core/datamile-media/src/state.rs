@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use datamile_cache::calculate_path_hash;
-use datamile_lua_domain::{ActionDef, DomainLuaEngine, InterfaceDef, LogicManifest};
+use datamile_lua_domain::{DomainLuaEngine, InterfaceDef, LogicManifest};
 use datamile_mpd::MpdConfig;
 
 use crate::schema::{DiscoveredRoot, MediaManifest, MediaRootSchema};
@@ -24,7 +24,6 @@ pub struct MediaState {
     pub logic_manifest: LogicManifest,
     pub roots: Vec<DiscoveredRoot>,
     pub dependencies: Vec<PathBuf>,
-    pub actions: HashMap<String, ActionDef>,
     pub interfaces: HashMap<String, InterfaceDef>,
     pub mpd: MpdConfig,
     pub compiler_jobs: Option<usize>,

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use datamile_logic::LogicEngine;
-use datamile_lua_domain::{ActionDef, InterfaceDef};
+use datamile_lua_domain::{ActionMap, InterfaceDef};
 use datamile_mpd::{MpdConfig, MpdEngine};
 use tokio::sync::{RwLock, broadcast, watch};
 
@@ -69,10 +69,18 @@ pub struct ServerConfig {
     pub state_root: PathBuf,
     pub resolved_dependencies: Vec<PathBuf>,
     pub interfaces: HashMap<String, InterfaceDef>,
-    pub actions: HashMap<String, ActionDef>,
+    pub actions: ActionMap,
+    /// Every media type declared by `d.media`, so `POST /api/x` can reject an
+    /// unregistered `media` value before it resolves directories.
+    pub media_types: Vec<String>,
     pub config_dir: PathBuf,
     pub config_path: PathBuf,
     pub compiler_jobs: Option<usize>,
+    /// `server.host`; the daemon binds it at startup.
+    pub host: String,
+    /// `server.allowed_origins`; extra hostnames or CIDR blocks next to the
+    /// built-in loopback and LAN allowlist.
+    pub allowed_origins: Vec<String>,
     /// `server.port`; the daemon binds it and exits if a reload changes it.
     pub port: u16,
 }

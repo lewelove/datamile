@@ -47,14 +47,7 @@ pub(crate) async fn init_payload(state: &ServerState) -> String {
         (media, logic.manifest.clone(), shelves)
     };
 
-    let actions: BTreeMap<_, _> = state
-        .config
-        .read()
-        .await
-        .actions
-        .clone()
-        .into_iter()
-        .collect();
+    let actions = state.config.read().await.actions.clone();
     let ui_data = state.ui_state.read().await.clone();
 
     json!({

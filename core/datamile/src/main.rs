@@ -1,6 +1,5 @@
 mod interface;
 
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +13,7 @@ use datamile_media::{
     ForceMode, LogSink, MediaEngineBackend, MediaState, open_engine, preview_root,
 };
 use datamile_server::instance::InstanceError;
-use datamile_server::{ActionTargetQuery, Identity, InstanceLock, MediaBackend};
+use datamile_server::{Identity, InstanceLock, MediaBackend};
 use serde_json::{Value, json};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -214,100 +213,74 @@ impl UpdateArgs {
 struct XArgs {
     #[arg(value_name = "NAME", required = true)]
     name: String,
-    #[arg(long = "type", value_name = "MEDIA_TYPE")]
-    media_type: Option<String>,
-    #[arg(long, short = 'p', group = "target")]
-    playing: bool,
-    #[arg(long, group = "target")]
-    id: Option<String>,
-    #[arg(long, short = 'q', group = "target")]
-    query: Option<String>,
-    #[arg(long, short = 'd', group = "target")]
-    directory: Option<String>,
-    #[arg(long, short = 'r', group = "target")]
-    recursive: Option<String>,
-    #[arg(long, short = 'l', group = "target")]
-    library: bool,
-    #[arg(long)]
-    debug: bool,
+    #[arg(long = "dir", value_name = "DIR")]
+    dirs: Vec<String>,
+    #[arg(long = "media", value_name = "MEDIA_TYPE")]
+    media: Vec<String>,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    args: Vec<String>,
+    options: Vec<String>,
 }
 
 impl XArgs {
+    /// Temporary until the CLI runs the action itself: ask the daemon for the
+    /// resolved targets and print them.
     async fn run(self) -> Result<()> {
-        let (backend, state) = load_state()?;
-        let _ = self.debug;
+        let (_backend, state) = load_state()?;
+        check_daemon(&state).await?;
 
-        let query = ActionTargetQuery {
-            media_type: self.media_type,
-            playing: self.playing,
-            id: self.id,
-            query: self.query,
-            directory: self.directory,
-            recursive: self.recursive,
-            library: self.library,
-            options: self
-                .args
-                .iter()
-                .map(|arg| (arg.clone(), String::new()))
-                .collect(),
-        };
+        let dirs: Vec<String> = self
+            .dirs
+            .iter()
+            .map(|dir| canonical_dir(dir).to_string_lossy().to_string())
+            .collect();
 
-        // Read-only: the selection never takes the instance lock.
-        let items = match InstanceLock::holder().map_err(|e| anyhow::anyhow!("{e}"))? {
-            None => {
-                let mut logic =
-                    LogicEngine::new(PathBuf::new(), LogicManifest::default());
-                backend.reload_config_and_logic(&mut logic)?;
-                backend.scan_library(&mut logic);
+        let response = local_client()
+            .post(format!("http://127.0.0.1:{}/api/x", state.port))
+            .json(&json!({
+                "name": self.name,
+                "dirs": dirs,
+                "media": self.media,
+                "options": self.options,
+                "execute": false,
+            }))
+            .send()
+            .await
+            .context("Failed to reach the running daemon")?;
 
-                let playing = if query.playing {
-                    playing_file(&state).await?
-                } else {
-                    None
-                };
-                backend.resolve_action_targets(&query, &logic, playing.as_deref())
-            }
-            Some(_) => select_from_daemon(&state, &query).await?,
-        };
-
-        let payload = json!({
-            "items": items,
-            "options": query.options_string(),
-            "isatty": std::io::stdin().is_terminal()
-        });
-
-        if self.name == "intermediary" {
-            println!("{}", serde_json::to_string_pretty(&payload)?);
-            return Ok(());
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("Action failed: {text}");
         }
 
-        let name = self.name.replace('-', "_");
-        backend.execute_action(&name, &payload)
+        let body: Value = serde_json::from_str(&text)?;
+        println!("{}", serde_json::to_string_pretty(&body)?);
+
+        let failed = body
+            .get("runs")
+            .and_then(Value::as_array)
+            .is_some_and(|runs| runs.iter().any(|run| run.get("error").is_some()));
+        if failed {
+            std::process::exit(1);
+        }
+
+        Ok(())
     }
 }
 
-/// Asks the live daemon for the items, after checking it is ours to ask.
-async fn select_from_daemon(
-    state: &MediaState,
-    query: &ActionTargetQuery,
-) -> Result<Vec<Value>> {
-    check_daemon(state).await?;
+/// The daemon only accepts expanded absolute paths, so the CLI expands `~` and
+/// resolves `.` against the shell's working directory first.
+fn canonical_dir(raw: &str) -> PathBuf {
+    let expanded = expand_path(raw);
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&expanded))
+            .unwrap_or(expanded)
+    };
 
-    let response = local_client()
-        .post(format!("http://127.0.0.1:{}/api/select", state.port))
-        .json(query)
-        .send()
-        .await
-        .context("Failed to reach the running daemon")?;
-
-    if !response.status().is_success() {
-        let text = response.text().await.unwrap_or_default();
-        bail!("Daemon selection failed: {text}");
-    }
-
-    Ok(response.json().await?)
+    absolute.canonicalize().unwrap_or(absolute)
 }
 
 /// The identity match rule: same canonical config, same version, no reload
@@ -348,28 +321,6 @@ fn finish(result: datamile_media::PassResult) -> Result<()> {
     }
 
     std::process::exit(1)
-}
-
-/// The daemon first, one-shot MPD query as the fallback.
-async fn playing_file(state: &MediaState) -> Result<Option<String>> {
-    if let Ok(response) = local_client()
-        .get(format!(
-            "http://127.0.0.1:{}/api/playback/current",
-            state.port
-        ))
-        .timeout(PROBE_TIMEOUT)
-        .send()
-        .await
-        && let Ok(value) = response.json::<Value>().await
-        && let Some(file) = value.get("file").and_then(Value::as_str)
-        && !file.is_empty()
-    {
-        return Ok(Some(file.to_string()));
-    }
-
-    datamile_mpd::current_playing_file(&state.mpd.addr())
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Every call here is loopback, so an `HTTP_PROXY` in the environment must not

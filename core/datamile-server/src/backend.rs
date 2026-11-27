@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -6,22 +5,11 @@ use std::sync::Arc;
 
 use datamile_cache::EntityKey;
 use datamile_logic::LogicEngine;
+use datamile_lua_domain::ActionCtx;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::state::{ServerConfig, ServerState};
-
-/// Keys that select targets instead of becoming action options.
-const RESERVED_PARAMS: &[&str] = &[
-    "playing",
-    "id",
-    "query",
-    "directory",
-    "recursive",
-    "library",
-    "type",
-];
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlaybackSlice {
@@ -37,63 +25,6 @@ impl PlaybackSlice {
             start.saturating_add(count).min(uris.len())
         });
         &uris[start..end]
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ActionTargetQuery {
-    /// Media type the action targets, from the  query parameter.
-    pub media_type: Option<String>,
-    pub playing: bool,
-    pub id: Option<String>,
-    pub query: Option<String>,
-    pub directory: Option<String>,
-    pub recursive: Option<String>,
-    pub library: bool,
-    pub options: Vec<(String, String)>,
-}
-
-impl ActionTargetQuery {
-    #[must_use]
-    #[allow(
-        clippy::implicit_hasher,
-        reason = "axum's Query extractor hands back the default hasher"
-    )]
-    pub fn from_params(params: &HashMap<String, String>) -> Self {
-        let mut options = Vec::new();
-        for (key, value) in params {
-            if RESERVED_PARAMS.contains(&key.as_str()) {
-                continue;
-            }
-            options.push((key.clone(), value.clone()));
-        }
-
-        Self {
-            media_type: params.get("type").filter(|s| !s.is_empty()).cloned(),
-            playing: params.get("playing").is_some_and(|v| v == "true"),
-            id: params.get("id").filter(|s| !s.is_empty()).cloned(),
-            query: params.get("query").cloned(),
-            directory: params.get("directory").cloned(),
-            recursive: params.get("recursive").cloned(),
-            library: params.get("library").is_some_and(|v| v == "true"),
-            options,
-        }
-    }
-
-    #[must_use]
-    pub fn options_string(&self) -> String {
-        self.options
-            .iter()
-            .map(|(key, value)| {
-                if value.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{key}={value}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
     }
 }
 
@@ -135,13 +66,7 @@ pub trait MediaBackend: Send + Sync + 'static {
         slice: PlaybackSlice,
         logic: &LogicEngine,
     ) -> Vec<String>;
-    fn resolve_action_targets(
-        &self,
-        query: &ActionTargetQuery,
-        logic: &LogicEngine,
-        playing_file: Option<&str>,
-    ) -> Vec<Value>;
-    fn execute_action(&self, name: &str, payload: &Value) -> anyhow::Result<()>;
+    fn execute_action(&self, name: &str, ctx: &ActionCtx) -> anyhow::Result<()>;
     fn handle_fs_events<'a>(
         &'a self,
         paths: &'a [PathBuf],

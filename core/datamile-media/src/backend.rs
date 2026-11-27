@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -6,10 +6,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use datamile_logic::LogicEngine;
-use datamile_lua_domain::{ActionCtx, ActionDef, ActionMap};
 use datamile_server::{
-    ActionTargetQuery, DEFAULT_PORT, EntityKey, MediaBackend, PlaybackSlice,
-    ServerConfig, ServerState, UpdateRequest,
+    ActionCtx, DEFAULT_PORT, EntityKey, MediaBackend, PlaybackSlice, ServerConfig,
+    ServerState, UpdateRequest,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -48,89 +47,6 @@ impl MediaEngineBackend {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-    }
-
-    fn playing_target(
-        logic: &LogicEngine,
-        playing_file: Option<&str>,
-    ) -> Option<(String, String)> {
-        let file = playing_file?;
-        let clean = file.trim_start_matches('/');
-        let items = logic
-            .playable_lookup
-            .get(clean)
-            .or_else(|| logic.playable_lookup.get(file))?;
-        let item = items.first()?;
-        Some((item.media_type.clone(), item.media_id.clone()))
-    }
-
-    fn item_for(logic: &LogicEngine, media_type: &str, id: &str) -> Option<Value> {
-        let record = logic.entity_record(media_type, id)?;
-        let lock = serde_json::from_str::<Value>(&record.raw_json).ok()?;
-        Some(serde_json::json!({
-            "type": record.media_type,
-            "id": record.id,
-            "path": record.path.to_string_lossy(),
-            "lock": lock
-        }))
-    }
-
-    fn param_targets(
-        query: &ActionTargetQuery,
-        logic: &LogicEngine,
-        state: &MediaState,
-    ) -> Vec<Value> {
-        let media_types: Vec<String> = query.media_type.as_ref().map_or_else(
-            || state.media.roots_order.clone(),
-            |media_type| vec![media_type.clone()],
-        );
-
-        let ids_for = |media_type: &str| -> Vec<String> {
-            if let Some(query_str) = &query.query {
-                return logic.find_ids(media_type, query_str);
-            }
-            if let Some(id) = &query.id {
-                return if logic.entity_record(media_type, id).is_some() {
-                    vec![id.clone()]
-                } else {
-                    Vec::new()
-                };
-            }
-            if query.library || query.recursive.is_some() {
-                let root = query.recursive.as_ref().map_or_else(
-                    || state.init_dirs().first().cloned().unwrap_or_default(),
-                    |dir| datamile_fs::expand_path(dir),
-                );
-                let root = root.canonicalize().unwrap_or(root);
-                return logic
-                    .all_entities()
-                    .filter(|record| {
-                        record.media_type == media_type && record.path.starts_with(&root)
-                    })
-                    .map(|record| record.id.clone())
-                    .collect();
-            }
-            if let Some(dir) = &query.directory {
-                let path = datamile_fs::expand_path(dir);
-                let path = path.canonicalize().unwrap_or(path);
-                return logic
-                    .entity_id_by_path(media_type, &path)
-                    .map(ToString::to_string)
-                    .into_iter()
-                    .collect();
-            }
-            Vec::new()
-        };
-
-        media_types
-            .iter()
-            .flat_map(|media_type| {
-                ids_for(media_type)
-                    .into_iter()
-                    .filter_map(|id| Self::item_for(logic, media_type, &id))
-                    .collect::<Vec<_>>()
-            })
-            .collect()
     }
 }
 
@@ -249,6 +165,7 @@ impl MediaBackend for MediaEngineBackend {
             evaluated.config.server.port
         };
 
+        let media_types = media.roots_order.clone();
         let state = MediaState {
             config_path: config_path.clone(),
             config_dir: config_dir.clone(),
@@ -258,7 +175,6 @@ impl MediaBackend for MediaEngineBackend {
             logic_manifest: evaluated.manifest.clone(),
             roots,
             dependencies: dependencies.clone(),
-            actions: legacy_actions(&actions),
             interfaces: evaluated.interfaces.clone(),
             mpd: mpd.clone(),
             compiler_jobs,
@@ -292,10 +208,13 @@ impl MediaBackend for MediaEngineBackend {
             state_root,
             resolved_dependencies: dependencies,
             interfaces: evaluated.interfaces,
-            actions: legacy_actions(&actions),
+            actions,
+            media_types,
             config_dir,
             config_path,
             compiler_jobs,
+            host: evaluated.config.server.host,
+            allowed_origins: evaluated.config.server.allowed_origins,
             port,
         })
     }
@@ -313,30 +232,10 @@ impl MediaBackend for MediaEngineBackend {
         slice.apply(&record.playable_uris).to_vec()
     }
 
-    fn resolve_action_targets(
-        &self,
-        query: &ActionTargetQuery,
-        logic: &LogicEngine,
-        playing_file: Option<&str>,
-    ) -> Vec<Value> {
-        let Some(state) = self.current_state() else {
-            return Vec::new();
-        };
-
-        if query.playing {
-            return Self::playing_target(logic, playing_file)
-                .and_then(|(media_type, id)| Self::item_for(logic, &media_type, &id))
-                .into_iter()
-                .collect();
-        }
-
-        Self::param_targets(query, logic, &state)
-    }
-
-    fn execute_action(&self, name: &str, payload: &Value) -> Result<()> {
+    fn execute_action(&self, name: &str, ctx: &ActionCtx) -> Result<()> {
         let state = self.current_state().context("Media state is not loaded")?;
         let engine = open_engine(&state)?;
-        engine.execute_action(name, &legacy_context(payload))
+        engine.execute_action(name, ctx)
     }
 
     fn handle_fs_events<'a>(
@@ -423,49 +322,6 @@ impl MediaBackend for MediaEngineBackend {
         )?;
         Ok(true)
     }
-}
-
-/// Temporary bridge until `POST /api/x` lands: the current routes and the CLI
-/// still send a flat payload, so it is mapped onto the action context here.
-fn legacy_context(payload: &Value) -> ActionCtx {
-    ActionCtx {
-        lock: payload.get("lock").cloned(),
-        media: payload
-            .get("media")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        options: payload
-            .get("options")
-            .and_then(Value::as_array)
-            .map_or_else(Vec::new, |options| {
-                options
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(ToString::to_string)
-                    .collect()
-            }),
-        isatty: payload
-            .get("isatty")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-    }
-}
-
-/// Temporary bridge until `ServerConfig.actions` is typed as `ActionMap`: the
-/// flat shape keeps the top-level label only.
-fn legacy_actions(actions: &ActionMap) -> HashMap<String, ActionDef> {
-    actions
-        .iter()
-        .map(|(name, entry)| {
-            (
-                name.clone(),
-                ActionDef {
-                    label: entry.label.clone(),
-                    description: entry.description.clone(),
-                },
-            )
-        })
-        .collect()
 }
 
 /// Collects the set of known root directories for one media type.

@@ -450,7 +450,9 @@ fn plan_work(
 
             let entry = plan.states.get(&root.dir.to_string_lossy().to_string());
             let walked = walk_files(&root.dir);
-            if force == ForceMode::Force || root_is_dirty(&root.dir, &walked, entry) {
+            if force == ForceMode::Force
+                || root_is_dirty(&root.dir, &root.media_type, &walked, entry)
+            {
                 planned.dirty.push(root.clone());
             }
         }
@@ -481,7 +483,7 @@ fn record_state(
     }
 
     for (media_type, entries) in state_entries(compiled) {
-        let dirs: Vec<PathBuf> = entries.iter().map(|(dir, _)| dir.clone()).collect();
+        let dirs: Vec<PathBuf> = entries.iter().map(|(dir, ..)| dir.clone()).collect();
 
         if let Err(e) = shared.record_roots(state, &media_type, entries) {
             for dir in dirs {

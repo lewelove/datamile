@@ -127,8 +127,9 @@ impl Default for MediaShared {
 /// The fingerprints of one root entity: its walked files plus the external ones.
 pub type RootFiles = BTreeMap<String, FileStat>;
 
-/// One pending state entry: the root entity's directory and its file map.
-pub type StateEntry = (PathBuf, RootFiles);
+/// One pending state entry: the root entity's directory, its file map, and the
+/// stat of the lock the pass wrote or verified.
+pub type StateEntry = (PathBuf, RootFiles, FileStat);
 
 /// Pending state entries, grouped by media type.
 pub type StateEntries = BTreeMap<String, Vec<StateEntry>>;
@@ -143,10 +144,11 @@ pub fn state_entries(compiled: &[CompiledRoot]) -> StateEntries {
     let mut grouped = StateEntries::new();
 
     for root in compiled {
-        grouped
-            .entry(root.media_type.clone())
-            .or_default()
-            .push((root.dir.clone(), root_files(&root.dir, &root.dependencies)));
+        grouped.entry(root.media_type.clone()).or_default().push((
+            root.dir.clone(),
+            root_files(&root.dir, &root.dependencies),
+            root.lock_stat,
+        ));
     }
 
     grouped
@@ -165,8 +167,12 @@ impl MediaShared {
         entries: Vec<StateEntry>,
     ) -> Result<()> {
         self.write_state(state, media_type, |states| {
-            for (dir, files) in entries {
-                states.insert(dir.to_string_lossy().to_string(), RootState { files });
+            for (dir, files, lock_stat) in entries {
+                let entry = RootState {
+                    files,
+                    lock_stat: Some(lock_stat),
+                };
+                states.insert(dir.to_string_lossy().to_string(), entry);
             }
         })
     }

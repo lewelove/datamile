@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+use datamile_cache::stat::is_lock_file;
 use mlua::serde::SerializeOptions;
 use mlua::{Lua, Table};
 use walkdir::WalkDir;
@@ -13,30 +14,50 @@ use crate::{EngineContext, read_with_entity_memo};
 
 const LUA_FS: &str = include_str!("mod.lua");
 
-fn parse_path_with_ctx(ctx: &EngineContext, path_str: Option<String>) -> Option<PathBuf> {
-    let raw_path = path_str?;
+fn parse_path_with_ctx(
+    ctx: &EngineContext,
+    path_str: Option<String>,
+) -> mlua::Result<Option<PathBuf>> {
+    let Some(raw_path) = path_str else {
+        return Ok(None);
+    };
     if raw_path.trim().is_empty() {
-        return None;
+        return Ok(None);
     }
     let path = datamile_fs::expand_path(&raw_path);
-    ctx.record_dependency(&path);
-    Some(path)
+    ctx.record_dependency(&path)?;
+
+    Ok(Some(path))
 }
 
-fn parse_and_record_path(lua: &Lua, path_str: Option<String>) -> Option<PathBuf> {
-    let ctx = lua.app_data_ref::<EngineContext>()?;
+fn parse_and_record_path(
+    lua: &Lua,
+    path_str: Option<String>,
+) -> mlua::Result<Option<PathBuf>> {
+    let Some(ctx) = lua.app_data_ref::<EngineContext>() else {
+        return Ok(None);
+    };
+
     parse_path_with_ctx(&ctx, path_str)
 }
 
-fn fs_exists(lua: &Lua, path_str: Option<String>) -> bool {
-    let Some(path) = parse_and_record_path(lua, path_str) else {
-        return false;
+/// Whether a compile is running, in which case lock files are outputs and must
+/// stay out of every enumeration.
+fn compiling(lua: &Lua) -> bool {
+    lua.app_data_ref::<EngineContext>()
+        .is_some_and(|ctx| ctx.is_compiling())
+}
+
+fn fs_exists(lua: &Lua, path_str: Option<String>) -> mlua::Result<bool> {
+    let Some(path) = parse_and_record_path(lua, path_str)? else {
+        return Ok(false);
     };
-    path.exists()
+
+    Ok(path.exists())
 }
 
 fn fs_read(lua: &Lua, path_str: Option<String>) -> mlua::Result<Option<String>> {
-    let Some(path) = parse_and_record_path(lua, path_str) else {
+    let Some(path) = parse_and_record_path(lua, path_str)? else {
         return Ok(None);
     };
     match std::fs::read_to_string(&path) {
@@ -48,7 +69,7 @@ fn fs_read(lua: &Lua, path_str: Option<String>) -> mlua::Result<Option<String>> 
 
 fn fs_read_lines(lua: &Lua, path_str: Option<String>) -> mlua::Result<Table> {
     let table = lua.create_table()?;
-    let Some(path) = parse_and_record_path(lua, path_str) else {
+    let Some(path) = parse_and_record_path(lua, path_str)? else {
         return Ok(table);
     };
 
@@ -74,7 +95,7 @@ fn fs_read_lines(lua: &Lua, path_str: Option<String>) -> mlua::Result<Table> {
 }
 
 fn fs_read_dotenv(lua: &Lua, path_str: Option<String>) -> mlua::Result<Option<Table>> {
-    let Some(path) = parse_and_record_path(lua, path_str) else {
+    let Some(path) = parse_and_record_path(lua, path_str)? else {
         return Ok(None);
     };
 
@@ -100,6 +121,7 @@ fn fs_scandir_native(
     (path_str, follow): (String, bool),
 ) -> mlua::Result<mlua::Function> {
     let expanded = datamile_fs::expand_path(&path_str);
+    let hide_locks = compiling(lua);
 
     let Ok(mut read_dir) = std::fs::read_dir(&expanded) else {
         return lua.create_function(|_, ()| Ok((None::<String>, None::<&str>)));
@@ -110,6 +132,9 @@ fn fs_scandir_native(
             let Ok(entry) = entry_res else {
                 continue;
             };
+            if hide_locks && is_lock_file(&entry.path()) {
+                continue;
+            }
 
             let file_name = entry.file_name();
             let file_name_str = file_name.to_string_lossy();
@@ -150,7 +175,7 @@ fn create_fs_reader(
                 "EngineContext is not initialized"
             )));
         };
-        let Some(path) = parse_path_with_ctx(&ctx, path_str) else {
+        let Some(path) = parse_path_with_ctx(&ctx, path_str)? else {
             return Ok(mlua::Value::Nil);
         };
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -279,9 +304,11 @@ fn fs_files(
             .into_iter()
     };
 
+    let hide_locks = compiling(lua);
     let mut entries: Vec<(PathBuf, std::fs::Metadata)> = walker
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
+        .filter(|entry| !hide_locks || !is_lock_file(entry.path()))
         .filter(|entry| matches_ext(entry.path(), &extensions))
         .filter_map(|entry| {
             let meta = entry.metadata().ok()?;
@@ -334,6 +361,7 @@ fn fs_first(
     (dir, candidates): (String, Vec<String>),
 ) -> mlua::Result<mlua::Value> {
     let root = datamile_fs::expand_path(&dir);
+    let hide_locks = compiling(lua);
 
     for candidate in &candidates {
         if candidate.trim().is_empty() {
@@ -351,6 +379,7 @@ fn fs_first(
                 .map(|entry| entry.path())
                 .filter(|path| {
                     path.is_file()
+                        && (!hide_locks || !is_lock_file(path))
                         && datamile_fs::has_extension(path, std::slice::from_ref(&ext))
                 })
                 .collect();
@@ -368,7 +397,7 @@ fn fs_first(
         } else {
             root.join(candidate)
         };
-        if path.exists() {
+        if path.exists() && !(hide_locks && is_lock_file(&path)) {
             return Ok(mlua::Value::String(
                 lua.create_string(path.to_string_lossy().as_bytes())?,
             ));
@@ -386,9 +415,7 @@ pub fn register(
     let fs_table: Table = lua.load(LUA_FS).eval()?;
     fs_table.set(
         "exists",
-        lua.create_function(|lua, path_str: Option<String>| {
-            Ok(fs_exists(lua, path_str))
-        })?,
+        lua.create_function(|lua, path_str: Option<String>| fs_exists(lua, path_str))?,
     )?;
     fs_table.set(
         "read",

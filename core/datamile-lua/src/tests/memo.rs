@@ -46,6 +46,33 @@ fn reads_record_dependencies() {
     assert!(deps.contains(&path.canonicalize().expect("canonical")));
 }
 
+/// A memo hit never bypasses the compile guard: the path is refused even
+/// though its converted value is already in hand.
+#[test]
+fn memoized_lock_read_is_refused_while_compiling() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("album.lock.json");
+    fs::write(&path, r#"{"album":{}}"#).expect("write lock");
+
+    let engine = LuaRuntime::new().expect("runtime");
+    let code = format!("return d.fs.read_json('{}')", path.display());
+    engine
+        .lua
+        .load(&code)
+        .exec()
+        .expect("read before the compile");
+
+    let guard = engine.compile_guard().expect("guard");
+    let err = engine
+        .lua
+        .load(&code)
+        .eval::<Value>()
+        .expect_err("a lock must be refused");
+    assert!(format!("{err}").contains("a lock is never an input"));
+
+    drop(guard);
+}
+
 /// Injected readers are visible through both aliases and share the memo.
 #[test]
 fn registered_fs_function_is_visible_on_both_aliases() {

@@ -894,3 +894,111 @@ fn test_d_fs_first_matches_names_and_extensions() {
         .expect("missing");
     assert!(missing.is_none());
 }
+
+/// While a compile runs, a lock is not an input: every `d.fs` reader refuses a
+/// `*.lock.json` path instead of recording a dependency on it.
+#[test]
+fn compile_guard_blocks_lock_readers() {
+    let lock = TempFile::with_extension(r#"{"album":{}}"#, "lock.json");
+    let engine = LuaRuntime::new().expect("runtime");
+    let guard = engine.compile_guard().expect("guard");
+
+    for reader in [
+        "read",
+        "read_lines",
+        "exists",
+        "read_json",
+        "read_toml",
+        "read_dotenv",
+    ] {
+        let code = format!("return d.fs.{reader}('{}')", lock.path_str());
+        let err = engine
+            .lua
+            .load(&code)
+            .eval::<mlua::Value>()
+            .expect_err("a lock must be refused");
+        let message = format!("{err}");
+        assert!(
+            message.contains("a lock is never an input"),
+            "d.fs.{reader}: {message}"
+        );
+    }
+
+    drop(guard);
+
+    let text: String = engine
+        .lua
+        .load(format!("return d.fs.read('{}')", lock.path_str()))
+        .eval()
+        .expect("the same path reads once the compile ends");
+    assert!(text.contains("album"), "unexpected: {text}");
+}
+
+/// `d.fs.files`, `d.fs.first` and `d.fs.dir` hide the locks written beside the
+/// sources, so a compile of a shared dir sees audio and artwork only.
+#[test]
+fn compile_guard_hides_lock_files_from_enumerators() {
+    let root = TempDir::new();
+    write_tree(&root.0, &["cover.json", "01.flac", "album.lock.json"]);
+
+    let engine = LuaRuntime::new().expect("runtime");
+    let guard = engine.compile_guard().expect("guard");
+
+    let files: Vec<String> = engine
+        .lua
+        .load(format!(
+            "return d.fs.files('{root}', {{ paths_only = true }})",
+            root = root.path_str()
+        ))
+        .eval()
+        .expect("files");
+    assert_eq!(files.len(), 2, "unexpected: {files:?}");
+    assert!(files.iter().all(|path| !path.ends_with(".lock.json")));
+
+    let first: String = engine
+        .lua
+        .load(format!(
+            "return d.fs.first('{root}', {{ 'json' }})",
+            root = root.path_str()
+        ))
+        .eval()
+        .expect("first");
+    assert!(first.ends_with("cover.json"), "unexpected: {first}");
+
+    let listed: Vec<String> = engine
+        .lua
+        .load(format!(
+            "local out = {{}} for name in d.fs.dir('{root}') do table.insert(out, name) end return out",
+            root = root.path_str()
+        ))
+        .eval()
+        .expect("dir");
+    assert!(
+        listed.iter().all(|name| !name.ends_with(".lock.json")),
+        "unexpected: {listed:?}"
+    );
+    drop(guard);
+}
+
+/// Guards nest, and the last drop reopens lock reading: a compile that returns
+/// early with `?` must not leave the VM guarded.
+#[test]
+fn compile_guard_ends_when_the_last_guard_drops() {
+    let lock = TempFile::with_extension("{}", "lock.json");
+    let engine = LuaRuntime::new().expect("runtime");
+    let code = format!("return d.fs.read('{}')", lock.path_str());
+
+    let outer = engine.compile_guard().expect("outer");
+    let inner = engine.compile_guard().expect("inner");
+    drop(inner);
+    assert!(
+        engine.lua.load(&code).eval::<mlua::Value>().is_err(),
+        "an outer guard still blocks"
+    );
+
+    drop(outer);
+    assert!(
+        engine.lua.load(&code).eval::<mlua::Value>().is_ok(),
+        "the lock opens once the compile ends"
+    );
+}

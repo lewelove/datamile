@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
+use datamile_cache::FileStat;
+use datamile_cache::stat::LOCK_SUFFIX;
 use datamile_images::{
     FitMode, ImageError, ImageSpec, MAX_IMAGE_DIMENSION, parse_filter, parse_fit_mode,
     render_master_cached,
@@ -19,6 +21,9 @@ pub struct CompiledRoot {
     pub lock_json: String,
     pub dependencies: Vec<PathBuf>,
     pub modified: bool,
+    /// Stat of the lock on disk after writing or verifying it. This is what the
+    /// next pass compares against to notice a deleted or hand-edited lock.
+    pub lock_stat: FileStat,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -82,6 +87,9 @@ fn compile_root_impl(
     engine.runtime.clear_entity_memo();
     let _ = engine.runtime.take_dependencies();
 
+    // Held until this function returns, `?` included: a lock is never an input.
+    let _compile_guard = engine.runtime.compile_guard()?;
+
     let compile_fn: mlua::Function = engine
         .runtime
         .lua
@@ -123,23 +131,19 @@ fn compile_root_impl(
     sort_json_keys(&mut lock_value);
 
     let lock_json = serde_json::to_string_pretty(&lock_value)?;
-    let lock_path = root_canon.join(format!("{media_type}.lock.json"));
+    let lock_path = root_canon.join(format!("{media_type}{LOCK_SUFFIX}"));
     let modified =
         std::fs::read_to_string(&lock_path).map_or(true, |old| old != lock_json);
 
     if modified && mode == WriteMode::Write {
-        if let Some(active) = active_writes
-            && let Ok(mut active) = active.lock()
-        {
-            active.insert(lock_path.clone());
-            active.insert(
-                lock_path
-                    .canonicalize()
-                    .unwrap_or_else(|_| lock_path.clone()),
-            );
-        }
-        datamile_fs::write_atomic(&lock_path, &lock_json)?;
+        write_lock(&lock_path, &lock_json, active_writes)?;
     }
+
+    // A preview is never recorded, so only a written lock has a stat to report.
+    let lock_stat = match mode {
+        WriteMode::Write => FileStat::from(&std::fs::metadata(&lock_path)?),
+        WriteMode::Preview => FileStat::default(),
+    };
 
     engine.runtime.clear_entity_memo();
 
@@ -150,7 +154,47 @@ fn compile_root_impl(
         lock_json,
         dependencies: external_deps,
         modified,
+        lock_stat,
     })
+}
+
+/// A read-only filesystem is a per-entity failure, not a permission bug worth
+/// reporting as a crash: the caller isolates the entity and keeps its entry.
+fn is_read_only(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+    )
+}
+
+/// Writes the lock, then marks it as self-written so the watcher ignores the
+/// `inotify` event the write causes.
+fn write_lock(
+    lock_path: &Path,
+    lock_json: &str,
+    active_writes: Option<&Arc<Mutex<HashSet<PathBuf>>>>,
+) -> Result<()> {
+    match datamile_fs::write_atomic(lock_path, lock_json) {
+        Ok(()) => {}
+        Err(error) if is_read_only(&error) => bail!(
+            "{} could not be updated; datamile cannot recompile on a read-only path",
+            lock_path.display()
+        ),
+        Err(error) => return Err(error.into()),
+    }
+
+    if let Some(active) = active_writes
+        && let Ok(mut active) = active.lock()
+    {
+        active.insert(lock_path.to_path_buf());
+        active.insert(
+            lock_path
+                .canonicalize()
+                .unwrap_or_else(|_| lock_path.to_path_buf()),
+        );
+    }
+
+    Ok(())
 }
 
 fn parse_fit(spec: &Value, namespace: &str) -> Result<(FitMode, u32, u32)> {

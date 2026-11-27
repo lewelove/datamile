@@ -56,10 +56,12 @@ fn resolve_target(root: &Path, raw: &str) -> PathBuf {
     }
 }
 
-fn record_external(lua: &Lua, canonical: &Path) {
-    if let Some(ctx) = lua.app_data_ref::<EngineContext>() {
-        ctx.record_dependency(canonical);
-    }
+fn record_external(lua: &Lua, canonical: &Path) -> mlua::Result<()> {
+    let Some(ctx) = lua.app_data_ref::<EngineContext>() else {
+        return Ok(());
+    };
+
+    ctx.record_dependency(canonical)
 }
 
 fn mtime_seconds(meta: &std::fs::Metadata) -> u64 {
@@ -93,13 +95,12 @@ fn node_location(lua: &Lua, root: &str, raw: &str) -> mlua::Result<Value> {
     };
 
     let kind = if meta.is_dir() { "dir" } else { "file" };
-    let location_path = canonical.strip_prefix(&root_canon).map_or_else(
-        |_| {
-            record_external(lua, &canonical);
-            canonical.to_string_lossy().to_string()
-        },
-        |rel| rel.to_string_lossy().to_string(),
-    );
+    let location_path = if let Ok(rel) = canonical.strip_prefix(&root_canon) {
+        rel.to_string_lossy().to_string()
+    } else {
+        record_external(lua, &canonical)?;
+        canonical.to_string_lossy().to_string()
+    };
 
     let location = lua.create_table()?;
     location.set("kind", kind)?;

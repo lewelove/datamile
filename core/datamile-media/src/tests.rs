@@ -623,6 +623,62 @@ fn cyclic_objects_fail_the_compile() {
     assert!(format!("{err:#}").contains("cyclic"), "unexpected: {err:#}");
 }
 
+/// A lock is never an input: a hook that reads `album.lock.json` fails the
+/// compile instead of feeding one lock into the next.
+#[test]
+fn compile_refuses_to_read_a_lock_file() {
+    let root = TempDir::new().expect("temp");
+    let lib = root.path().join("lib");
+    write(
+        &lib.join("A/album.toml"),
+        "album = \"A\"\nalbumartist = \"Artist\"\n",
+    );
+    write(&lib.join("A/album.lock.json"), "{}");
+    let config = root.path().join("init.lua");
+    write(
+        &config,
+        &format!(
+            r#"
+            local album = d.media.root("album", {{
+                init = "{lib}",
+                select = function(dir) return d.fs.roots(dir, "album.toml") end,
+                id = function() return "a" end,
+            }})
+            album.tag("leak", function(ctx)
+                return d.fs.read_json(ctx.path .. "/album.lock.json")
+            end)
+            "#,
+            lib = lib.display()
+        ),
+    );
+
+    let engine = engine_for(&config);
+    let err = compile_root(
+        &engine,
+        "album",
+        &lib.join("A"),
+        &root.path().join("cache"),
+        None,
+    )
+    .expect_err("a lock read must fail the compile");
+    assert!(
+        format!("{err:#}").contains("a lock is never an input"),
+        "unexpected: {err:#}"
+    );
+
+    // The failed compile released its guard: the same read works outside it.
+    let text: String = engine
+        .runtime
+        .lua
+        .load(format!(
+            "return d.fs.read('{}')",
+            lib.join("A/album.lock.json").display()
+        ))
+        .eval()
+        .expect("read after the failed compile");
+    assert_eq!(text, "{}");
+}
+
 #[test]
 fn invalid_image_fit_fails_the_compile() {
     let root = TempDir::new().expect("temp");
@@ -1244,6 +1300,125 @@ fn failed_compile_keeps_the_state_entry() {
     );
 }
 
+/// The pass records the lock stat of every compiled root, so a deleted or
+/// hand-edited lock recompiles the entity even with unchanged sources.
+#[test]
+fn lock_stat_is_recorded_and_a_missing_lock_recompiles() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    let shared = shared_for(&f);
+    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+
+    let key = f.lib.join("A").to_string_lossy().to_string();
+    let entry = datamile_cache::load_state(&state_file(&f, "album", &f.lib))
+        .expect("state")
+        .remove(&key)
+        .expect("entry");
+    assert!(entry.lock_stat.is_some(), "the lock stat is recorded");
+    assert!(
+        !entry.files.keys().any(|path| path.ends_with(".lock.json")),
+        "a lock never enters the file map"
+    );
+
+    std::fs::remove_file(lock_path(&f.lib, "A")).expect("delete the lock");
+
+    let (result, _) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    assert_eq!(result.updated, 1, "a missing lock makes the entity dirty");
+    assert!(lock_path(&f.lib, "A").exists(), "the pass rewrote the lock");
+
+    let (result, _) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    assert_eq!(result.updated, 0, "the rewritten lock is clean");
+    assert_eq!(result.unchanged, 1);
+}
+
+/// A dirty root that compiles to identical bytes still refreshes `lock_stat`,
+/// so the next pass is clean instead of recompiling forever.
+#[test]
+fn recompile_to_identical_bytes_refreshes_the_lock_stat() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    let shared = shared_for(&f);
+    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+
+    // A stale stat, as if the lock had been rewritten with the same bytes.
+    let path = state_file(&f, "album", &f.lib);
+    let mut states = datamile_cache::load_state(&path).expect("state");
+    let key = f.lib.join("A").to_string_lossy().to_string();
+    states.get_mut(&key).expect("entry").lock_stat =
+        Some(datamile_cache::FileStat::default());
+    datamile_cache::save_state(&states, &path).expect("save");
+
+    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    assert_eq!(result.failed, 0);
+    assert_eq!(
+        event_count(&events, |event| matches!(
+            event,
+            UpdateEvent::Updated { .. }
+        )),
+        0,
+        "identical bytes are not an update"
+    );
+
+    let (result, _) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+    assert_eq!(
+        result.unchanged, 1,
+        "the refreshed stat makes the root clean"
+    );
+    assert_eq!(result.updated, 0);
+}
+
+/// A read-only entity dir fails only that entity, names the path, and keeps its
+/// previous state entry so the next pass retries it.
+#[test]
+fn read_only_entity_fails_alone_and_keeps_its_state_entry() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    let shared = shared_for(&f);
+    pass(&shared, &UpdateScope::All, None, ForceMode::Force);
+
+    let state_file_path = state_file(&f, "album", &f.lib);
+    let before = datamile_cache::load_state(&state_file_path).expect("state");
+
+    for name in ["A", "B"] {
+        write(
+            &f.lib.join(name).join("album.toml"),
+            &format!("album = \"{name}\"\nalbumartist = \"Changed\"\n"),
+        );
+    }
+    std::fs::set_permissions(f.lib.join("A"), std::fs::Permissions::from_mode(0o500))
+        .expect("chmod");
+
+    let (result, events) = pass(&shared, &UpdateScope::All, None, ForceMode::Preserve);
+
+    std::fs::set_permissions(f.lib.join("A"), std::fs::Permissions::from_mode(0o700))
+        .expect("chmod back");
+
+    assert_eq!(result.failed, 1);
+    assert_eq!(result.updated, 1, "the sibling still recompiles");
+
+    let message = events
+        .iter()
+        .find_map(|event| match event {
+            UpdateEvent::Failed { dir, error, .. } => {
+                (dir.as_deref() == Some(f.lib.join("A").as_path())).then(|| error.clone())
+            }
+            _ => None,
+        })
+        .expect("the read-only entity failed");
+    assert!(message.contains("read-only path"), "unexpected: {message}");
+
+    let after = datamile_cache::load_state(&state_file_path).expect("state");
+    let key = f.lib.join("A").to_string_lossy().to_string();
+    assert_eq!(
+        after.get(&key),
+        before.get(&key),
+        "a failed entity keeps its previous entry"
+    );
+}
+
 /// A corrupt state file is a failure without a dir; the pass still finishes.
 #[test]
 fn corrupt_state_file_fails_without_a_dir() {
@@ -1322,7 +1497,7 @@ fn record_roots_writes_a_whole_batch() {
         .into_iter()
         .map(|dir| {
             let files = datamile_cache::walk_files(&dir);
-            (dir, files)
+            (dir, files, datamile_cache::FileStat::default())
         })
         .collect();
 
@@ -1646,8 +1821,9 @@ fn concurrent_state_writers_do_not_lose_entries() {
             let state = state.clone();
             scope.spawn(move || {
                 let files = datamile_cache::walk_files(dir);
+                let lock_stat = datamile_cache::FileStat::default();
                 shared
-                    .record_roots(&state, "album", vec![(dir.clone(), files)])
+                    .record_roots(&state, "album", vec![(dir.clone(), files, lock_stat)])
                     .expect("record");
             });
         }

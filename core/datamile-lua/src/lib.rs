@@ -6,6 +6,8 @@ mod tests;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::{Context, Result};
 use mlua::serde::SerializeOptions;
@@ -28,6 +30,7 @@ pub struct EngineContext {
     pub cache_root: PathBuf,
     pub captured_deps: RefCell<HashSet<PathBuf>>,
     memo: RefCell<HashMap<MemoKey, mlua::Value>>,
+    compile_depth: Arc<AtomicU32>,
 }
 
 impl EngineContext {
@@ -37,7 +40,23 @@ impl EngineContext {
             cache_root,
             captured_deps: RefCell::new(HashSet::new()),
             memo: RefCell::new(HashMap::new()),
+            compile_depth: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    /// Starts a compile scope. Every guard counts, so nested compiles stay
+    /// guarded until the outermost one ends.
+    #[must_use]
+    pub fn compile_guard(&self) -> CompileGuard {
+        self.compile_depth.fetch_add(1, Ordering::Acquire);
+        CompileGuard {
+            depth: Arc::clone(&self.compile_depth),
+        }
+    }
+
+    #[must_use]
+    pub fn is_compiling(&self) -> bool {
+        self.compile_depth.load(Ordering::Acquire) > 0
     }
 
     fn memo_key(kind: &str, path: &Path) -> MemoKey {
@@ -63,16 +82,44 @@ impl EngineContext {
         self.memo.borrow_mut().clear();
     }
 
-    pub fn record_dependency(&self, path: &Path) {
+    /// Records `path` as a hot-reload dependency.
+    ///
+    /// During a compile a `*.lock.json` path is an error instead: a lock is
+    /// always an output, so reading one must never feed the next lock.
+    pub fn record_dependency(&self, path: &Path) -> mlua::Result<()> {
+        if self.is_compiling() && datamile_cache::stat::is_lock_file(path) {
+            return Err(mlua::Error::external(anyhow::anyhow!(
+                "compile cannot read lock file '{}'; a lock is never an input",
+                path.display()
+            )));
+        }
+
         if let Ok(canon) = path.canonicalize()
             && canon.is_file()
         {
             self.captured_deps.borrow_mut().insert(canon);
         }
+
+        Ok(())
     }
 
     pub fn take_dependencies(&self) -> HashSet<PathBuf> {
         std::mem::take(&mut *self.captured_deps.borrow_mut())
+    }
+}
+
+/// Marks the VM as compiling for as long as it is alive.
+///
+/// While any guard lives, a lock is not an input: every `d.fs` reader refuses a
+/// `*.lock.json` path and the enumerators hide them. Being an RAII value means
+/// a compile that returns early with `?` still reopens the VM.
+pub struct CompileGuard {
+    depth: Arc<AtomicU32>,
+}
+
+impl Drop for CompileGuard {
+    fn drop(&mut self) {
+        self.depth.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -95,7 +142,7 @@ where
             "EngineContext is not initialized"
         )));
     };
-    ctx.record_dependency(path);
+    ctx.record_dependency(path)?;
 
     if let Some(value) = ctx.memo_get(kind, path) {
         return Ok(value);
@@ -182,6 +229,14 @@ impl LuaRuntime {
         }
     }
 
+    /// Starts a compile scope on this VM.
+    pub fn compile_guard(&self) -> Result<CompileGuard> {
+        self.lua
+            .app_data_ref::<EngineContext>()
+            .map(|ctx| ctx.compile_guard())
+            .context("EngineContext is not initialized")
+    }
+
     /// Injects a reader under `d.fs.<name>` (and `datamile.fs.<name>`).
     ///
     /// `datamile-lua` stays blind to media crates: higher layers supply readers
@@ -228,14 +283,15 @@ impl LuaRuntime {
     }
 }
 
-fn record_dependency(lua: &Lua, raw: Option<String>) {
+fn record_dependency(lua: &Lua, raw: Option<String>) -> mlua::Result<()> {
     let Some(raw) = raw else {
-        return;
+        return Ok(());
     };
     let Some(ctx) = lua.app_data_ref::<EngineContext>() else {
-        return;
+        return Ok(());
     };
-    ctx.record_dependency(&datamile_fs::expand_path(&raw));
+
+    ctx.record_dependency(&datamile_fs::expand_path(&raw))
 }
 
 fn register_native_functions(lua: &Lua) -> mlua::Result<()> {
@@ -250,10 +306,7 @@ fn register_native_functions(lua: &Lua) -> mlua::Result<()> {
     globals.set("d", datamile_table)?;
     globals.set(
         "__DATAMILE_RECORD_DEPENDENCY",
-        lua.create_function(|lua, raw: Option<String>| {
-            record_dependency(lua, raw);
-            Ok(())
-        })?,
+        lua.create_function(record_dependency)?,
     )?;
     Ok(())
 }

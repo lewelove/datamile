@@ -9,6 +9,19 @@ use crate::CacheError;
 #[cfg(test)]
 mod tests;
 
+/// Suffix of a compiled lock file: one lock per media type per entity dir.
+pub const LOCK_SUFFIX: &str = ".lock.json";
+
+/// Whether `path` names a compiled lock file.
+///
+/// A lock is always an output: [`walk_files`] skips these and a compile may not
+/// read one, so a lock can never feed the next lock.
+#[must_use]
+pub fn is_lock_file(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().ends_with(LOCK_SUFFIX))
+}
+
 /// The unique identity of one compiled entity: its media type and entity dir.
 ///
 /// One directory may hold `<media_type>.lock.json` for several media types, so
@@ -21,7 +34,7 @@ pub struct EntityKey {
 }
 
 /// Cheap change detector for a file: its nanosecond mtime and its size.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct FileStat {
     pub mtime: u128,
     pub size: u64,
@@ -74,19 +87,28 @@ pub fn hash_files(paths: &[PathBuf]) -> String {
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq, Debug)]
 pub struct RootState {
     pub files: BTreeMap<String, FileStat>,
+    /// Stat of `<dir>/<media_type>.lock.json` at the end of the last pass.
+    ///
+    /// `None` means the entry predates lock tracking, so the root recompiles
+    /// once after an upgrade.
+    #[serde(default)]
+    pub lock_stat: Option<FileStat>,
 }
 
 /// One media root's state file, keyed by root entity directory.
 pub type RootStates = BTreeMap<String, RootState>;
 
-/// Every file under `dir`, keyed by absolute path.
+/// Every source file under `dir`, keyed by absolute path.
+///
+/// Compiled locks are skipped: they are outputs, so they never fingerprint an
+/// entity and adding one must not make the entity dirty.
 #[must_use]
 pub fn walk_files(dir: &Path) -> BTreeMap<String, FileStat> {
     walkdir::WalkDir::new(dir)
         .follow_links(true)
         .into_iter()
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
+        .filter(|entry| entry.file_type().is_file() && !is_lock_file(entry.path()))
         .filter_map(|entry| {
             let meta = entry.metadata().ok()?;
             Some((
@@ -113,18 +135,33 @@ pub fn root_files(dir: &Path, external: &[PathBuf]) -> BTreeMap<String, FileStat
     files
 }
 
-/// The dirty rule: no state entry, a changed walked set, or a changed or missing
-/// external file.
+/// The dirty rule: no state entry, no recorded lock stat, a changed walked set,
+/// a changed or missing external file, or a missing or changed lock on disk.
 #[must_use]
 pub fn root_is_dirty(
     dir: &Path,
+    media_type: &str,
     walked: &BTreeMap<String, FileStat>,
     entry: Option<&RootState>,
 ) -> bool {
     let Some(entry) = entry else {
         return true;
     };
+    let Some(lock_stat) = entry.lock_stat else {
+        return true;
+    };
 
+    walked_changed(dir, walked, entry)
+        || external_changed(dir, entry)
+        || lock_changed(dir, media_type, lock_stat)
+}
+
+/// The walked set must match the internal part of the recorded map exactly.
+fn walked_changed(
+    dir: &Path,
+    walked: &BTreeMap<String, FileStat>,
+    entry: &RootState,
+) -> bool {
     let internal = entry
         .files
         .keys()
@@ -135,13 +172,13 @@ pub fn root_is_dirty(
         return true;
     }
 
-    let walked_changed = walked
+    walked
         .iter()
-        .any(|(path, stat)| entry.files.get(path) != Some(stat));
-    if walked_changed {
-        return true;
-    }
+        .any(|(path, stat)| entry.files.get(path) != Some(stat))
+}
 
+/// An external file that changed or vanished invalidates the root.
+fn external_changed(dir: &Path, entry: &RootState) -> bool {
     entry
         .files
         .iter()
@@ -149,6 +186,14 @@ pub fn root_is_dirty(
         .any(|(path, stat)| {
             fs::metadata(path).map_or(true, |meta| FileStat::from(&meta) != *stat)
         })
+}
+
+/// A deleted or hand-edited lock means the artifact is not the one this entry
+/// recorded, whatever the source files say.
+fn lock_changed(dir: &Path, media_type: &str, recorded: FileStat) -> bool {
+    let path = dir.join(format!("{media_type}{LOCK_SUFFIX}"));
+
+    fs::metadata(path).map_or(true, |meta| FileStat::from(&meta) != recorded)
 }
 
 /// Reads a state file. A missing file is empty; an unparsable one is an error,

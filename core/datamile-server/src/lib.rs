@@ -263,12 +263,25 @@ impl AllowList {
     }
 }
 
+/// A bare address is a one-address CIDR, so literals and ranges share the
+/// matching code. An entry that parses as no address is a hostname.
 fn parse_allow_entry(entry: &str) -> Option<AllowEntry> {
-    let Some((address, prefix)) = entry.split_once('/') else {
-        return Some(AllowEntry::Host(entry.to_string()));
+    let (address, prefix) = match entry.split_once('/') {
+        Some((address, prefix)) => (address, Some(prefix)),
+        None => (entry, None),
     };
-    let address = address.parse::<IpAddr>().ok()?;
-    let prefix = prefix.parse::<u8>().ok()?;
+    let address = address
+        .strip_prefix('[')
+        .and_then(|address| address.strip_suffix(']'))
+        .unwrap_or(address);
+    let Ok(address) = address.parse::<IpAddr>() else {
+        return (prefix.is_none()).then(|| AllowEntry::Host(entry.to_string()));
+    };
+    let prefix = match prefix {
+        Some(prefix) => prefix.parse::<u8>().ok()?,
+        None if address.is_ipv4() => IPV4_PREFIX_MAX,
+        None => IPV6_PREFIX_MAX,
+    };
 
     Some(AllowEntry::Cidr(address, prefix))
 }

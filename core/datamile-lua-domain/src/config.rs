@@ -72,19 +72,21 @@ fn is_host_or_cidr(entry: &str) -> bool {
         return prefix.parse::<u8>().is_ok_and(|prefix| prefix <= max);
     }
 
-    if entry.parse::<IpAddr>().is_ok() {
-        return true;
-    }
-
-    // Bracketed IPv6 hosts (`[::1]`) and plain hostnames both reach this point.
+    // Bracketed IPv6 (`[::1]`) names the same address as `::1`. A port never
+    // belongs here: the guard strips request ports before it compares.
     let host = entry
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
         .unwrap_or(entry);
+
+    if host.parse::<IpAddr>().is_ok() {
+        return true;
+    }
+
     !host.is_empty()
         && host
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

@@ -382,6 +382,9 @@ fn malformed_allowed_origins_fail_config_load() {
         ("10.0.0.0/33", "10.0.0.0/33"),
         ("10.0.0.0/nope", "10.0.0.0/nope"),
         ("bad host!", "bad host!"),
+        ("box.lan:8080", "box.lan:8080"),
+        ("10.0.0.5:8000", "10.0.0.5:8000"),
+        ("[::1]:8000", "[::1]:8000"),
     ] {
         let (_dir, engine, path) = setup(&format!(
             "datamile.config({{ server = {{ allowed_origins = {{ \"{entry}\" }} }} }})"
@@ -407,7 +410,9 @@ fn allowed_origins_accept_hosts_and_cidrs() {
     let (_dir, engine, path) = setup(
         r#"
         datamile.config({
-            server = { allowed_origins = { "datamile.lan", "192.168.0.0/16", "[::1]" } }
+            server = { allowed_origins = {
+                "datamile.lan", "192.168.0.0/16", "[::1]", "10.0.0.5", "fd00::1"
+            } }
         })
         "#,
     );
@@ -416,7 +421,13 @@ fn allowed_origins_accept_hosts_and_cidrs() {
 
     assert_eq!(
         eval.config.server.allowed_origins,
-        vec!["datamile.lan", "192.168.0.0/16", "[::1]"]
+        vec![
+            "datamile.lan",
+            "192.168.0.0/16",
+            "[::1]",
+            "10.0.0.5",
+            "fd00::1"
+        ]
     );
 }
 

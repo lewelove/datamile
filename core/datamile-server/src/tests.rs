@@ -1001,6 +1001,32 @@ async fn mutating_routes_allow_configured_origins() {
     );
 }
 
+/// A bare address in `server.allowed_origins` admits the Host that names it,
+/// because a request Host may be an address literal.
+#[tokio::test]
+async fn mutating_routes_allow_a_bare_address_entry() {
+    let state = test_state(engine_with(&[])).await;
+    {
+        let mut config = state.config.write().await;
+        config.allowed_origins = vec!["10.0.0.5".to_string(), "[fd00::1]".to_string()];
+    }
+    let app = crate::secured_router(state).await;
+
+    for host in ["10.0.0.5:8000", "[fd00::1]:8000"] {
+        let request = Request::post("/api/reset")
+            .header("host", host)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(x_status(&app, request).await, StatusCode::OK, "host {host}");
+    }
+
+    let other = Request::post("/api/reset")
+        .header("host", "10.0.0.6:8000")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(x_status(&app, other).await, StatusCode::FORBIDDEN);
+}
+
 /// `Origin: null` and public origins are rejected on mutating routes.
 #[tokio::test]
 async fn mutating_routes_require_an_allowed_origin() {

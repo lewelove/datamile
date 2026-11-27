@@ -27,7 +27,7 @@ d.config({
   server = {
     host = "127.0.0.1",                -- default (set to "0.0.0.0" or LAN IP for LAN access)
     port = 8000,                       -- default
-    allowed_origins = {                -- optional; extends built-in defaults, ignores ports
+    allowed_origins = {                -- optional; extends built-in defaults
       "10.0.0.0/8",
       "box.local",
     },
@@ -48,7 +48,10 @@ d.config({
 - `d.config` is closed: its only sections are `storage`, `server`, `mpd` and `compiler`. Any other
   key, at the top level or inside a section, is a typo and fails the config instead of being ignored.
 - `server.host` and `server.port` are bound directly by `datamile server`.
-- `server.allowed_origins` accepts hostnames and `ip/bit_mask` CIDR notation, ignoring ports.
+- `server.allowed_origins` accepts hostnames, single addresses (`10.0.0.5`,
+  `[fd00::1]`) and `ip/prefix` CIDR blocks. A port never belongs here: the
+  guard strips the request port before it compares, so `box.lan:8080` fails
+  config load.
   Built-in defaults always allow loopback (`localhost`, `127.0.0.1`, `[::1]`) and `192.168.0.0/16`;
   entries in `server.allowed_origins` extend those defaults. Malformed entries fail config load.
 - Across all mutating `/api/*` routes, the server checks `Host` (matching loopback, the bound host,

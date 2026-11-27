@@ -106,8 +106,6 @@ named first and the others are listed under "Conflicts and retired terms".
   media, options, isatty }`. `ctx.lock` is the targeted entity's parsed lock
   (`{ <media type>: { id, location, tags, objects, images, nodes } }`), and
   `ctx.media` is its media type; both are `nil` when targetless.
-- **intermediary** — `datamile x intermediary`: prints the resolved `ctx`
-  array as JSON.
 - **run** — one execution of an action for a single `(dir, media)` pair (or
   one targetless execution); also the Lua function field on `d.action`.
 - **option** — the trailing `-- <args>` string array passed as `ctx.options`.

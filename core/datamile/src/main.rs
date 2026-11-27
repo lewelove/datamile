@@ -1,5 +1,6 @@
 mod interface;
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,16 +9,19 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use datamile_fs::expand_path;
 use datamile_logic::LogicEngine;
-use datamile_lua_domain::LogicManifest;
+use datamile_lua_domain::{ActionCtx, DomainLuaEngine, LogicManifest, ServerConfig};
+use datamile_media::state::{COMPILE_ROOT_LUA, MEDIA_LUA};
 use datamile_media::{
     ForceMode, LogSink, MediaEngineBackend, MediaState, open_engine, preview_root,
 };
 use datamile_server::instance::InstanceError;
-use datamile_server::{Identity, InstanceLock, MediaBackend};
+use datamile_server::{DEFAULT_PORT, Identity, InstanceLock, MediaBackend};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+const LOOPBACK: &str = "127.0.0.1";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -192,7 +196,7 @@ impl UpdateArgs {
                 &LogSink,
             )?
         } else {
-            check_daemon(&state).await?;
+            check_daemon(&loopback_url(state.port), &state.config_path).await?;
             datamile_media::update::delegate(
                 state.port,
                 path,
@@ -211,66 +215,209 @@ impl UpdateArgs {
 
 #[derive(Args)]
 struct XArgs {
+    /// Canonical action name; `-` and `_` are the same name.
     #[arg(value_name = "NAME", required = true)]
     name: String,
-    #[arg(long = "dir", value_name = "DIR")]
+    #[arg(long = "dir", value_name = "ENTITY_DIR")]
     dirs: Vec<String>,
     #[arg(long = "media", value_name = "MEDIA_TYPE")]
     media: Vec<String>,
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    /// Everything after `--` reaches the action unchanged as `ctx.options`.
+    #[arg(last = true, value_name = "OPTION")]
     options: Vec<String>,
 }
 
+/// One resolved target returned by `POST /api/x`.
+#[derive(Deserialize)]
+struct XRun {
+    media: Option<String>,
+    lock: Option<Value>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct XResponse {
+    runs: Vec<XRun>,
+}
+
 impl XArgs {
-    /// Temporary until the CLI runs the action itself: ask the daemon for the
-    /// resolved targets and print them.
+    /// The daemon resolves targets because it owns the entity index; the run
+    /// itself happens here so interactive actions keep the caller's terminal
+    /// and working directory.
     async fn run(self) -> Result<()> {
-        let (_backend, state) = load_state()?;
-        check_daemon(&state).await?;
+        let name = self.name.replace('-', "_");
+        let config_path = datamile_lua_domain::resolve_config_path()
+            .context("Failed to resolve init.lua")?;
 
-        let dirs: Vec<String> = self
-            .dirs
-            .iter()
-            .map(|dir| canonical_dir(dir).to_string_lossy().to_string())
-            .collect();
+        // A Lua VM is not `Send`, so it cannot live across the awaits below:
+        // one VM builds the request, a fresh one runs the action.
+        let (base_url, dirs) = action_plan(&name, &config_path, &self.dirs)?;
+        require_daemon(&base_url, &config_path).await?;
+        let runs =
+            fetch_runs(&base_url, &name, &dirs, &self.media, &self.options).await?;
 
-        let response = local_client()
-            .post(format!("http://127.0.0.1:{}/api/x", state.port))
-            .json(&json!({
-                "name": self.name,
-                "dirs": dirs,
-                "media": self.media,
-                "options": self.options,
-                "execute": false,
-            }))
-            .send()
-            .await
-            .context("Failed to reach the running daemon")?;
-
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        if !status.is_success() {
-            bail!("Action failed: {text}");
-        }
-
-        let body: Value = serde_json::from_str(&text)?;
-        println!("{}", serde_json::to_string_pretty(&body)?);
-
-        let failed = body
-            .get("runs")
-            .and_then(Value::as_array)
-            .is_some_and(|runs| runs.iter().any(|run| run.get("error").is_some()));
-        if failed {
-            std::process::exit(1);
-        }
+        let engine = action_engine()?;
+        engine.evaluate_config(&config_path)?;
+        run_locally(&engine, &name, &runs, &self.options);
 
         Ok(())
     }
 }
 
+/// Evaluates `init.lua` only as far as the request needs it: where the daemon
+/// answers, and the directories to resolve.
+fn action_plan(
+    name: &str,
+    config_path: &Path,
+    raw_dirs: &[String],
+) -> Result<(String, Vec<String>)> {
+    let engine = action_engine()?;
+    let evaluated = engine.evaluate_config(config_path)?;
+    let base_url = daemon_base_url(&evaluated.config.server);
+    let declared = evaluated.actions.get(name).map(Vec::as_slice);
+
+    Ok((base_url, resolve_action_dirs(raw_dirs, declared)))
+}
+
+/// The daemon binds `server.host`, so the CLI must call it there. An empty
+/// host means loopback, and an IPv6 literal needs brackets in a URL.
+fn daemon_base_url(server: &ServerConfig) -> String {
+    let host = if server.host.is_empty() {
+        LOOPBACK
+    } else {
+        server.host.as_str()
+    };
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+
+    format!("http://{host}:{}", server_port(server.port))
+}
+
+fn loopback_url(port: u16) -> String {
+    format!("http://{LOOPBACK}:{port}")
+}
+
+/// The same lightweight loader `datamile interface` uses: the media DSL and
+/// native helpers, then `init.lua`, with no discovery and no library scan.
+fn action_engine() -> Result<DomainLuaEngine> {
+    let engine = DomainLuaEngine::new()?;
+    engine.load_extension("media.lua", MEDIA_LUA)?;
+    engine.load_extension("compile_root.lua", COMPILE_ROOT_LUA)?;
+    datamile_media::lua_bridge::register_native_helpers(&engine.runtime)?;
+
+    Ok(engine)
+}
+
+/// `server.port` falls back to the default when configuration leaves it at 0.
+const fn server_port(configured: u16) -> u16 {
+    if configured == 0 {
+        return DEFAULT_PORT;
+    }
+
+    configured
+}
+
+/// There is no offline resolver: without a live daemon the targets cannot be
+/// resolved, so refuse before reading any directory.
+///
+/// Example: `datamile x open_terminal` with no daemon running exits non-zero
+/// naming `datamile server`.
+async fn require_daemon(base_url: &str, config_path: &Path) -> Result<()> {
+    let holder = InstanceLock::holder().map_err(|e| anyhow::anyhow!("{e}"))?;
+    if holder.is_none() {
+        bail!("datamile daemon is not running; start it with 'datamile server'");
+    }
+
+    check_daemon(base_url, config_path).await
+}
+
+/// The daemon only accepts expanded absolute paths, so the CLI expands `~` and
+/// resolves `.` here. A scoped action with no `--dir` targets the working
+/// directory; a generic action runs targetless.
+fn resolve_action_dirs(
+    raw_dirs: &[String],
+    declared_media: Option<&[String]>,
+) -> Vec<String> {
+    if !raw_dirs.is_empty() {
+        return raw_dirs.iter().map(|dir| canonical_dir(dir)).collect();
+    }
+
+    let scoped = declared_media.is_some_and(|media| !media.is_empty());
+    if !scoped {
+        return Vec::new();
+    }
+
+    vec![canonical_dir(".")]
+}
+
+async fn fetch_runs(
+    base_url: &str,
+    name: &str,
+    dirs: &[String],
+    media: &[String],
+    options: &[String],
+) -> Result<Vec<XRun>> {
+    let response = local_client()
+        .post(format!("{base_url}/api/x"))
+        .json(&json!({
+            "name": name,
+            "dirs": dirs,
+            "media": media,
+            "options": options,
+            "execute": false,
+        }))
+        .send()
+        .await
+        .context("Failed to reach the running daemon")?;
+
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("Action request failed: {text}");
+    }
+
+    let response: XResponse = serde_json::from_str(&text)?;
+
+    Ok(response.runs)
+}
+
+/// Runs every resolved target in this process and lets the remaining targets
+/// proceed when one fails.
+fn run_locally(engine: &DomainLuaEngine, name: &str, runs: &[XRun], options: &[String]) {
+    let isatty = std::io::stdin().is_terminal();
+    let mut failed = false;
+
+    for run in runs {
+        if let Some(error) = &run.error {
+            eprintln!("error: {error}");
+            failed = true;
+            continue;
+        }
+
+        let ctx = ActionCtx {
+            lock: run.lock.clone(),
+            media: run.media.clone(),
+            options: options.to_vec(),
+            isatty,
+        };
+
+        if let Err(error) = engine.execute_action(name, &ctx) {
+            eprintln!("error: {error}");
+            failed = true;
+        }
+    }
+
+    if failed {
+        std::process::exit(1);
+    }
+}
+
 /// The daemon only accepts expanded absolute paths, so the CLI expands `~` and
 /// resolves `.` against the shell's working directory first.
-fn canonical_dir(raw: &str) -> PathBuf {
+fn canonical_dir(raw: &str) -> String {
     let expanded = expand_path(raw);
     let absolute = if expanded.is_absolute() {
         expanded
@@ -280,28 +427,31 @@ fn canonical_dir(raw: &str) -> PathBuf {
             .unwrap_or(expanded)
     };
 
-    absolute.canonicalize().unwrap_or(absolute)
+    absolute
+        .canonicalize()
+        .unwrap_or(absolute)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The identity match rule: same canonical config, same version, no reload
 /// error. A mismatch is fatal; there is no local fallback.
-async fn check_daemon(state: &MediaState) -> Result<()> {
-    let identity = probe(state.port).await.with_context(|| {
+async fn check_daemon(base_url: &str, config_path: &Path) -> Result<()> {
+    let identity = probe(base_url).await.with_context(|| {
         format!(
-            "The instance lock is held but nothing answered on port {}. The holder is \
-             another CLI, a starting daemon, or a hung daemon.",
-            state.port
+            "The instance lock is held but nothing answered at {base_url}. The holder \
+             is another CLI, a starting daemon, or a hung daemon."
         )
     })?;
 
     identity
-        .check(&state.config_path, CLI_VERSION)
+        .check(config_path, CLI_VERSION)
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-async fn probe(port: u16) -> Option<Identity> {
+async fn probe(base_url: &str) -> Option<Identity> {
     let response = local_client()
-        .get(format!("http://127.0.0.1:{port}/api/identity"))
+        .get(format!("{base_url}/api/identity"))
         .timeout(PROBE_TIMEOUT)
         .send()
         .await

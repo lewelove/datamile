@@ -123,9 +123,6 @@ A named user-defined Lua operation invoked against resolved **Entity** targets (
 **Action context**:
 The runtime table passed to an **Action** containing its resolved **Entity** data, **Options**, and terminal flag.
 
-**Intermediary**:
-The resolved **Action context** payload printed as JSON for inspection instead of executing the **Action**.
-
 **Interface**:
 A named client launcher declared in configuration (such as the web app).
 

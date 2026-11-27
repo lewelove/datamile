@@ -185,7 +185,6 @@ Serialized wire shape on `INIT` and `LOGIC_UPDATE`:
     "description": "Open terminal inside Datamile configuration directory"
   },
   "open_terminal": {
-    "label": "open_terminal",
     "media": {
       "album": {
         "label": "Open Album Terminal",
@@ -291,10 +290,7 @@ Usage: `datamile x <name> [--dir <entity-dir>...] [--media <media_type>...] [-- 
   generic actions send `dirs: []`; scoped actions send `[canonical_cwd]`.
 - `datamile x` posts `{ name, dirs, media, options, execute: false }` to
   `/api/x`.
-- For `datamile x intermediary`: prints `runs` mapped to
-  `[{ lock, media, options, isatty, error? }]` as JSON to stdout and exits `1`
-  if any entry has `error`.
-- For all other actions: executes `run(ctx)` locally in the CLI process via
+- Executes `run(ctx)` locally in the CLI process via
   `DomainLuaEngine::execute_action` for every `XRun` where `error` is `None`,
   setting `ctx.isatty = std::io::stdin().is_terminal()`. Errors from `XRun.error`
   or local `run(ctx)` are printed to stderr; remaining runs proceed, and the CLI
@@ -418,7 +414,7 @@ lookups exist when the shared `POST /api/x` resolver lands.
 | Modify | `core/datamile-server/src/api/mod.rs` | Wire `/api/x`, remove `/api/actions/{name}` and `/api/select` |
 | Modify | `core/datamile-server/src/api/websocket.rs`, `system.rs` | Serialize `ActionMap` directly |
 | Modify | `core/datamile-server/src/tests.rs` | Add `Host: 127.0.0.1:8000` to existing POST test requests; update `MockBackend` and `ServerConfig` fixtures; add `/api/x` and `Host`/`Origin`/CORS tests |
-| Modify | `core/datamile/src/main.rs` | Narrow `XArgs` (`--dir`, `--media`, trailing `--` options); require live daemon; load config via `DomainLuaEngine`; resolve `.`/`~` locally; call `POST /api/x` with `execute: false`; run `execute_action` locally or print `intermediary` |
+| Modify | `core/datamile/src/main.rs` | Narrow `XArgs` (`--dir`, `--media`, trailing `--` options); require live daemon; load config via `DomainLuaEngine`; resolve `.`/`~` locally; call `POST /api/x` with `execute: false`; run `execute_action` locally |
 | Modify | `core/datamile/Cargo.toml` | Add `assert_cmd` / `tempfile` dev-dependencies if needed for CLI tests |
 | Create | `core/datamile/tests/x_cli.rs` | CLI integration tests against a live test server instance |
 | Create | `interfaces/web-app/src/library/actions.ts` | Pure TypeScript `hasAction(actions, name, mediaType)` and `actionPresentation(actions, name, mediaType)` helpers |
@@ -450,7 +446,7 @@ Each phase must be a separate commit that compiles cleanly and passes
    (`InstanceLock` + `/api/identity`), lightweight `DomainLuaEngine` config
    evaluation (matching `interface.rs`), local `--dir` canonicalization and cwd
    fallback, `POST /api/x { execute: false }`, local `run(ctx)` execution,
-   `intermediary` JSON array output, `core/datamile/tests/x_cli.rs`.
+   `core/datamile/tests/x_cli.rs`.
 4. **Web app & docs**: `ActionMap` store, pure `actions.ts` lookup module +
    `bun test` coverage, updated `ModalDrawer.svelte`/`NavigationBar.svelte`/`App.svelte`
    call sites, `docs/` + `README.md` updates.
@@ -475,6 +471,6 @@ Each phase must be a separate commit that compiles cleanly and passes
 - `datamile` (`core/datamile/tests/x_cli.rs`):
   - Fails non-zero naming `datamile server` when daemon is not running.
   - Runs `(dir, media)` cross-product in argument order; non-zero exit when any run fails while remaining runs still execute.
-  - Targetless generic run receives `ctx.lock = nil, ctx.media = nil`; `intermediary` prints resolved `ctx` array as JSON.
+  - Targetless generic run receives `ctx.lock = nil, ctx.media = nil`.
 - `interfaces/web-app` (`interfaces/web-app/src/library/actions.test.ts`):
   - `hasAction` and `actionPresentation` return scoped entries for matching `mediaType`, return generic entries for any `mediaType`, and reject actions scoped only to other media types.

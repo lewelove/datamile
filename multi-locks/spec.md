@@ -142,8 +142,9 @@ Changes:
   `UpdateScope::Paths`, not `UpdateScope::Entities` (so a vanished watcher
   target reconciles as a removal rather than failing the pass); `run_pass` and
   `run_update_pass` take `UpdateScope` directly (removing the separate
-  `media_type` parameter) and claim the config digest only on
-  `UpdateScope::All { media_type: None }` with zero failures.
+  `media_type` parameter). There is no config digest: a config change never
+  makes an entity dirty, and compile hooks are rebuilt by
+  `datamile update --force`.
 
 ### 3. External index
 
@@ -170,8 +171,8 @@ and broadcasting `MEDIA_UPDATED` directly:
 - `MediaState::init_dirs()` (`core/datamile-media/src/state.rs`) derives watch
   dirs from `self.media_roots()` rather than `self.roots` so empty `init`
   directories at boot are watched for newly added entity dirs.
-- Config dependency changes reload config and manifest, then submit
-  `UpdateScope::All { media_type: None }` to `run_server_update` if needed.
+- Config dependency changes reload config and manifest only. They never force
+  a recompile; `datamile update --force` rebuilds compile hooks.
 - Non-config filesystem events resolve targets without holding `logic`,
   `state_writer`, or `update_lock` across `.await`:
   - External dependency hits read `ExternalIndex` directly into a

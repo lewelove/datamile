@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
 use datamile_mpd::MpdConfig;
 use serde::{Deserialize, Serialize};
@@ -77,19 +77,21 @@ fn is_host_or_cidr(entry: &str) -> bool {
         return prefix.parse::<u8>().is_ok_and(|prefix| prefix <= max);
     }
 
-    // Bracketed IPv6 (`[::1]`) names the same address as `::1`. A port never
-    // belongs here: the guard strips request ports before it compares.
-    let host = entry
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(entry);
-
-    if host.parse::<IpAddr>().is_ok() {
+    if entry.parse::<IpAddr>().is_ok() {
         return true;
     }
 
-    !host.is_empty()
-        && host
+    // Brackets wrap an IPv6 literal (`[::1]`) and nothing else. A port never
+    // belongs here: the guard strips request ports before it compares.
+    if let Some(inner) = entry
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+    {
+        return inner.parse::<Ipv6Addr>().is_ok();
+    }
+
+    !entry.is_empty()
+        && entry
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }

@@ -117,14 +117,6 @@ pub struct CompilerConfig {
     pub jobs: Option<usize>,
 }
 
-/// Kept only until the daemon switches `ServerConfig.actions` to `ActionMap`.
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-pub struct ActionDef {
-    pub label: String,
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
 /// Declared media types per canonical action name, as validated before any
 /// `label`/`description` callback runs. An empty list means a generic action.
 pub type ActionDeclarations = BTreeMap<String, Vec<String>>;

@@ -6,7 +6,7 @@ pub mod logic;
 mod tests;
 
 pub use config::{
-    ActionCtx, ActionDeclarations, ActionDef, ActionEntry, ActionMap, ActionPresentation,
+    ActionCtx, ActionDeclarations, ActionEntry, ActionMap, ActionPresentation,
     DomainConfig, InterfaceDef, ServerConfig, StorageConfig,
 };
 pub use engine::{

@@ -68,6 +68,19 @@ in
     export PATH="$PWD/interfaces/web-app/node_modules/.bin:$PATH"
   '';
 
+  # The gate the repo already defines, enforced on commit instead of by
+  # discipline. devshell entry installs the hook into .git/hooks.
+  git-hooks.hooks.lint = {
+    enable = true;
+    name = "lint";
+    # Re-enter devenv: a commit from a plain shell (an agent's bash tool, for
+    # one) has no cargo, so `lint` alone would fail with "command not found".
+    entry = "devenv shell -- lint";
+    language = "system";
+    pass_filenames = false;
+    always_run = true;
+  };
+
   scripts.build.exec = ''
     set -euo pipefail
 

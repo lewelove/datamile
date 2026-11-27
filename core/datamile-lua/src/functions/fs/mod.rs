@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -257,16 +258,47 @@ fn sorted_paths(paths: &mut [PathBuf]) {
     paths.sort_by(|a, b| alphanumeric_sort::compare_path(a, b));
 }
 
-/// Recursively collects every directory below `dir` (inclusive) holding at
-/// least one of `markers`, canonicalized and naturally sorted. `prune` stops
-/// the walk below a matched directory.
-fn fs_roots(
-    lua: &Lua,
-    (dir, markers, prune): (String, Vec<String>, bool),
-) -> mlua::Result<Table> {
-    let root = datamile_fs::expand_path(&dir);
-    let mut found: Vec<PathBuf> = Vec::new();
-    let mut it = WalkDir::new(&root).follow_links(true).into_iter();
+/// Returns the directory inside `root` that holds `path` under one of
+/// `markers`, if any. The walk already read every entry name, so this needs no
+/// `stat` on the directory.
+fn marker_owner(root: &Path, path: &Path, markers: &[String]) -> Option<PathBuf> {
+    markers.iter().find_map(|marker| {
+        let marker = Path::new(marker);
+        if !path.ends_with(marker) {
+            return None;
+        }
+
+        let owner = path.ancestors().nth(marker.components().count())?;
+        // The root entry can share its name with a marker, but a match always
+        // has to come from an entry below it.
+        if !owner.starts_with(root) {
+            return None;
+        }
+        Some(owner.to_path_buf())
+    })
+}
+
+/// Collects directories below `root` whose entries name a marker, with no
+/// extra `stat` per directory. `WalkDir` yields a directory before its
+/// children, so the match is recorded when the marker entry shows up.
+fn roots_by_marker_entry(root: &Path, markers: &[String]) -> Vec<PathBuf> {
+    let mut owners: HashSet<PathBuf> = HashSet::new();
+    let walker = WalkDir::new(root).follow_links(true).into_iter();
+    for entry in walker.filter_map(Result::ok) {
+        if let Some(owner) = marker_owner(root, entry.path(), markers) {
+            owners.insert(owner);
+        }
+    }
+
+    owners.into_iter().collect()
+}
+
+/// Collects matched directories and stops below each one. This keeps the
+/// `stat` check: `WalkDir` has already queued the children of a directory by
+/// the time a marker entry below it is seen, so a name match cannot prune.
+fn roots_pruned(root: &Path, markers: &[String]) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut it = WalkDir::new(root).follow_links(true).into_iter();
     while let Some(entry_res) = it.next() {
         let Ok(entry) = entry_res else { continue };
         if !entry.file_type().is_dir() {
@@ -278,16 +310,30 @@ fn fs_roots(
         {
             continue;
         }
-        found.push(
-            entry
-                .path()
-                .canonicalize()
-                .unwrap_or_else(|_| entry.path().to_path_buf()),
-        );
-        if prune {
-            it.skip_current_dir();
-        }
+        found.push(entry.path().to_path_buf());
+        it.skip_current_dir();
     }
+
+    found
+}
+
+/// Recursively collects every directory below `dir` (inclusive) holding at
+/// least one of `markers`, canonicalized and naturally sorted. `prune` stops
+/// the walk below a matched directory.
+fn fs_roots(
+    lua: &Lua,
+    (dir, markers, prune): (String, Vec<String>, bool),
+) -> mlua::Result<Table> {
+    let root = datamile_fs::expand_path(&dir);
+    let found = if prune {
+        roots_pruned(&root, &markers)
+    } else {
+        roots_by_marker_entry(&root, &markers)
+    };
+    let mut found: Vec<PathBuf> = found
+        .into_iter()
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .collect();
 
     sorted_paths(&mut found);
     found.dedup();

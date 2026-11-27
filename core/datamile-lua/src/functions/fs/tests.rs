@@ -871,6 +871,49 @@ fn test_d_fs_roots_prune_keeps_siblings_and_symlinks() {
     assert!(names.iter().any(|n| n.ends_with("/entity")), "{names:?}");
 }
 
+/// A marker may name a path below the walked directory, not only a bare file
+/// name, so `"Info/meta.json"` still selects the entity directory.
+#[test]
+fn test_d_fs_roots_matches_marker_with_path_separator() {
+    let root = TempDir::new();
+    write_tree(&root.0, &["A/Info/meta.json", "B/notes.txt"]);
+
+    let engine = LuaRuntime::new().expect("runtime");
+    let code = format!(
+        "return d.fs.roots('{root}', 'Info/meta.json')",
+        root = root.path_str()
+    );
+    let found: Table = engine.lua.load(&code).eval().expect("roots");
+
+    let names = root_names(&found);
+    assert_eq!(names.len(), 1, "unexpected {names:?}");
+    assert!(names[0].ends_with("/A"), "unexpected {names:?}");
+}
+
+/// The walked root can share its name with a marker. A matching entry still
+/// has to sit below the root, so its parent is never returned.
+#[test]
+fn test_d_fs_roots_ignores_root_named_like_marker() {
+    let temp = TempDir::new();
+    let root = temp.0.join("album.toml");
+    std::fs::create_dir_all(&root).expect("create root");
+    std::fs::write(root.join("album.toml"), "marker").expect("write marker");
+
+    let engine = LuaRuntime::new().expect("runtime");
+    let code = format!(
+        "return d.fs.roots('{root}', 'album.toml')",
+        root = root.to_string_lossy()
+    );
+    let found: Table = engine.lua.load(&code).eval().expect("roots");
+
+    let expected = root
+        .canonicalize()
+        .expect("canonical root")
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(root_names(&found), vec![expected]);
+}
+
 /// `d.fs.roots` fails loudly on a bad `dir`, `marker` or `opts`.
 #[test]
 fn test_d_fs_roots_rejects_bad_arguments() {
@@ -893,6 +936,11 @@ fn test_d_fs_roots_rejects_bad_arguments() {
             "return d.fs.roots('{root_path}', {{ [1] = 'album.toml', prune = true }})"
         ),
         format!("return d.fs.roots('{root_path}', {{ [1] = 'a', [3] = 'b' }})"),
+        format!("return d.fs.roots('{root_path}', '/etc/passwd')"),
+        format!("return d.fs.roots('{root_path}', '../album.toml')"),
+        format!("return d.fs.roots('{root_path}', 'a/../album.toml')"),
+        format!("return d.fs.roots('{root_path}', './album.toml')"),
+        format!("return d.fs.roots('{root_path}', 'a/./album.toml')"),
         format!("return d.fs.roots('{root_path}', 123)"),
         format!("return d.fs.roots('{root_path}', 'album.toml', true)"),
         format!("return d.fs.roots('{root_path}', 'album.toml', false)"),

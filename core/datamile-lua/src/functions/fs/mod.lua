@@ -324,12 +324,21 @@ function M.root(source, marker)
     return nil
 end
 
+-- A marker names a path below the walked directory. `..` would climb out of
+-- it, `.` would not compare as a path component, and a leading `/` would make
+-- `join` ignore the directory and check one fixed file on disk for every
+-- directory visited.
 local function validate_marker(m)
     if type(m) ~= "string" then
         error(string.format("marker: expected string, got %s", type(m)))
     end
-    if m == "" or m == "." or m == ".." then
+    if m == "" or m:sub(1, 1) == "/" then
         error(string.format("marker: invalid marker %q", m))
+    end
+    for part in m:gmatch("[^/]+") do
+        if part == "." or part == ".." then
+            error(string.format("marker: invalid marker %q", m))
+        end
     end
 end
 

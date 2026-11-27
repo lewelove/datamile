@@ -72,7 +72,7 @@ All existing `d.*` modules (`fn`, `fs`, `get`, `iter`, `json`, `list`, `str`, `s
 ### 3.1 `d.fs`
 - Existing: `d.fs.normalize(path)`, `d.fs.read_toml(path)`, `d.fs.read_json(path)`, `d.fs.read(path)`, `d.fs.read_lines(path)`, `d.fs.read_dotenv(path)`, `d.fs.exists(path)`, etc.
 - **Discovery helpers:**
-  - `d.fs.roots(dir, marker, opts?)` — walks `dir` (following symlinks) and returns canonical directory paths containing the marker. `marker` is a marker name (e.g., `"album.toml"`) or a flat array of names. `opts.prune = true` stops the walk below a matched directory (default `false`). Bad `dir`, `marker` or `opts` raise an error.
+  - `d.fs.roots(dir, marker, opts?)` — walks `dir` (following symlinks) and returns canonical directory paths containing the marker. `marker` is a marker path below `dir` (e.g., `"album.toml"` or `"Info/meta.json"`) or a flat array of names. Markers must be relative and may not contain `.` or `..` components. `opts.prune = true` stops the walk below a matched directory (default `false`). Bad `dir`, `marker` or `opts` raise an error.
   - `d.fs.files(dir, opts?)` — returns naturally-sorted (`alphanumeric-sort`) file entries under `dir` (`opts`: `{ ext = { ... } | "flac", recursive = true | false, paths_only = true | false }`). Each entry is stat-enriched in a single `readdir`/`walkdir` pass: `{ path, name, stem, ext, mtime, byte_size }` (or plain paths when `paths_only = true`), avoiding redundant `stat()` syscalls.
   - `d.fs.dirs(dir, opts?)` — naturally-sorted subdirectory entries under `dir`.
   - `d.fs.first(dir, candidates, opts?)` — returns the first matching existing file path from `candidates` (supporting exact filenames or extensions), or `nil`.

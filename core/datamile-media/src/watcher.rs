@@ -41,11 +41,10 @@ pub async fn handle_fs_events(
         .iter()
         .any(|path| is_config_change(path, &config_dir, &dependencies))
     {
-        // A config change may invalidate every lock, so the reload submits one
-        // full pass.
-        if reload_config(server).await {
-            submit(server, &shared, UpdateScope::All { media_type: None }).await;
-        }
+        // A config change reloads live state only. Locks are rebuilt by an
+        // explicit `datamile update --force`, because most config edits
+        // (actions, interfaces, logic) never touch the compile hooks.
+        reload_config(server).await;
         return;
     }
 
@@ -169,8 +168,8 @@ fn is_config_change(
         || path.starts_with(config_dir)
 }
 
-/// Reloads config and manifest; `true` when the new config applied.
-async fn reload_config(server: &Arc<ServerState>) -> bool {
+/// Reloads config and manifest. A failure is remembered for `GET /api/identity`.
+async fn reload_config(server: &Arc<ServerState>) {
     log::info!("Filesystem change: reloading config and logic...");
     let mut logic = server.logic.write().await;
 
@@ -202,13 +201,10 @@ async fn reload_config(server: &Arc<ServerState>) -> bool {
                 );
                 std::process::exit(0);
             }
-
-            true
         }
         Err(e) => {
             log::error!("Failed to reload config: {e:?}");
             *server.reload_error.write().await = Some(format!("{e:?}"));
-            false
         }
     }
 }

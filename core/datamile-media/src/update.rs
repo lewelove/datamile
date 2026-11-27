@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
-use datamile_cache::{EntityKey, hash_files, load_state, root_is_dirty, walk_files};
+use datamile_cache::{EntityKey, load_state, root_is_dirty, walk_files};
 use datamile_logic::LogicEngine;
 use datamile_server::{ServerState, UpdateRequest};
 use rayon::prelude::*;
@@ -15,7 +15,7 @@ use crate::deps::{
     MediaShared, UpdateScope, index_entity, state_entries, unindex_entity,
 };
 use crate::schema::{DiscoveredRoot, Discovery, discover_roots};
-use crate::state::{MediaState, config_hash_path, open_engine, state_path};
+use crate::state::{MediaState, open_engine, state_path};
 
 #[cfg(test)]
 mod tests;
@@ -584,27 +584,12 @@ pub fn run_pass(
     let mut result = PassResult::default();
     let plans = load_plans(&state, &discovery, sink, &mut result);
 
-    // A missing or different config digest forces a full pass.
-    let digest_path = config_hash_path(&state.cache_root, &state.config_path);
-    let digest = hash_files(&state.dependencies);
-    let force_all = force == ForceMode::Force
-        || std::fs::read_to_string(&digest_path).unwrap_or_default() != digest;
-
     let Planned {
         dirty,
         removals,
         known,
         scoped,
-    } = plan_work(
-        &plans,
-        &discovery.roots,
-        scope,
-        if force_all {
-            ForceMode::Force
-        } else {
-            ForceMode::Preserve
-        },
-    );
+    } = plan_work(&plans, &discovery.roots, scope, force);
 
     // A `--path` that matches no root entity would otherwise report a clean
     // pass and exit zero having done nothing. An entity key that vanished is a
@@ -667,13 +652,6 @@ pub fn run_pass(
     // Roots that were verified and found clean are `unchanged` too, so the
     // counts add up to `discovered` instead of all reading zero on a clean pass.
     result.unchanged += scoped.saturating_sub(dirty.len());
-
-    // Only a pass that compiled everything may claim the config digest, or the
-    // next full pass would trust it and skip the roots this one did not touch.
-    let claims_config = matches!(scope, UpdateScope::All { media_type: None });
-    if claims_config && result.failed == 0 {
-        let _ = datamile_fs::write_atomic(&digest_path, &digest);
-    }
 
     sink.event(&UpdateEvent::Finished {
         discovered: result.discovered,

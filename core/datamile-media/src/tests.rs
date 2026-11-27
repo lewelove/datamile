@@ -1135,6 +1135,41 @@ async fn config_change_reloads_the_logic_manifest() {
     );
 }
 
+/// A config change reloads live state only. Locks are rebuilt by an explicit
+/// `--force`, because most config edits never touch the compile hooks.
+#[tokio::test]
+async fn config_change_reloads_without_recompiling_locks() {
+    let server = make_server().await;
+    let lock = lock_path(&server._fixture.lib, "A");
+    let before = std::fs::read(&lock).expect("lock");
+
+    let mut init = album_dsl(
+        &server._fixture.lib,
+        &server._fixture.cache,
+        &server._fixture.state_dir,
+        &server._fixture.external,
+    );
+    init.push_str("\nalbum.tag(\"extra\", function(_ctx) return \"x\" end)\n");
+    write(&server._fixture.config, &init);
+
+    let messages = handle(&server, std::slice::from_ref(&server._fixture.config)).await;
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["type"] == json!("LOGIC_UPDATE")),
+        "the config must still reload"
+    );
+    assert!(
+        media_updated(&messages).is_none(),
+        "a config reload must not compile"
+    );
+    assert_eq!(
+        std::fs::read(&lock).expect("lock"),
+        before,
+        "the lock must stay untouched"
+    );
+}
+
 /// A watcher edit inside a known root resolves to exactly that one entity key.
 #[tokio::test]
 async fn watcher_resolves_a_track_edit_to_one_entity_key() {
@@ -1656,11 +1691,10 @@ fn corrupt_state_file_fails_without_a_dir() {
     assert!(matches!(events.last(), Some(UpdateEvent::Finished { .. })));
 }
 
-/// A scoped pass must not claim the config digest, or the next full pass would
-/// trust it and leave every root the scoped pass skipped compiled by the old
-/// config.
+/// A config edit no longer stages a rebuild. `--force` is the only way to
+/// recompile hooks, so a preserve pass leaves the old lock in place.
 #[test]
-fn scoped_pass_does_not_claim_the_config_digest() {
+fn config_change_requires_force_to_recompile() {
     let f = fixture();
     make_album(&f.lib, "A", &["01.flac"]);
     make_album(&f.lib, "B", &["01.flac"]);
@@ -1671,21 +1705,10 @@ fn scoped_pass_does_not_claim_the_config_digest() {
         ForceMode::Force,
     );
 
-    // A config edit that changes every lock, then a pass scoped to A only.
+    // A hook edit that the old lock does not contain.
     let mut dsl = album_dsl(&f.lib, &f.cache, &f.state_dir, &f.external);
     dsl.push_str("\nalbum.tag(\"extra\", function(_ctx) return \"x\" end)\n");
     write(&f.config, &dsl);
-
-    let mut paths = std::collections::HashSet::new();
-    paths.insert(f.lib.join("A"));
-    pass(
-        &shared,
-        &UpdateScope::Paths {
-            paths,
-            media_type: None,
-        },
-        ForceMode::Preserve,
-    );
 
     pass(
         &shared,
@@ -1694,10 +1717,22 @@ fn scoped_pass_does_not_claim_the_config_digest() {
     );
 
     let lock = read_lock(&lock_path(&f.lib, "B"));
+    assert!(
+        lock["album"]["tags"].get("extra").is_none(),
+        "a config change alone must not recompile"
+    );
+
+    pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+    );
+
+    let lock = read_lock(&lock_path(&f.lib, "B"));
     assert_eq!(
         lock["album"]["tags"]["extra"],
         json!("x"),
-        "a config change must still force B after a scoped pass"
+        "a force pass rebuilds with the new hooks"
     );
 }
 

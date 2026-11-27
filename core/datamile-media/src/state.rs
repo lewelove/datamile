@@ -116,11 +116,6 @@ pub fn config_cache_dir(cache_root: &Path, config_path: &Path) -> PathBuf {
         .join(calculate_path_hash(&canonical(config_path)))
 }
 
-#[must_use]
-pub fn config_hash_path(cache_root: &Path, config_path: &Path) -> PathBuf {
-    config_cache_dir(cache_root, config_path).join("config.blake3")
-}
-
 /// The state file for one media root: one per `(config, media type, init)`.
 #[must_use]
 pub fn state_path(

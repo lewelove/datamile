@@ -324,23 +324,71 @@ function M.root(source, marker)
     return nil
 end
 
+local function validate_marker(m)
+    if type(m) ~= "string" then
+        error(string.format("marker: expected string, got %s", type(m)))
+    end
+    if m == "" or m == "." or m == ".." then
+        error(string.format("marker: invalid marker %q", m))
+    end
+end
+
 -- Recursively finds directories holding any marker (file or subdirectory).
--- `marker` accepts a string, an array, or `{ markers = { ... } }`.
-function M.roots(dir, marker)
-    if type(dir) ~= "string" then
-        error(string.format("dir: expected string, got %s", type(dir)))
+-- `marker` is a string or a flat array of strings. `opts.prune` stops the
+-- walk below a matched directory.
+function M.roots(dir, marker, opts)
+    if type(dir) ~= "string" or dir == "" then
+        error(string.format("dir: expected non-empty string, got %s", type(dir)))
     end
 
     local markers
     if type(marker) == "string" then
         markers = { marker }
     elseif type(marker) == "table" then
-        markers = marker.markers or marker
+        markers = marker
     else
         error(string.format("marker: expected string or table, got %s", type(marker)))
     end
 
-    return M._roots_native(dir, markers)
+    local count = #markers
+    if count == 0 then
+        error("marker: expected at least one marker")
+    end
+    -- Flat array only: integer keys from 1 to #markers. This rejects the old
+    -- `{ markers = { ... } }` wrapper, dict keys and sparse tables.
+    for key in pairs(markers) do
+        local is_integer = type(key) == "number" and key == math.floor(key)
+        if not is_integer or key < 1 or key > count then
+            error(string.format("marker: unexpected key %q", tostring(key)))
+        end
+    end
+    local ordered, seen = {}, {}
+    for i = 1, count do
+        validate_marker(markers[i])
+        if not seen[markers[i]] then
+            seen[markers[i]] = true
+            ordered[#ordered + 1] = markers[i]
+        end
+    end
+
+    if opts == nil then
+        opts = {}
+    elseif type(opts) ~= "table" then
+        error(string.format("opts: expected table, got %s", type(opts)))
+    end
+    for key in pairs(opts) do
+        if key ~= "prune" then
+            error(string.format("opts: unknown option %q", tostring(key)))
+        end
+    end
+    local prune = opts.prune
+    if prune == nil then
+        prune = false
+    elseif type(prune) ~= "boolean" then
+        error(string.format("opts.prune: expected boolean, got %s", type(prune)))
+    end
+
+    return M._roots_native(dir, ordered, prune)
 end
 
 -- Files under `dir`, naturally sorted and stat-enriched in one walk.

@@ -2370,6 +2370,37 @@ fn discovery_rejects_nested_roots_within_one_media_type() {
     assert!(err.to_string().contains("nest"), "unexpected: {err}");
 }
 
+/// `prune = true` skips nested entity directories, so discovery succeeds
+/// where the default walk would fail nesting rejection.
+#[test]
+fn discovery_allows_pruned_nested_roots() {
+    let root = TempDir::new().expect("temp");
+    let lib = root.path().join("lib");
+    write(&lib.join("album.toml"), "album = \"Outer\"\n");
+    write(&lib.join("A/album.toml"), "album = \"Inner\"\n");
+    let config = root.path().join("init.lua");
+    write(
+        &config,
+        &format!(
+            r#"
+            d.media.root("album", {{
+                init = "{lib}",
+                select = function(dir) return d.fs.roots(dir, "album.toml", {{ prune = true }}) end,
+                id = function(ctx) return ctx.tags.album end,
+            }})
+            "#,
+            lib = lib.display()
+        ),
+    );
+
+    let engine = engine_for(&config);
+    let media = read_media_manifest(&engine).expect("manifest");
+    let discovery =
+        discover_roots(&engine, &media, root.path()).expect("pruned discovery");
+
+    assert_eq!(discovery.roots.len(), 1, "only the outer entity is a root");
+}
+
 /// A media type name is used as a path segment, so the character set is
 /// restricted.
 #[test]

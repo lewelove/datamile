@@ -258,26 +258,36 @@ fn sorted_paths(paths: &mut [PathBuf]) {
 }
 
 /// Recursively collects every directory below `dir` (inclusive) holding at
-/// least one of `markers`, canonicalized and naturally sorted.
-fn fs_roots(lua: &Lua, (dir, markers): (String, Vec<String>)) -> mlua::Result<Table> {
+/// least one of `markers`, canonicalized and naturally sorted. `prune` stops
+/// the walk below a matched directory.
+fn fs_roots(
+    lua: &Lua,
+    (dir, markers, prune): (String, Vec<String>, bool),
+) -> mlua::Result<Table> {
     let root = datamile_fs::expand_path(&dir);
-    let mut found: Vec<PathBuf> = WalkDir::new(&root)
-        .follow_links(true)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_dir())
-        .filter(|entry| {
-            markers
-                .iter()
-                .any(|marker| entry.path().join(marker).exists())
-        })
-        .map(|entry| {
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mut it = WalkDir::new(&root).follow_links(true).into_iter();
+    while let Some(entry_res) = it.next() {
+        let Ok(entry) = entry_res else { continue };
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        if !markers
+            .iter()
+            .any(|marker| entry.path().join(marker).exists())
+        {
+            continue;
+        }
+        found.push(
             entry
                 .path()
                 .canonicalize()
-                .unwrap_or_else(|_| entry.path().to_path_buf())
-        })
-        .collect();
+                .unwrap_or_else(|_| entry.path().to_path_buf()),
+        );
+        if prune {
+            it.skip_current_dir();
+        }
+    }
 
     sorted_paths(&mut found);
     found.dedup();

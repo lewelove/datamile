@@ -756,30 +756,158 @@ fn write_tree(root: &std::path::Path, files: &[&str]) {
     }
 }
 
-/// `d.fs.roots` walks recursively and returns canonical dirs holding a marker.
+/// Reads the path list `d.fs.roots` returned.
+fn root_names(found: &Table) -> Vec<String> {
+    (1..=found.raw_len())
+        .map(|i| found.get::<String>(i).expect("path"))
+        .collect()
+}
+
+/// `d.fs.roots` takes a marker string or a flat marker array, and returns
+/// canonical directories in natural order.
 #[test]
-fn test_d_fs_roots_finds_marker_directories() {
+fn test_d_fs_roots_accepts_string_and_array_markers() {
     let root = TempDir::new();
     write_tree(
         &root.0,
         &[
-            "A/album.toml",
+            "10/album.toml",
+            "2/album.toml",
             "B/virtual.toml",
             "C/notes.txt",
-            "D/E/album.toml",
+            "B/nested/virtual.toml",
         ],
     );
 
     let engine = LuaRuntime::new().expect("runtime");
     let code = format!(
-        "return d.fs.roots('{root}', {{ markers = {{ 'album.toml', 'virtual.toml' }} }})",
+        "return d.fs.roots('{root}', {{ 'album.toml', 'virtual.toml', 'album.toml' }})",
+        root = root.path_str()
+    );
+    let found: Table = engine.lua.load(&code).eval().expect("roots");
+
+    let names = root_names(&found);
+    assert_eq!(names.len(), 4, "unexpected {names:?}");
+    assert!(names[0].ends_with("/2"), "unexpected {names:?}");
+    assert!(names[1].ends_with("/10"), "unexpected {names:?}");
+    assert!(names[2].ends_with("/B"), "unexpected {names:?}");
+    assert!(names[3].ends_with("/B/nested"), "unexpected {names:?}");
+
+    let code = format!(
+        "return d.fs.roots('{root}', 'album.toml')",
+        root = root.path_str()
+    );
+    let found: Table = engine.lua.load(&code).eval().expect("roots");
+    assert_eq!(found.raw_len(), 2);
+}
+
+/// By default `d.fs.roots` keeps walking below a match, so a nested marker
+/// directory is returned too.
+#[test]
+fn test_d_fs_roots_default_prune_keeps_nested_matches() {
+    let root = TempDir::new();
+    write_tree(
+        &root.0,
+        &["A/album.toml", "A/Disc 1/album.toml", "B/album.toml"],
+    );
+
+    let engine = LuaRuntime::new().expect("runtime");
+    let code = format!(
+        "return d.fs.roots('{root}', 'album.toml')",
         root = root.path_str()
     );
     let found: Table = engine.lua.load(&code).eval().expect("roots");
 
     assert_eq!(found.raw_len(), 3);
-    let first: String = found.get(1).expect("first");
-    assert!(first.ends_with("/A"), "unexpected {first}");
+}
+
+/// `prune = true` stops the walk below a matched directory.
+#[test]
+fn test_d_fs_roots_prune_stops_at_matched_directory() {
+    let root = TempDir::new();
+    write_tree(
+        &root.0,
+        &["A/album.toml", "A/Disc 1/album.toml", "B/album.toml"],
+    );
+
+    let engine = LuaRuntime::new().expect("runtime");
+    let code = format!(
+        "return d.fs.roots('{root}', 'album.toml', {{ prune = true }})",
+        root = root.path_str()
+    );
+    let found: Table = engine.lua.load(&code).eval().expect("roots");
+
+    let names = root_names(&found);
+    assert_eq!(names.len(), 2, "unexpected {names:?}");
+    assert!(names[0].ends_with("/A"), "unexpected {names:?}");
+    assert!(names[1].ends_with("/B"), "unexpected {names:?}");
+}
+
+/// Pruning one directory still walks its siblings, including a sibling that
+/// is a symlink.
+#[cfg(unix)]
+#[test]
+fn test_d_fs_roots_prune_keeps_siblings_and_symlinks() {
+    let root = TempDir::new();
+    let outside = TempDir::new();
+    write_tree(
+        &root.0,
+        &["A/album.toml", "A/Disc 1/album.toml", "B/album.toml"],
+    );
+    write_tree(&outside.0, &["entity/album.toml"]);
+    std::os::unix::fs::symlink(outside.0.join("entity"), root.0.join("C"))
+        .expect("symlink");
+
+    let engine = LuaRuntime::new().expect("runtime");
+    let code = format!(
+        "return d.fs.roots('{root}', 'album.toml', {{ prune = true }})",
+        root = root.path_str()
+    );
+    let found: Table = engine.lua.load(&code).eval().expect("roots");
+
+    let names = root_names(&found);
+    assert_eq!(names.len(), 3, "unexpected {names:?}");
+    assert!(names.iter().any(|n| n.ends_with("/B")), "{names:?}");
+    assert!(names.iter().any(|n| n.ends_with("/entity")), "{names:?}");
+}
+
+/// `d.fs.roots` fails loudly on a bad `dir`, `marker` or `opts`.
+#[test]
+fn test_d_fs_roots_rejects_bad_arguments() {
+    let root = TempDir::new();
+    let root_path = root.path_str();
+    let engine = LuaRuntime::new().expect("runtime");
+
+    let cases = [
+        "return d.fs.roots(123, 'album.toml')".to_string(),
+        "return d.fs.roots(nil, 'album.toml')".to_string(),
+        "return d.fs.roots('', 'album.toml')".to_string(),
+        format!("return d.fs.roots('{root_path}', '')"),
+        format!("return d.fs.roots('{root_path}', '.')"),
+        format!("return d.fs.roots('{root_path}', '..')"),
+        format!("return d.fs.roots('{root_path}', {{ '' }})"),
+        format!("return d.fs.roots('{root_path}', {{ '.' }})"),
+        format!("return d.fs.roots('{root_path}', {{}})"),
+        format!("return d.fs.roots('{root_path}', {{ markers = {{ 'album.toml' }} }})"),
+        format!(
+            "return d.fs.roots('{root_path}', {{ [1] = 'album.toml', prune = true }})"
+        ),
+        format!("return d.fs.roots('{root_path}', {{ [1] = 'a', [3] = 'b' }})"),
+        format!("return d.fs.roots('{root_path}', 123)"),
+        format!("return d.fs.roots('{root_path}', 'album.toml', true)"),
+        format!("return d.fs.roots('{root_path}', 'album.toml', false)"),
+        format!("return d.fs.roots('{root_path}', 'album.toml', 'prune')"),
+        format!("return d.fs.roots('{root_path}', 'album.toml', {{ prume = true }})"),
+        format!("return d.fs.roots('{root_path}', 'album.toml', {{ prune = 1 }})"),
+        format!("return d.fs.roots('{root_path}', 'album.toml', {{ prune = 'yes' }})"),
+    ];
+
+    for code in cases {
+        assert!(
+            engine.lua.load(&code).eval::<mlua::Value>().is_err(),
+            "must reject: {code}"
+        );
+    }
 }
 
 /// `d.fs.files` is naturally sorted and stat-enriched in one pass.

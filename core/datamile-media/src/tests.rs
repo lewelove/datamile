@@ -1,6 +1,14 @@
 //! Contract of the schema-driven media engine: DSL validation, discovery,
 //! single-pass compilation and every hot-reload guard.
 
+// The fixture guard keeps its `TempDir` alive in an underscore field, and every
+// test reads the entity dir through it. Clippy reads that as using an underscore
+// binding, which is exactly what the guard is for here.
+#![allow(
+    clippy::used_underscore_binding,
+    reason = "`_fixture` holds a TempDir guard that tests are meant to read through"
+)]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -366,6 +374,10 @@ fn discovery_allows_cross_type_nesting() {
 
 // ------------------------------------------------------------ compilation ----
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one lock asserts every node kind, image field and tag it produced"
+)]
 #[test]
 fn compile_emits_physical_and_virtual_nodes_and_images() {
     let f = fixture();
@@ -805,7 +817,7 @@ fn read_toml_is_memoized_within_one_entity() {
 // ------------------------------------------------------------ hot reload ----
 
 struct Server {
-    server: Arc<ServerState>,
+    state: Arc<ServerState>,
     backend: Arc<MediaEngineBackend>,
     _fixture: Fixture,
 }
@@ -866,15 +878,15 @@ async fn make_server() -> Server {
     drop(logic);
 
     Server {
-        server,
+        state: server,
         backend,
         _fixture: f,
     }
 }
 
 async fn handle(server: &Server, paths: &[PathBuf]) -> Vec<Value> {
-    let mut rx = server.server.tx.subscribe();
-    server.backend.handle_fs_events(paths, &server.server).await;
+    let mut rx = server.state.tx.subscribe();
+    server.backend.handle_fs_events(paths, &server.state).await;
 
     let mut messages = Vec::new();
     while let Ok(message) = rx.try_recv() {
@@ -920,13 +932,14 @@ async fn state_file_is_byte_stable_across_passes() {
     let state_file = {
         let guard = shared.state.read().expect("state");
         let state = guard.as_ref().expect("state");
-
-        state_path(
+        let path = state_path(
             &state.cache_root,
             &state.config_path,
             "album",
             &state.init_dirs()[0],
-        )
+        );
+        drop(guard);
+        path
     };
     let before = std::fs::read(&state_file).expect("state file");
 
@@ -965,8 +978,15 @@ async fn deleting_the_marker_removes_the_root_and_keeps_its_lock() {
     assert_eq!(update["removed"], json!(["Artist - A"]));
     assert!(lock_path(&server._fixture.lib, "A").exists());
 
-    let logic = server.server.logic.read().await;
-    assert!(logic.entity_record("album", "Artist - A").is_none());
+    assert!(
+        server
+            .state
+            .logic
+            .read()
+            .await
+            .entity_record("album", "Artist - A")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -1024,14 +1044,14 @@ async fn config_change_reloads_the_logic_manifest() {
     );
     write(&server._fixture.config, &init);
 
-    let messages = handle(&server, &[server._fixture.config.clone()]).await;
+    let messages = handle(&server, std::slice::from_ref(&server._fixture.config)).await;
     let update = messages
         .iter()
         .find(|message| message["type"] == json!("LOGIC_UPDATE"))
         .expect("LOGIC_UPDATE");
     assert!(update["manifest"]["libraries"].get("all").is_some());
 
-    let logic = server.server.logic.read().await;
+    let logic = server.state.logic.read().await;
     assert!(logic.manifest.libraries.contains_key("all"));
     assert_eq!(
         logic

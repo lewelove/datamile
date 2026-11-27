@@ -265,34 +265,34 @@ fn test_d_fs_normalize() {
 fn test_d_fs_parents() {
     let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
 
-    let code = r#"
+    let code = r"
         local parents = {}
         for p in d.fs.parents('/a/b/c/file.txt') do
             table.insert(parents, p)
         end
         return parents
-    "#;
+    ";
     let parents: Vec<String> = engine.lua.load(code).eval().expect("Execution failed");
     assert_eq!(parents, vec!["/a/b/c", "/a/b", "/a", "/"]);
 
-    let rel_code = r#"
+    let rel_code = r"
         local parents = {}
         for p in d.fs.parents('a/b/c/file.txt') do
             table.insert(parents, p)
         end
         return parents
-    "#;
+    ";
     let rel_parents: Vec<String> =
         engine.lua.load(rel_code).eval().expect("Execution failed");
     assert_eq!(rel_parents, vec!["a/b/c", "a/b", "a"]);
 
-    let empty_code = r#"
+    let empty_code = r"
         local count = 0
         for _ in d.fs.parents('/') do
             count = count + 1
         end
         return count
-    "#;
+    ";
     let count: u32 = engine
         .lua
         .load(empty_code)
@@ -302,6 +302,10 @@ fn test_d_fs_parents() {
 }
 
 /// Verify that `d.fs.dir` lists directory items with specified depth limits and custom skip callbacks.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk covers depth 1, depth 2 and a skip callback over the same tree"
+)]
 #[test]
 fn test_d_fs_dir() {
     let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
@@ -320,13 +324,13 @@ fn test_d_fs_dir() {
     std::fs::write(sub_nested.join("deep.flac"), "audio").expect("Failed to write file");
 
     let code_depth1 = format!(
-        r#"
+        r"
         local names = {{}}
         for name, type_ in d.fs.dir('{root_path}', {{ depth = 1 }}) do
             names[name] = type_
         end
         return names
-    "#
+    "
     );
     let names_depth1: Table = engine
         .lua
@@ -344,13 +348,13 @@ fn test_d_fs_dir() {
     );
 
     let code_recursive = format!(
-        r#"
+        r"
         local rel_paths = {{}}
         for rel, type_ in d.fs.dir('{root_path}', {{ depth = 3 }}) do
             rel_paths[rel] = type_
         end
         return rel_paths
-    "#
+    "
     );
     let rel_paths: Table = engine
         .lua
@@ -365,7 +369,7 @@ fn test_d_fs_dir() {
     );
 
     let code_skip = format!(
-        r#"
+        r"
         local visited = {{}}
         for rel, _ in d.fs.dir('{root_path}', {{
             depth = 3,
@@ -376,7 +380,7 @@ fn test_d_fs_dir() {
             table.insert(visited, rel)
         end
         return visited
-    "#
+    "
     );
     let visited: Vec<String> = engine
         .lua
@@ -388,7 +392,7 @@ fn test_d_fs_dir() {
     assert!(visited.iter().any(|p| p == "root_file.txt"));
 
     let code_skip_calls = format!(
-        r#"
+        r"
         local skip_calls = {{}}
         for rel, _ in d.fs.dir('{root_path}', {{
             depth = 3,
@@ -398,7 +402,7 @@ fn test_d_fs_dir() {
             end
         }}) do end
         return skip_calls
-    "#
+    "
     );
     let skip_calls: Vec<String> = engine
         .lua
@@ -409,13 +413,13 @@ fn test_d_fs_dir() {
     assert!(skip_calls.contains(&"sub_b".to_string()));
     assert_eq!(skip_calls.iter().filter(|p| *p == "sub_a").count(), 1);
 
-    let non_existent_code = r#"
+    let non_existent_code = r"
         local count = 0
         for _ in d.fs.dir('/non_existent_datamile_dir_xyz_123') do
             count = count + 1
         end
         return count
-    "#;
+    ";
     let non_existent_count: u32 = engine
         .lua
         .load(non_existent_code)
@@ -438,7 +442,7 @@ fn test_d_fs_find() {
     let target_file_str = target_file.to_string_lossy().to_string();
 
     let code_exact = format!(
-        r#"return d.fs.find('track.lrc', {{ path = '{root_path}', type = 'file', limit = math.huge }})"#
+        r"return d.fs.find('track.lrc', {{ path = '{root_path}', type = 'file', limit = math.huge }})"
     );
     let exact_res: Vec<String> = engine
         .lua
@@ -449,7 +453,7 @@ fn test_d_fs_find() {
     assert_eq!(exact_res[0], target_file_str);
 
     let code_table = format!(
-        r#"return d.fs.find({{ 'track.lrc', 'nonexistent.txt' }}, {{ path = '{root_path}', type = 'file', limit = math.huge }})"#
+        r"return d.fs.find({{ 'track.lrc', 'nonexistent.txt' }}, {{ path = '{root_path}', type = 'file', limit = math.huge }})"
     );
     let table_res: Vec<String> = engine
         .lua
@@ -461,11 +465,11 @@ fn test_d_fs_find() {
 
     let nested_str = nested_dir.to_string_lossy().to_string();
     let code_pred_up = format!(
-        r#"
+        r"
         return d.fs.find(function(name, path)
             return name == 'track.lrc' and path:find('track%.lrc$') ~= nil
         end, {{ path = '{nested_str}', upward = true, limit = 1 }})
-    "#
+    "
     );
     let pred_up_res: Vec<String> = engine
         .lua
@@ -494,14 +498,14 @@ fn test_d_fs_root() {
     std::fs::create_dir_all(&deep_dir).expect("Failed to create deep dir");
     let deep_str = deep_dir.to_string_lossy().to_string();
 
-    let code = format!(r#"return d.fs.root('{deep_str}', 'project_marker.toml')"#);
+    let code = format!(r"return d.fs.root('{deep_str}', 'project_marker.toml')");
     let root_dir: Option<String> =
         engine.lua.load(&code).eval().expect("Execution failed");
     assert!(root_dir.is_some());
     assert_eq!(root_dir.unwrap(), root_path);
 
     let missing_code =
-        format!(r#"return d.fs.root('{deep_str}', 'non_existent_marker.toml')"#);
+        format!(r"return d.fs.root('{deep_str}', 'non_existent_marker.toml')");
     let missing_root: Option<String> = engine
         .lua
         .load(&missing_code)
@@ -591,10 +595,10 @@ fn test_d_fs_read_lines() {
     assert_eq!(lines[1], "second");
 
     let lookup_code = format!(
-        r#"
+        r"
         local t = d.fs.read_lines('{path_str}')
         return {{ t[1], t['first'], t[2], t['second'] }}
-    "#
+    "
     );
     let lookup: Vec<mlua::Value> = engine
         .lua

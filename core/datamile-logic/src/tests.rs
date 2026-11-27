@@ -569,10 +569,9 @@ fn media_types_are_partitioned() {
         engine.entity_id_by_path(BOOK, &PathBuf::from("/books/Dune")),
         Some("Dune")
     );
-    assert!(
-        engine
-            .request_view(BOOK, "all", None, "alpha", None, None, SortOrder::Forward)
-            .is_empty()
+    assert_eq!(
+        engine.request_view(BOOK, "all", None, "alpha", None, None, SortOrder::Forward),
+        Vec::<String>::new()
     );
 
     engine.remove_entity_by_id(BOOK, "Dune");

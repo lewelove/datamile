@@ -4,7 +4,7 @@ use walkdir::WalkDir;
 use crate::fs::create_album_directory;
 use crate::models::{AlbumData, FormattingConfig, Track};
 
-/// Verify that create_album_directory produces only TOML manifests and no JSON files.
+/// Verify that `create_album_directory` produces only TOML manifests and no JSON files.
 #[test]
 fn test_create_album_directory_no_json_files() {
     let temp = tempdir().expect("Failed to create temporary test directory");

@@ -270,6 +270,10 @@ async fn test_state(logic: LogicEngine) -> Arc<ServerState> {
     test_state_with_backend(logic, Arc::new(MockBackend::new())).await
 }
 
+#[allow(
+    clippy::unused_async,
+    reason = "async keeps every test-state helper callable with `.await`, like its callers"
+)]
 async fn test_state_with_backend(
     logic: LogicEngine,
     backend: Arc<MockBackend>,
@@ -458,7 +462,7 @@ async fn router_returns_the_literal_lock_with_depth() {
 }
 
 /// The whole-library snapshot and the type listing sort their keys, so the same
-/// state always serializes to the same bytes instead of HashMap iteration order.
+/// state always serializes to the same bytes instead of `HashMap` iteration order.
 #[tokio::test]
 async fn init_payload_and_type_list_sort_keys() {
     let state = test_state(engine_with(&[
@@ -556,8 +560,10 @@ async fn router_passes_items_and_type_to_actions() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let recorded = payloads.lock().expect("payloads");
-    let payload = recorded.first().expect("payload recorded");
+    let payload = {
+        let recorded = payloads.lock().expect("payloads");
+        recorded.first().expect("payload recorded").clone()
+    };
     assert_eq!(payload["items"][0]["type"], json!(ALBUM));
     assert_eq!(payload["items"][0]["id"], json!("a"));
     assert_eq!(payload["isatty"], json!(false));

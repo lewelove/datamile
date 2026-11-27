@@ -135,7 +135,7 @@ in
     cd "$ROOT"
 
     cargo fmt --all --check
-    cargo clippy --workspace --lib --bins -- --deny warnings
+    cargo clippy --workspace --all-targets -- --deny warnings
 
     if grep -rnE --include='*.rs' '\bfn get_[a-z]' core actions; then
       printf '\n' >&2

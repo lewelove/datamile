@@ -38,7 +38,7 @@ fn validate_extensions_accepts_known_and_rejects_unknown() {
     ));
 }
 
-/// Tag keys collapse punctuation, whitespace and uppercase into snake_case.
+/// Tag keys collapse punctuation, whitespace and uppercase into `snake_case`.
 #[test]
 fn sanitize_key_normalizes_tag_names() {
     assert_eq!(sanitize_key("Album Artist"), "album_artist");

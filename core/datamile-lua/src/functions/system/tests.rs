@@ -103,13 +103,13 @@ fn test_d_system_stdio_modes() {
 #[test]
 fn test_d_system_isatty() {
     let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
-    let code = r#"
+    let code = r"
         return {
             stdin_isatty = d.system.isatty(0),
             default_isatty = d.system.isatty(),
             invalid_isatty = d.system.isatty(-1)
         }
-    "#;
+    ";
     let table: Table = engine.lua.load(code).eval().expect("Execution failed");
     let invalid_val: bool = table.get("invalid_isatty").unwrap();
     assert!(!invalid_val);
@@ -213,7 +213,7 @@ fn test_d_system_env() {
     assert_eq!(stdout_val, "injected_val");
 }
 
-/// Verify that `d.system` clears parent environment variables when clear_env is enabled.
+/// Verify that `d.system` clears parent environment variables when `clear_env` is enabled.
 #[test]
 fn test_d_system_clear_env() {
     unsafe {
@@ -228,7 +228,7 @@ fn test_d_system_clear_env() {
     assert_eq!(stdout_val, "");
 }
 
-/// Verify that `d.system` allows setting explicit environment variables with clear_env.
+/// Verify that `d.system` allows setting explicit environment variables with `clear_env`.
 #[test]
 fn test_d_system_clear_env_with_explicit_vars() {
     unsafe {
@@ -403,11 +403,11 @@ fn test_d_system_detach_with_stdin() {
     let start = std::time::Instant::now();
     let mut finished = false;
     while start.elapsed() < std::time::Duration::from_millis(1500) {
-        if let Ok(content) = std::fs::read_to_string(&out_path) {
-            if content == "detached stdin payload" {
-                finished = true;
-                break;
-            }
+        if let Ok(content) = std::fs::read_to_string(&out_path)
+            && content == "detached stdin payload"
+        {
+            finished = true;
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }

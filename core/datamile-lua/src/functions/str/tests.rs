@@ -3,6 +3,11 @@ use mlua::Table;
 use crate::LuaRuntime;
 
 /// Verify that `d.str.startswith` and `d.str.endswith` detect prefixes and suffixes.
+#[allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    reason = "one table of inputs and expected results is clearer than four tests"
+)]
 #[test]
 fn test_d_str_starts_and_endswith() {
     let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
@@ -326,6 +331,10 @@ fn test_d_str_stricmp() {
 }
 
 /// Verify that `d.str.split` and `d.str.gsplit` tokenize strings with plain and pattern options.
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "plain and pattern splits are asserted against one shared input table"
+)]
 #[test]
 fn test_d_str_split_and_gsplit() {
     let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
@@ -453,6 +462,10 @@ fn test_d_str_word_count() {
 }
 
 /// Verify that `d.str.utf_pos`, `d.str.byteindex`, and `d.str.utfindex` handle multibyte sequences.
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "index and byte positions of one multibyte string are checked together"
+)]
 #[test]
 fn test_d_str_utf_indexing() {
     let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");

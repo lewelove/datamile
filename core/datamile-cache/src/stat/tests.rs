@@ -72,9 +72,11 @@ fn state_round_trips_and_is_byte_stable() {
     states.insert(
         "/music/A".to_string(),
         RootState {
-            files: [("album.toml".to_string(), FileStat { mtime: 7, size: 42 })]
-                .into_iter()
-                .collect(),
+            files: std::iter::once((
+                "album.toml".to_string(),
+                FileStat { mtime: 7, size: 42 },
+            ))
+            .collect(),
             lock_stat: Some(FileStat { mtime: 8, size: 2 }),
         },
     );

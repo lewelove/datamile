@@ -3,6 +3,10 @@ use mlua::Table;
 use crate::LuaRuntime;
 
 /// Verify that `d.tbl.extend` merges tables shallowly and respects behavior modes.
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "force, keep and fill modes are asserted against the same source tables"
+)]
 #[test]
 fn test_d_tbl_extend() {
     let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
@@ -38,7 +42,7 @@ fn test_d_tbl_extend() {
         .load("return d.tbl.extend('force')")
         .eval()
         .expect("Execution failed");
-    assert!(empty_call.raw_len() == 0);
+    assert_eq!(empty_call.raw_len(), 0);
 
     let single_table: Table = engine
         .lua
@@ -84,12 +88,12 @@ fn test_d_tbl_extend() {
 #[test]
 fn test_d_tbl_deep_extend() {
     let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
-    let code = r#"
+    let code = r"
         local t1 = { nested = { a = 1, list = { 1, 2 }, deeper = { x = 10 } } }
         local t2 = { nested = { b = 2, list = { 3 }, deeper = { y = 20 } } }
         local t3 = { nested = { deeper = { z = 30 } } }
         return d.tbl.deep_extend('force', t1, t2, t3)
-    "#;
+    ";
     let res: Table = engine.lua.load(code).eval().expect("Execution failed");
     let nested: Table = res.get("nested").unwrap();
     assert_eq!(nested.get::<i64>("a").unwrap(), 1);
@@ -503,7 +507,7 @@ fn test_d_tbl_add_reverse_lookup() {
 #[test]
 fn test_d_tbl_deepcopy_and_deep_equal() {
     let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
-    let code = r#"
+    let code = r"
         local orig = { a = 1, nested = { b = 2 } }
         local copy = d.tbl.deepcopy(orig)
         copy.nested.b = 99
@@ -516,7 +520,7 @@ fn test_d_tbl_deepcopy_and_deep_equal() {
             diff_prim = d.tbl.deep_equal(100, 200),
             diff_types = d.tbl.deep_equal({ a = 1 }, 'string')
         }
-    "#;
+    ";
     let res: Table = engine.lua.load(code).eval().expect("Execution failed");
     assert_eq!(res.get::<i64>("orig_b").unwrap(), 2);
     assert_eq!(res.get::<i64>("copy_b").unwrap(), 99);
@@ -526,12 +530,12 @@ fn test_d_tbl_deepcopy_and_deep_equal() {
     assert!(!res.get::<bool>("diff_prim").unwrap());
     assert!(!res.get::<bool>("diff_types").unwrap());
 
-    let cycle_code = r#"
+    let cycle_code = r"
         local a = { name = 'cycle' }
         a.self = a
         local b = d.tbl.deepcopy(a)
         return b.self == b
-    "#;
+    ";
     let cycle_preserved: bool = engine
         .lua
         .load(cycle_code)

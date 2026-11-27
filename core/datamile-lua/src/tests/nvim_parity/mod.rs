@@ -46,11 +46,12 @@ fn run_spec(name: &str, code: &str) {
     if !failed.is_empty() {
         let mut err_msg = format!("{} test(s) failed in '{name}':\n", failed.len());
         for f in &failed {
-            err_msg.push_str(&format!(
+            let failure = format!(
                 "  [FAIL] {} -> {}\n",
                 f.name,
                 f.err.as_deref().unwrap_or("unknown error")
-            ));
+            );
+            err_msg.push_str(&failure);
         }
         panic!("{err_msg}");
     }

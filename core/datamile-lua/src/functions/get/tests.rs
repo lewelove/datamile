@@ -87,14 +87,14 @@ fn test_d_get() {
 fn test_d_get_boolean_false() {
     let engine = LuaRuntime::new().expect("Failed to create LuaRuntime");
 
-    let test_setup = r#"
+    let test_setup = r"
         local sample = {
             flags = { false, true },
             nested = {
                 disabled = false
             }
         }
-    "#;
+    ";
 
     let array_dot_res: bool = engine
         .lua

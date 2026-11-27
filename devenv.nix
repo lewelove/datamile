@@ -119,7 +119,7 @@ in
     cd "$ROOT"
 
     cargo test --workspace
-    (cd "$ROOT/interfaces/web-app" && bun run lint)
+    (cd "$ROOT/interfaces/web-app" && bun run test && bun run lint)
   '';
 
   scripts.format.exec = ''

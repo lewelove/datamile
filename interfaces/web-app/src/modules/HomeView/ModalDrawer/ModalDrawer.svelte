@@ -5,6 +5,7 @@ import { view } from "../../../library/view.svelte.ts";
 import { collection } from "../../../library/collection.svelte.ts";
 import { tracksOf } from "../../../library/tracks.ts";
 import { playMedia, executeAction, updateMedia } from "../../../api.ts";
+import { MEDIA_ALBUM } from "../../../library/actions.ts";
 import ClearCover from "../../ClearCover.svelte";
 import ModalDrawerTracks from "./ModalDrawerTracks.svelte";
 import type { FullAlbum } from "../../../types.ts";
@@ -16,6 +17,16 @@ let leftColumnWidth = $derived(Math.round(0.36 * windowWidth));
 
 let albumData = $derived(album.album || {});
 let albumId = $derived(albumData.id || "");
+let albumPath = $derived(albumId ? (collection.dict[albumId]?.path ?? null) : null);
+
+// One entry per album control the config may declare. The name, icon, and
+// fallback label live together so the buttons cannot drift apart.
+const ACTION_BUTTONS = [
+  { name: "open_folder", icon: "folder", fallback: "Open Local Folder" },
+  { name: "open_anchor_manifest", icon: "edit_document", fallback: "Open Manifest" },
+  { name: "open_lock", icon: "code", fallback: "Open Data Object" },
+  { name: "open_terminal", icon: "terminal_2", fallback: "Open Terminal" }
+];
 let albumTracks = $derived(tracksOf(albumData));
 let infoData = $derived(albumData.objects?.info || {});
 
@@ -164,46 +175,20 @@ function handleBackdropClick(e: MouseEvent) {
             <button type="button" class="v-btn-icon icon-btn" onclick={handleUpdate} title="Update Album">
               <span class="icon">refresh</span>
             </button>
-            {#if collection.hasAction("open_folder")}
-              <button
-                type="button"
-                class="v-btn-icon icon-btn"
-                onclick={() => executeAction("open_folder", albumId)}
-                title={collection.actions["open_folder"]?.label || "Open Local Folder"}
-              >
-                <span class="icon">folder</span>
-              </button>
-            {/if}
-            {#if collection.hasAction("open_anchor_manifest")}
-              <button
-                type="button"
-                class="v-btn-icon icon-btn"
-                onclick={() => executeAction("open_anchor_manifest", albumId)}
-                title={collection.actions["open_anchor_manifest"]?.label || "Open Manifest"}
-              >
-                <span class="icon">edit_document</span>
-              </button>
-            {/if}
-            {#if collection.hasAction("open_lock")}
-              <button
-                type="button"
-                class="v-btn-icon icon-btn"
-                onclick={() => executeAction("open_lock", albumId)}
-                title={collection.actions["open_lock"]?.label || "Open Data Object"}
-              >
-                <span class="icon">code</span>
-              </button>
-            {/if}
-            {#if collection.hasAction("open_terminal")}
-              <button
-                type="button"
-                class="v-btn-icon icon-btn"
-                onclick={() => executeAction("open_terminal", albumId)}
-                title={collection.actions["open_terminal"]?.label || "Open Terminal"}
-              >
-                <span class="icon">terminal_2</span>
-              </button>
-            {/if}
+            {#each ACTION_BUTTONS as action (action.name)}
+              {#if albumPath && collection.hasAction(action.name, MEDIA_ALBUM)}
+                <button
+                  type="button"
+                  class="v-btn-icon icon-btn"
+                  onclick={() =>
+                    executeAction(action.name, MEDIA_ALBUM, albumPath).catch(() => {})}
+                  title={collection.actionPresentation(action.name, MEDIA_ALBUM)?.label ||
+                    action.fallback}
+                >
+                  <span class="icon">{action.icon}</span>
+                </button>
+              {/if}
+            {/each}
           </div>
 
           <div class="bar-group right">

@@ -1,10 +1,15 @@
 import { SvelteMap } from "svelte/reactivity";
 import { fetchMedia } from "../api.ts";
+import {
+  actionPresentation as resolveActionPresentation,
+  hasAction as actionExists
+} from "./actions.ts";
 import { sync } from "./sync.svelte.ts";
 import { updatePlayerState } from "../modules/player.svelte.ts";
 import { config as globalConfig } from "../config.svelte.ts";
 import type {
-  ActionDef,
+  ActionMap,
+  ActionPresentation,
   AlbumCardItem,
   AlbumDictEntry,
   AlbumImageEntry,
@@ -67,7 +72,7 @@ class CollectionStore {
   libraryViewIds: string[] = $state([]);
   sidebarGroups: SvelteMap<string, GrouperTreeNode[]> = $state(new SvelteMap());
   fullAlbumCache: Record<string, FullAlbum> = $state({});
-  actions: Record<string, ActionDef> = $state({});
+  actions: ActionMap = $state({});
   manifest: LogicManifest = $state({
     filters: {},
     libraries: {},
@@ -198,8 +203,16 @@ class CollectionStore {
   }
 
   /** Interfaces only render a control when the config declares its action. */
-  hasAction(name: string): boolean {
-    return Boolean(this.actions[name]);
+  hasAction(name: string, mediaType: string | null = null): boolean {
+    return actionExists(this.actions, name, mediaType);
+  }
+
+  /** The label and description to show for a media type, or `null` if absent. */
+  actionPresentation(
+    name: string,
+    mediaType: string | null = null
+  ): ActionPresentation | null {
+    return resolveActionPresentation(this.actions, name, mediaType);
   }
 
   get availableFilters(): Record<string, FilterDef> {

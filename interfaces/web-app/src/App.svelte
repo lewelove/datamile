@@ -5,6 +5,7 @@ import { collection } from "./library/collection.svelte.ts";
 import { initApp } from "./library/init.ts";
 import { nav, setTab } from "./navigation.svelte.ts";
 import { executeAction } from "./api.ts";
+import { MEDIA_ALBUM } from "./library/actions.ts";
 import { player } from "./modules/player.svelte.ts";
 
 import HomeView from "./modules/HomeView/HomeView.svelte";
@@ -51,6 +52,9 @@ let isModalVisible = $derived(!!view.focusedAlbum && isHomeActive);
 let shortcutAlbumId = $derived(
   isHomeActive ? view.focusedAlbum?.album?.id : player.currentMediaId
 );
+let shortcutAlbumPath = $derived(
+  shortcutAlbumId ? (collection.dict[shortcutAlbumId]?.path ?? null) : null
+);
 
 function handleKeydown(e: KeyboardEvent) {
   if (["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName ?? "")) return;
@@ -59,38 +63,38 @@ function handleKeydown(e: KeyboardEvent) {
   const key = e.key;
 
   if (
-    collection.hasAction("open_config_in_terminal") &&
+    collection.hasAction("open_config_in_terminal", null) &&
     (e.ctrlKey || e.metaKey) &&
     (key === "," || code === "Comma")
   ) {
     e.preventDefault();
     e.stopPropagation();
-    executeAction("open_config_in_terminal", "").catch(() => {});
+    executeAction("open_config_in_terminal", null, null).catch(() => {});
     return;
   }
 
   if (
-    collection.hasAction("open_terminal") &&
+    collection.hasAction("open_terminal", MEDIA_ALBUM) &&
     (e.ctrlKey || e.metaKey) &&
     (key === "t" || key === "T" || code === "KeyT")
   ) {
     e.preventDefault();
     e.stopPropagation();
-    if (shortcutAlbumId) {
-      executeAction("open_terminal", shortcutAlbumId).catch(() => {});
+    if (shortcutAlbumPath) {
+      executeAction("open_terminal", MEDIA_ALBUM, shortcutAlbumPath).catch(() => {});
     }
     return;
   }
 
   if (
-    collection.hasAction("open_folder") &&
+    collection.hasAction("open_folder", MEDIA_ALBUM) &&
     (e.ctrlKey || e.metaKey) &&
     (key === "d" || key === "D" || code === "KeyD")
   ) {
     e.preventDefault();
     e.stopPropagation();
-    if (shortcutAlbumId) {
-      executeAction("open_folder", shortcutAlbumId).catch(() => {});
+    if (shortcutAlbumPath) {
+      executeAction("open_folder", MEDIA_ALBUM, shortcutAlbumPath).catch(() => {});
     }
     return;
   }

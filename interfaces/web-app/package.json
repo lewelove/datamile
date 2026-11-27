@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "bun test",
     "lint:logic": "eslint .",
     "lint:css": "stylelint '**/*.{css,svelte}'",
     "lint": "bun run check && bun run lint:logic && bun run lint:css",
@@ -16,6 +17,7 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@types/bun": "^1.4.5",
     "eslint": "^10.8.0",
     "eslint-plugin-svelte": "^3.22.0",
     "prettier": "^3.9.6",

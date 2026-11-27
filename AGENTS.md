@@ -12,7 +12,7 @@ No Rust toolchain in the ambient PATH; always go through devenv. Everything belo
   2. `cargo clippy --workspace --lib --bins -- --deny warnings` — pedantic and nursery lints, plus `unwrap_used` and `allow_attributes_without_reason` (every `#[allow]` needs `reason = "..."`).
   3. A grep that rejects any `fn get_*` in `core/` or `actions/` — name getters after the value (`album_json`, not `get_album_json`).
 - `devenv shell -- check` — fast type check: `cargo check --workspace`, then the web app's `bun run check` (svelte-check) and `bun run lint:logic` (eslint).
-- `devenv shell -- tests` — `cargo test --workspace`, then `bun run lint` for the web app (svelte-check, eslint, stylelint).
+- `devenv shell -- tests` — `cargo test --workspace`, then `bun run test` (bun unit tests) and `bun run lint` for the web app (svelte-check, eslint, stylelint).
 - `devenv shell -- build` — artifacts only: `cargo build --release` for `datamile` and the action binaries, refresh the `actions/` python symlinks, then the web app's `vite build`. It runs no checks; use `lint`, `check` and `tests` for those.
 
 Never call `cargo fmt` or `cargo clippy` directly. If `lint` fails, fix the code. Do not relax the lint.

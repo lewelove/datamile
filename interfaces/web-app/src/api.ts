@@ -70,13 +70,27 @@ export async function jumpToQueueIndex(index: string | number): Promise<unknown>
   return await response.json();
 }
 
+/**
+ * Runs an action in the daemon against one target. A `null` media and dir mean
+ * a targetless run, which only generic actions accept.
+ */
 export async function executeAction(
   name: string,
-  id: string,
-  extraParams: Record<string, string> = {}
+  media: string | null,
+  dir: string | null,
+  options: string[] = []
 ): Promise<unknown> {
-  const params = new URLSearchParams({ type: "album", id, ...extraParams });
-  const response = await fetch(`/api/actions/${name}?${params.toString()}`, { method: "POST" });
+  const response = await fetch("/api/x", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name,
+      dirs: dir ? [dir] : [],
+      media: media ? [media] : [],
+      options,
+      execute: true
+    })
+  });
   return await response.json();
 }
 

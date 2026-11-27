@@ -117,6 +117,8 @@ export interface AlbumCardItem {
 
 export interface AlbumDictEntry {
   id: string;
+  /** Canonical entity dir, so actions can target an album without a fetch. */
+  path?: string;
   tags?: AlbumTags;
   objects?: AlbumObjects;
   images?: Record<string, AlbumImageEntry[]>;
@@ -269,10 +271,23 @@ export type LibraryListItem = LibraryDef & { key: string };
 export type ShelfListItem = ShelfDef & { key: string };
 export type CabinetListItem = CabinetDef & { key: string };
 
-export interface ActionDef {
+/** One media-typed entry in an action's `media` map. */
+export interface ActionPresentation {
   label: string;
   description?: string | null;
 }
+
+/**
+ * A resolved action. `media` is absent on generic actions and holds one
+ * presentation per declared media type on scoped actions.
+ */
+export interface ActionEntry {
+  label: string;
+  description?: string | null;
+  media?: Record<string, ActionPresentation>;
+}
+
+export type ActionMap = Record<string, ActionEntry>;
 
 export interface MpdStatusPayload {
   state: string;
@@ -292,7 +307,7 @@ export type WsMessage =
       type: "INIT";
       media?: Record<string, Record<string, AlbumDictEntry>>;
       manifest?: LogicManifest;
-      actions?: Record<string, ActionDef>;
+      actions?: ActionMap;
       shelves?: Record<string, string[]>;
       ui_state?: PersistedState;
     }
@@ -306,5 +321,5 @@ export type WsMessage =
       updated?: Record<string, AlbumDictEntry>;
       shelves?: Record<string, string[]>;
     }
-  | { type: "LOGIC_UPDATE"; manifest?: LogicManifest; actions?: Record<string, ActionDef> }
+  | { type: "LOGIC_UPDATE"; manifest?: LogicManifest; actions?: ActionMap }
   | (MpdStatusPayload & { type: "MPD_STATUS" });

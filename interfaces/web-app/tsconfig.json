@@ -15,7 +15,7 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
-    "types": ["vite/client"],
+    "types": ["vite/client", "bun"],
     "paths": {
       "$modules/*":["./src/modules/*"]
     }

@@ -87,20 +87,19 @@ subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess
 Save this script as `search-cover.py`, make executable, and provide the action runtime to it:
 
 ```lua
-datamile.action("search-cover", {
+d.action("search_cover", {
+  media = "album",
   label = "Search Cover",
   description = "Search high-res artwork on MusicHoarders",
   run = function(ctx)
-    -- Select the first album to prevent accidental dispatch
-    -- for the entire library (or don't if you're reckless)
-    local entry = ctx.albums[1]
-    if not entry then return end
+    -- `ctx.lock` is the parsed album lock for the resolved target.
+    local album = ctx.lock[ctx.media]
 
     -- Run `d.system` with your script as CLI
     d.system({
       "/Path/To/Your/search-cover.py",
-      "--artist", entry.lock.album.tags.albumartist,
-      "--album", entry.lock.album.tags.album,
+      "--artist", album.tags.albumartist,
+      "--album", album.tags.album,
     }, { detach = true })
   end
 })
@@ -109,13 +108,13 @@ datamile.action("search-cover", {
 Run it from any album directory with compiled `album.lock.json`:
 
 ```bash
-datamile x search-cover
+datamile x search_cover
 ```
 
-Or trigger for the currently playing album from anywhere:
+Or pass the album directory explicitly from anywhere:
 
 ```bash
-datamile x -p search-cover
+datamile x search_cover --dir /path/to/album
 ```
 
 ## Interface Showcase
@@ -279,7 +278,7 @@ The `datamile` CLI tool is the central driver for managing your library's state.
 - `datamile update` — The core compiler command. Reads your TOML manifests and compiles the `album.lock.json` files.
 - `datamile server` — Start the Axum backend server.
 - `datamile interface` — Run interface defined with `datamile.interface()`.
-- `datamile x` — Run defined action via runtime `datamile.action()` router.
+- `datamile x` — Run a `d.action()` against a compiled album. Requires a running `datamile server`.
 
 ## AI Disclosure & Human Design
 This software was developed in part with the assistance of LLMs, which were used as a tool for research and as a code-monkey for Rust syntax implementation. All business logic, architecture, UX — including complete creative vision — were designed and vetted with a great deal of intent and hard work by a human — myself. All text you'll read here was written by me also, as I believe this is an honest way to show you that I care.

@@ -7,7 +7,7 @@ let { variant = "solid" }: { variant?: "solid" | "transparent" } = $props();
 
 async function handleOpenConfig() {
   try {
-    await executeAction("open_config_in_terminal", "");
+    await executeAction("open_config_in_terminal", null, null);
   } catch {}
 }
 </script>
@@ -36,12 +36,13 @@ async function handleOpenConfig() {
   </div>
 
   <div class="nav-group bottom">
-    {#if collection.hasAction("open_config_in_terminal")}
+    {#if collection.hasAction("open_config_in_terminal", null)}
       <button
         type="button"
         class="v-btn-icon v-sidebar-button round"
         onclick={handleOpenConfig}
-        title={collection.actions["open_config_in_terminal"]?.label || "Open Config"}
+        title={collection.actionPresentation("open_config_in_terminal", null)?.label ||
+          "Open Config"}
       >
         <span class="icon">settings</span>
       </button>

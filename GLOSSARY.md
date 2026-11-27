@@ -121,7 +121,18 @@ The long-running server process hosting the **Entity index**, **Hot reload** wat
 A named user-defined Lua operation invoked against resolved **Entity** targets (or targetlessly) with a runtime **Action context** and trailing **Options**.
 
 **Action context**:
-The runtime table passed to an **Action** containing its resolved **Entity** data, **Options**, and terminal flag.
+The runtime table passed to an **Action**: `{ lock, media, options, isatty }`, holding the target's parsed **Lock**, its **Media type**, the **Options**, and the terminal flag.
+
+**Action map**:
+The resolved set of **Actions** broadcast to clients, keyed by canonical name. A **Scoped action** carries one label and optional description per declared **Media type**; a **Generic action** carries one flat pair.
+
+**Generic action**:
+An **Action** with no **Media type** scope. It applies to every media type and accepts a targetless run.
+_Avoid_: global action, untyped action
+
+**Scoped action**:
+An **Action** declaring one or more **Media types**. It is offered only for those types and needs resolved **Entity** targets.
+_Avoid_: typed action, bound action
 
 **Interface**:
 A named client launcher declared in configuration (such as the web app).
@@ -137,6 +148,7 @@ Trailing command arguments passed verbatim to an **Action** inside its **Action 
 - A **Logic manifest** defines **Libraries**, **Filters**, **Groupers**, **Orders**, **Shelves**, and **Cabinets** scoped by **Media type**
 - An **Update pass** checks **State entries** to find **Dirty** **Entities**, runs **Compile**, and updates the **Entity index** and **External index**
 - An **Action** receives an **Action context** resolved from the **Entity index**
+- An **Action map** lists **Generic actions** and **Scoped actions** for clients
 
 ## Flagged ambiguities
 

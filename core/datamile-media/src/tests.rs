@@ -36,7 +36,7 @@ use crate::state::{COMPILE_ROOT_LUA, MEDIA_LUA, MediaState, state_path};
 use crate::update::{
     ForceMode, LogSink, PassResult, UpdateEvent, UpdateSink, run_pass, scope_for_request,
 };
-use crate::watcher::resolve_targets;
+use crate::watcher::{bind_change, resolve_targets};
 
 fn engine_and_data(
     config_path: &Path,
@@ -1169,6 +1169,34 @@ async fn config_change_reloads_without_recompiling_locks() {
         before,
         "the lock must stay untouched"
     );
+}
+
+/// The daemon cannot move its bound address in place, so a reload that changes
+/// it must exit instead of leaving a CLI pointed at nothing.
+#[test]
+fn a_reload_that_moves_the_bound_address_exits() {
+    for (old_host, old_port, new_host, new_port) in [
+        ("127.0.0.1", 8000, "127.0.0.1", 8000),
+        ("", 8000, "127.0.0.1", 8000),
+        ("127.0.0.1", 0, "127.0.0.1", 8000),
+    ] {
+        assert_eq!(
+            bind_change(old_host, old_port, new_host, new_port),
+            None,
+            "{old_host}:{old_port} -> {new_host}:{new_port} is the same bind"
+        );
+    }
+
+    for (old_host, old_port, new_host, new_port) in [
+        ("127.0.0.1", 8000, "0.0.0.0", 8000),
+        ("127.0.0.1", 8000, "192.168.1.50", 8000),
+        ("127.0.0.1", 8000, "127.0.0.1", 9000),
+        ("::", 8000, "::1", 8000),
+    ] {
+        let message = bind_change(old_host, old_port, new_host, new_port)
+            .unwrap_or_else(|| panic!("{old_host}:{old_port} -> {new_host}:{new_port}"));
+        assert!(message.contains("exiting"), "message: {message}");
+    }
 }
 
 /// A watcher edit inside a known root resolves to exactly that one entity key.

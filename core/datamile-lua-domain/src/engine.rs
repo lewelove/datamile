@@ -96,10 +96,7 @@ impl DomainLuaEngine {
         let mut config: DomainConfig =
             self.runtime.call_global("__DATAMILE_GET_CONFIG")?;
         config.mpd = config.mpd.with_env_overrides();
-        config
-            .server
-            .validate_allowed_origins()
-            .map_err(anyhow::Error::msg)?;
+        config.server.validate().map_err(anyhow::Error::msg)?;
 
         let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let resolved_cache = if config.storage.cache.is_empty() {

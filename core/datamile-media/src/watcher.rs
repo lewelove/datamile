@@ -1,11 +1,12 @@
 use std::collections::{BTreeSet, HashSet};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use datamile_cache::EntityKey;
 use datamile_logic::LogicEngine;
-use datamile_server::ServerState;
+use datamile_server::{ServerState, default_port};
 use serde_json::json;
 
 use crate::deps::{MediaShared, UpdateScope};
@@ -168,6 +169,34 @@ fn is_config_change(
         || path.starts_with(config_dir)
 }
 
+/// The daemon cannot move its bound address in place, so a reload that changes
+/// it must exit: a CLI reading the new config would find nothing listening.
+/// Returns the log message that says why, or `None` when the bind is unchanged.
+pub(crate) fn bind_change(
+    old_host: &str,
+    old_port: u16,
+    new_host: &str,
+    new_port: u16,
+) -> Option<String> {
+    let bound = |host: &str, port: u16| {
+        let port = default_port(port);
+        let host = if host.is_empty() { "127.0.0.1" } else { host };
+
+        host.parse::<IpAddr>().map_or_else(
+            |_| format!("{host}:{port}"),
+            |ip| SocketAddr::new(ip, port).to_string(),
+        )
+    };
+    let old = bound(old_host, old_port);
+    let new = bound(new_host, new_port);
+
+    (old != new).then(|| {
+        format!(
+            "bound address changed from {old} to {new}; exiting so the next start binds it"
+        )
+    })
+}
+
 /// Reloads config and manifest. A failure is remembered for `GET /api/identity`.
 async fn reload_config(server: &Arc<ServerState>) {
     log::info!("Filesystem change: reloading config and logic...");
@@ -177,10 +206,14 @@ async fn reload_config(server: &Arc<ServerState>) {
         Ok(new_config) => {
             let manifest = logic.manifest.clone();
             let actions = new_config.actions.clone();
-            let new_port = new_config.port;
             drop(logic);
 
-            let old_port = server.config.read().await.port;
+            let (old_host, old_port) = {
+                let config = server.config.read().await;
+                (config.host.clone(), config.port)
+            };
+            let new_host = new_config.host.clone();
+            let new_port = new_config.port;
             *server.config.write().await = new_config;
             *server.reload_error.write().await = None;
 
@@ -193,12 +226,8 @@ async fn reload_config(server: &Arc<ServerState>) {
                 .to_string(),
             );
 
-            // A bound port cannot change in place, and a daemon on the old port
-            // would be unreachable by a CLI reading the new one.
-            if new_port != old_port {
-                log::error!(
-                    "server.port changed from {old_port} to {new_port}; exiting so the next start binds it"
-                );
+            if let Some(message) = bind_change(&old_host, old_port, &new_host, new_port) {
+                log::error!("{message}");
                 std::process::exit(0);
             }
         }

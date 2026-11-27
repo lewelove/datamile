@@ -374,6 +374,50 @@ fn action_callback_failures_name_the_action_and_media() {
     }
 }
 
+/// `server.host` is what the daemon binds, so anything but an address fails the
+/// config instead of waiting for the next start to fail at bind time.
+#[test]
+fn malformed_server_host_fails_config_load() {
+    for (host, name) in [
+        ("", "''"),
+        ("localhost", "localhost"),
+        ("box.lan", "box.lan"),
+        ("127.0.0.1:8000", "127.0.0.1:8000"),
+        ("[fd00::1]", "[fd00::1]"),
+    ] {
+        let (_dir, engine, path) = setup(&format!(
+            "datamile.config({{ server = {{ host = \"{host}\" }} }})"
+        ));
+
+        let err = engine
+            .evaluate_config(&path)
+            .err()
+            .unwrap_or_else(|| panic!("'{host}' must be rejected"));
+
+        let message = format!("{err}");
+        assert!(
+            message.contains("server.host"),
+            "error for '{host}': {message}"
+        );
+        assert!(message.contains(name), "error for '{host}': {message}");
+    }
+}
+
+/// Either address family is bound as written.
+#[test]
+fn server_host_accepts_every_address_form() {
+    for host in ["127.0.0.1", "0.0.0.0", "fd00::1", "::"] {
+        let (_dir, engine, path) = setup(&format!(
+            "datamile.config({{ server = {{ host = \"{host}\" }} }})"
+        ));
+
+        let eval = engine
+            .evaluate_config(&path)
+            .unwrap_or_else(|err| panic!("host '{host}' must load: {err}"));
+        assert_eq!(eval.config.server.host, host);
+    }
+}
+
 /// `server.allowed_origins` extends the LAN allowlist, so a malformed entry
 /// fails the config instead of being carried along unused.
 #[test]

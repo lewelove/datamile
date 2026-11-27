@@ -47,7 +47,9 @@ d.config({
 ### Rules
 - `d.config` is closed: its only sections are `storage`, `server`, `mpd` and `compiler`. Any other
   key, at the top level or inside a section, is a typo and fails the config instead of being ignored.
-- `server.host` and `server.port` are bound directly by `datamile server`.
+- `server.host` and `server.port` are bound directly by `datamile server`. The
+  host must be an IP address (`127.0.0.1`, `0.0.0.0`, `fd00::1`); a hostname
+  fails config load.
 - `server.allowed_origins` accepts hostnames, single addresses (`10.0.0.5`,
   `[fd00::1]`) and `ip/prefix` CIDR blocks. A port never belongs here: the
   guard strips the request port before it compares, so `box.lan:8080` fails

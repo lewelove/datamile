@@ -31,9 +31,14 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    /// An allowlist entry is compared against request hosts, so each one must
-    /// be a hostname or a CIDR block the daemon can parse.
-    pub fn validate_allowed_origins(&self) -> Result<(), String> {
+    /// `host` is bound as an address, so it must parse as one. An allowlist
+    /// entry is compared against request hosts, so each one must be a hostname
+    /// or an address the guard can parse.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.host.parse::<IpAddr>().is_err() {
+            return Err(format!("server.host '{}' is not an IP address", self.host));
+        }
+
         for entry in &self.allowed_origins {
             if !is_host_or_cidr(entry) {
                 return Err(format!(

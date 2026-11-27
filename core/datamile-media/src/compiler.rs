@@ -86,6 +86,7 @@ fn compile_root_impl(
 
     engine.runtime.clear_entity_memo();
     let _ = engine.runtime.take_dependencies();
+    engine.runtime.reset_globals()?;
 
     // Held until this function returns, `?` included: a lock is never an input.
     let _compile_guard = engine.runtime.compile_guard()?;

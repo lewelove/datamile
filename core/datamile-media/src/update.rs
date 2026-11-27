@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
 use datamile_cache::{EntityKey, load_state, root_is_dirty, walk_files};
 use datamile_logic::LogicEngine;
+use datamile_lua_domain::DomainLuaEngine;
 use datamile_server::{ServerState, UpdateRequest};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -302,17 +303,21 @@ fn compile_roots(
     known: &HashSet<(String, PathBuf)>,
     sink: &dyn UpdateSink,
 ) -> (Vec<CompiledRoot>, usize) {
+    // A pass with nothing to compile is the common case: a watcher event that
+    // changed nothing. Do not build a pool for it.
+    if dirty.is_empty() {
+        return (Vec::new(), 0);
+    }
+
     let default_jobs =
         std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    let Ok(pool) = rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs.unwrap_or(default_jobs).max(1))
-        .build()
-    else {
+    let threads = jobs.unwrap_or(default_jobs).max(1).min(dirty.len());
+    let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(threads).build() else {
         let failed = dirty.len();
-        for root in dirty {
+        for entity in dirty {
             sink.event(&UpdateEvent::Failed {
-                media_type: root.media_type.clone(),
-                dir: Some(root.dir.clone()),
+                media_type: entity.media_type.clone(),
+                dir: Some(entity.dir.clone()),
                 error: "failed to build the compile pool".to_string(),
             });
         }
@@ -320,50 +325,97 @@ fn compile_roots(
     };
 
     let failures = Mutex::new(0usize);
+    let next = AtomicUsize::new(0);
 
-    let compiled = pool.install(|| {
-        dirty
-            .par_iter()
-            .filter_map(|root| {
-                let failed = |error: String| {
-                    sink.event(&UpdateEvent::Failed {
-                        media_type: root.media_type.clone(),
-                        dir: Some(root.dir.clone()),
-                        error,
-                    });
-                    if let Ok(mut count) = failures.lock() {
-                        *count += 1;
-                    }
-                    None
-                };
-
-                let engine = match open_engine(state) {
-                    Ok(engine) => engine,
-                    Err(e) => return failed(format!("failed to open a compile VM: {e}")),
-                };
-
-                match compile_root(
-                    &engine,
-                    &root.media_type,
-                    &root.dir,
-                    &state.cache_root,
-                    Some(active_writes),
-                ) {
-                    Ok(compiled) => {
-                        sink.event(&outcome_event(&compiled, known));
-                        Some(compiled)
-                    }
-                    Err(e) => failed(e.to_string()),
-                }
-            })
-            .collect()
-    });
+    // Opening one VM per entity runs the whole config once per entity, which
+    // costs more than most entities take to compile. One VM per worker pays
+    // that cost once, and the shared cursor keeps fast entities from queueing
+    // behind a slow one.
+    let compiled: Vec<CompiledRoot> = pool
+        .broadcast(|_| {
+            compile_worker(state, dirty, &next, active_writes, known, sink, &failures)
+        })
+        .into_iter()
+        .flatten()
+        .collect();
 
     let failures = failures
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     (compiled, failures)
+}
+
+/// Compiles entities off the shared cursor until it runs dry, on one VM.
+///
+/// The VM never leaves this worker's stack: it is opened on the first entity
+/// it takes and dropped after a failed compile, so the next entity starts on a
+/// fresh config.
+fn compile_worker(
+    state: &MediaState,
+    entities: &[DiscoveredRoot],
+    next: &AtomicUsize,
+    active_writes: &Arc<Mutex<HashSet<PathBuf>>>,
+    known: &HashSet<(String, PathBuf)>,
+    sink: &dyn UpdateSink,
+    failures: &Mutex<usize>,
+) -> Vec<CompiledRoot> {
+    let mut engine: Option<DomainLuaEngine> = None;
+    let mut compiled = Vec::new();
+
+    while let Some(entity) = entities.get(next.fetch_add(1, Ordering::Relaxed)) {
+        let vm = match engine.take() {
+            Some(vm) => vm,
+            None => match open_engine(state) {
+                Ok(vm) => vm,
+                Err(e) => {
+                    report_failure(
+                        sink,
+                        failures,
+                        entity,
+                        format!("failed to open a compile VM: {e}"),
+                    );
+                    continue;
+                }
+            },
+        };
+
+        match compile_root(
+            &vm,
+            &entity.media_type,
+            &entity.dir,
+            &state.cache_root,
+            Some(active_writes),
+        ) {
+            Ok(compiled_root) => {
+                engine = Some(vm);
+                sink.event(&outcome_event(&compiled_root, known));
+                compiled.push(compiled_root);
+            }
+            // The VM is dropped here, not put back: a failed compile may have
+            // left it half-built.
+            Err(error) => report_failure(sink, failures, entity, error.to_string()),
+        }
+    }
+
+    compiled
+}
+
+/// Reports a failed entity on the pass sink and counts it.
+fn report_failure(
+    sink: &dyn UpdateSink,
+    failures: &Mutex<usize>,
+    entity: &DiscoveredRoot,
+    error: String,
+) {
+    sink.event(&UpdateEvent::Failed {
+        media_type: entity.media_type.clone(),
+        dir: Some(entity.dir.clone()),
+        error,
+    });
+    if let Ok(mut count) = failures.lock() {
+        *count += 1;
+    }
 }
 
 /// Loads every media root's state file.

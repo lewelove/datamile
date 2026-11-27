@@ -220,6 +220,12 @@ fn read_lock(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).expect("lock")).expect("json")
 }
 
+/// The `seen` tag of a compiled lock, as raw JSON.
+fn seen_tag(lock_json: &str) -> Value {
+    let lock: Value = serde_json::from_str(lock_json).expect("json");
+    lock["album"]["tags"]["seen"].clone()
+}
+
 // ---------------------------------------------------------------- schema ----
 
 #[test]
@@ -661,6 +667,211 @@ fn second_compile_without_changes_does_not_rewrite_the_lock() {
     let second = compile_root(&engine, "album", &root, &f.cache, None).expect("compile");
     assert!(!second.modified, "identical bytes must not be rewritten");
     assert_eq!(first.lock_json, second.lock_json);
+}
+
+/// Two album entities and a config whose `seen` tag runs `body`.
+///
+/// `body` reads `name` (the album title) and returns the tag value, so a test
+/// can make one entity fail, write a global, or change config state.
+fn two_album_config(f: &Fixture, body: &str) -> String {
+    format!(
+        r#"
+        d.config({{ storage = {{ cache = "{cache}", state = "{state}" }} }})
+        -- A config global a hook may overwrite or delete.
+        FOO = "config"
+        -- A nested config table; a hook that changes it needs a new VM.
+        SHARED = {{ broken = false }}
+        local album = d.media.root("album", {{
+            init = "{lib}",
+            select = function(dir) return d.fs.roots(dir, "album.toml") end,
+            id = function(ctx) return ctx.tags.album end,
+        }})
+        album.tag("album", function(ctx)
+            return d.fs.read_toml(ctx.path .. "/album.toml").album
+        end)
+        album.tag("seen", function(ctx)
+            local name = d.fs.read_toml(ctx.path .. "/album.toml").album
+            {body}
+        end)
+        "#,
+        cache = f.cache.display(),
+        state = f.state_dir.display(),
+        lib = f.lib.display(),
+    )
+}
+
+/// A reused VM must compile an entity exactly like a fresh VM does.
+#[test]
+fn a_reused_engine_compiles_an_entity_like_a_fresh_one() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac", "02.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    write(
+        &f.config,
+        &two_album_config(&f, "SEEN = (SEEN or 0) + 1\nreturn tostring(SEEN)"),
+    );
+
+    let shared = engine_for(&f.config);
+    let _first =
+        compile_root(&shared, "album", &f.lib.join("A"), &f.cache, None).expect("A");
+    let reused =
+        compile_root(&shared, "album", &f.lib.join("B"), &f.cache, None).expect("B");
+
+    let fresh = engine_for(&f.config);
+    let alone =
+        compile_root(&fresh, "album", &f.lib.join("B"), &f.cache, None).expect("B alone");
+
+    assert_eq!(
+        reused.lock_json, alone.lock_json,
+        "the second entity saw state left by the first"
+    );
+}
+
+/// A global a hook creates belongs to one entity only.
+///
+/// A missing `local` is one typo away, and a reused VM would hand the leftover
+/// value to every later entity in the same pass.
+#[test]
+fn a_hook_global_does_not_reach_the_next_entity() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    write(
+        &f.config,
+        &two_album_config(&f, "SEEN = (SEEN or 0) + 1\nreturn tostring(SEEN)"),
+    );
+
+    let engine = engine_for(&f.config);
+    for name in ["A", "B"] {
+        let compiled = compile_root(&engine, "album", &f.lib.join(name), &f.cache, None)
+            .expect("compile");
+        let lock: Value = serde_json::from_str(&compiled.lock_json).expect("json");
+        assert_eq!(
+            lock["album"]["tags"]["seen"],
+            json!("1"),
+            "entity {name} saw a leaked global"
+        );
+    }
+}
+
+/// A hook may overwrite a config global, but the next entity sees the config.
+#[test]
+fn a_hook_overwrite_of_a_config_global_is_undone() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    write(
+        &f.config,
+        &two_album_config(
+            &f,
+            "if name == \"A\" then FOO = \"violated\" end\nreturn FOO",
+        ),
+    );
+
+    let engine = engine_for(&f.config);
+    let first =
+        compile_root(&engine, "album", &f.lib.join("A"), &f.cache, None).expect("A");
+    let second =
+        compile_root(&engine, "album", &f.lib.join("B"), &f.cache, None).expect("B");
+
+    assert_eq!(
+        seen_tag(&first.lock_json),
+        json!("violated"),
+        "A must see its own write"
+    );
+    assert_eq!(
+        seen_tag(&second.lock_json),
+        json!("config"),
+        "B saw A's overwrite"
+    );
+}
+
+/// A hook may delete a config global, but the next entity sees the config.
+#[test]
+fn a_hook_delete_of_a_config_global_is_undone() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    write(
+        &f.config,
+        &two_album_config(
+            &f,
+            "if name == \"A\" then FOO = nil end\nreturn FOO or \"gone\"",
+        ),
+    );
+
+    let engine = engine_for(&f.config);
+    let first =
+        compile_root(&engine, "album", &f.lib.join("A"), &f.cache, None).expect("A");
+    let second =
+        compile_root(&engine, "album", &f.lib.join("B"), &f.cache, None).expect("B");
+
+    assert_eq!(
+        seen_tag(&first.lock_json),
+        json!("gone"),
+        "A must see its own delete"
+    );
+    assert_eq!(
+        seen_tag(&second.lock_json),
+        json!("config"),
+        "B saw A's delete"
+    );
+}
+
+/// A global under a non-string key belongs to one entity only.
+#[test]
+fn a_hook_global_with_a_numeric_key_does_not_reach_the_next_entity() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    write(
+        &f.config,
+        &two_album_config(
+            &f,
+            "if name == \"A\" then _G[1] = \"leaked\" end\nreturn tostring(_G[1])",
+        ),
+    );
+
+    let engine = engine_for(&f.config);
+    let first =
+        compile_root(&engine, "album", &f.lib.join("A"), &f.cache, None).expect("A");
+    let second =
+        compile_root(&engine, "album", &f.lib.join("B"), &f.cache, None).expect("B");
+
+    assert_eq!(
+        seen_tag(&first.lock_json),
+        json!("leaked"),
+        "A must see its own key"
+    );
+    assert_eq!(
+        seen_tag(&second.lock_json),
+        json!("nil"),
+        "B saw A's numeric key"
+    );
+}
+
+/// A failed compile leaves the VM usable for the next entity.
+#[test]
+fn a_failed_compile_does_not_break_the_next_entity() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    write(
+        &f.config,
+        &two_album_config(
+            &f,
+            "if name == \"A\" then error(\"boom\") end\nreturn \"ok\"",
+        ),
+    );
+
+    let engine = engine_for(&f.config);
+    compile_root(&engine, "album", &f.lib.join("A"), &f.cache, None)
+        .expect_err("A must fail");
+
+    let after = compile_root(&engine, "album", &f.lib.join("B"), &f.cache, None)
+        .expect("B compiles after A failed");
+    let lock: Value = serde_json::from_str(&after.lock_json).expect("json");
+    assert_eq!(lock["album"]["tags"]["seen"], json!("ok"));
 }
 
 #[test]
@@ -1322,6 +1533,91 @@ fn pass_emits_a_started_and_a_finished_event() {
     assert!(file.exists(), "one state file per media root");
     let states = datamile_cache::load_state(&file).expect("state");
     assert!(states.contains_key(&f.lib.join("A").to_string_lossy().to_string()));
+}
+
+/// One worker compiling every entity still gives each entity a clean VM.
+#[test]
+fn one_worker_does_not_leak_a_hook_global_between_entities() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    write(
+        &f.config,
+        &two_album_config(&f, "SEEN = (SEEN or 0) + 1\nreturn tostring(SEEN)"),
+    );
+
+    let shared = shared_for(&f);
+    let recorder = Recorder::default();
+    run_pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+        Some(1),
+        &recorder,
+    )
+    .expect("pass");
+
+    for name in ["A", "B"] {
+        let lock = read_lock(&lock_path(&f.lib, name));
+        assert_eq!(
+            lock["album"]["tags"]["seen"],
+            json!("1"),
+            "entity {name} saw a global from the other entity"
+        );
+    }
+}
+
+/// A failed entity may leave the config's own state changed, so the next
+/// entity in the chunk must get a fresh VM.
+#[test]
+fn a_failed_entity_gets_a_fresh_vm_for_the_next_one() {
+    let f = fixture();
+    make_album(&f.lib, "A", &["01.flac"]);
+    make_album(&f.lib, "B", &["01.flac"]);
+    write(
+        &f.config,
+        &two_album_config(
+            &f,
+            r#"if name == "A" then
+                 SHARED.broken = true
+                 error("boom")
+               end
+               return SHARED.broken and "broken" or "ok""#,
+        ),
+    );
+
+    let shared = shared_for(&f);
+    let recorder = Recorder::default();
+    let outcome = run_pass(
+        &shared,
+        &UpdateScope::All { media_type: None },
+        ForceMode::Force,
+        Some(1),
+        &recorder,
+    )
+    .expect("pass");
+    assert_eq!(outcome.result.failed, 1);
+
+    // If B ran before A, the check below would pass for the wrong reason.
+    let events = recorder.events.into_inner().expect("events");
+    let failed_at = events
+        .iter()
+        .position(|event| matches!(event, UpdateEvent::Failed { dir: Some(dir), .. } if dir.ends_with("A")))
+        .expect("A failed");
+    let added_at = events
+        .iter()
+        .position(
+            |event| matches!(event, UpdateEvent::Added { dir, .. } if dir.ends_with("B")),
+        )
+        .expect("B was added");
+    assert!(failed_at < added_at, "A must compile before B");
+
+    let lock = read_lock(&lock_path(&f.lib, "B"));
+    assert_eq!(
+        lock["album"]["tags"]["seen"],
+        json!("ok"),
+        "B reused the VM that A broke"
+    );
 }
 
 /// A root that reads a file outside itself is clean on the second pass: the

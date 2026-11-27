@@ -31,6 +31,7 @@ pub struct EngineContext {
     pub captured_deps: RefCell<HashSet<PathBuf>>,
     memo: RefCell<HashMap<MemoKey, mlua::Value>>,
     compile_depth: Arc<AtomicU32>,
+    globals_baseline: RefCell<Option<mlua::Table>>,
 }
 
 impl EngineContext {
@@ -41,7 +42,22 @@ impl EngineContext {
             captured_deps: RefCell::new(HashSet::new()),
             memo: RefCell::new(HashMap::new()),
             compile_depth: Arc::new(AtomicU32::new(0)),
+            globals_baseline: RefCell::new(None),
         }
+    }
+
+    /// Records the globals the config itself declared.
+    fn set_globals_baseline(&self, baseline: mlua::Table) {
+        *self.globals_baseline.borrow_mut() = Some(baseline);
+    }
+
+    /// The globals a compile must leave as `init.lua` left them.
+    ///
+    /// Cloning a Lua table handle is cheap: it takes a registry reference, not
+    /// a copy of the table.
+    #[must_use]
+    fn globals_baseline(&self) -> Option<mlua::Table> {
+        self.globals_baseline.borrow().clone()
     }
 
     /// Starts a compile scope. Every guard counts, so nested compiles stay
@@ -227,6 +243,71 @@ impl LuaRuntime {
         if let Some(ctx) = self.lua.app_data_ref::<EngineContext>() {
             ctx.clear_entity_memo();
         }
+    }
+
+    /// Records the globals `init.lua` left behind as the baseline for
+    /// [`Self::reset_globals`].
+    pub fn capture_globals(&self) -> Result<()> {
+        let baseline = self
+            .lua
+            .create_table()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        for pair in self.lua.globals().pairs::<mlua::Value, mlua::Value>() {
+            let (key, value) = pair.map_err(|e| anyhow::anyhow!("{e}"))?;
+            baseline
+                .raw_set(key, value)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+
+        // An engine with no `EngineContext` (`Lua::new`) cannot hold a
+        // baseline; every engine built by `with_cache_root` installs one.
+        if let Some(ctx) = self.lua.app_data_ref::<EngineContext>() {
+            ctx.set_globals_baseline(baseline);
+        }
+        Ok(())
+    }
+
+    /// Puts `_G` back to the state `init.lua` left it in, so the next entity
+    /// starts clean.
+    ///
+    /// This covers every top-level change a hook can make: a new key (of any
+    /// type), an overwritten value, a deleted one. It does not reach inside a
+    /// config table a hook mutates in place, and it cannot undo a closure
+    /// upvalue captured at `init.lua` time. A failed compile reopens the VM
+    /// instead of relying on this.
+    pub fn reset_globals(&self) -> Result<()> {
+        // No baseline means `init.lua` never ran on this VM, so nothing it
+        // creates can be a leak yet.
+        let Some(baseline) = self
+            .lua
+            .app_data_ref::<EngineContext>()
+            .and_then(|ctx| ctx.globals_baseline())
+        else {
+            return Ok(());
+        };
+
+        let globals = self.lua.globals();
+        let mut present = Vec::new();
+        for pair in globals.pairs::<mlua::Value, mlua::Value>() {
+            let (key, _) = pair.map_err(|e| anyhow::anyhow!("{e}"))?;
+            present.push(key);
+        }
+
+        // Raw writes on purpose: a hook that sets an `_G` metatable must not
+        // see the restore through `__newindex`.
+        for key in present {
+            globals
+                .raw_set(key, mlua::Value::Nil)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        for pair in baseline.pairs::<mlua::Value, mlua::Value>() {
+            let (key, value) = pair.map_err(|e| anyhow::anyhow!("{e}"))?;
+            globals
+                .raw_set(key, value)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        Ok(())
     }
 
     /// Starts a compile scope on this VM.

@@ -118,6 +118,10 @@ impl DomainLuaEngine {
             self.runtime.take_dependencies().into_iter().collect();
         dependencies.sort();
 
+        // Everything the config declared is now known, so a compile that adds
+        // a global by accident can be told apart from the config's own globals.
+        self.runtime.capture_globals()?;
+
         Ok(EvaluatedDomainData {
             config,
             interfaces,

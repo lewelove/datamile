@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use datamile_logic::LogicEngine;
+use datamile_lua_domain::{ActionCtx, ActionDef, ActionMap};
 use datamile_server::{
     ActionTargetQuery, DEFAULT_PORT, EntityKey, MediaBackend, PlaybackSlice,
     ServerConfig, ServerState, UpdateRequest,
@@ -209,7 +210,8 @@ impl MediaBackend for MediaEngineBackend {
 
         let evaluated = engine.evaluate_config(&config_path)?;
         let media = read_media_manifest(&engine)?;
-        validate_media_schema(&media, &evaluated.manifest)?;
+        validate_media_schema(&media, &evaluated.manifest, &evaluated.actions)?;
+        let actions = engine.resolve_actions(&evaluated.actions)?;
 
         let discovery = discover_roots(&engine, &media, &config_dir)?;
         if let Some((media_type, error)) = discovery.failures.first() {
@@ -256,7 +258,7 @@ impl MediaBackend for MediaEngineBackend {
             logic_manifest: evaluated.manifest.clone(),
             roots,
             dependencies: dependencies.clone(),
-            actions: evaluated.actions.clone(),
+            actions: legacy_actions(&actions),
             interfaces: evaluated.interfaces.clone(),
             mpd: mpd.clone(),
             compiler_jobs,
@@ -290,7 +292,7 @@ impl MediaBackend for MediaEngineBackend {
             state_root,
             resolved_dependencies: dependencies,
             interfaces: evaluated.interfaces,
-            actions: evaluated.actions,
+            actions: legacy_actions(&actions),
             config_dir,
             config_path,
             compiler_jobs,
@@ -334,7 +336,7 @@ impl MediaBackend for MediaEngineBackend {
     fn execute_action(&self, name: &str, payload: &Value) -> Result<()> {
         let state = self.current_state().context("Media state is not loaded")?;
         let engine = open_engine(&state)?;
-        engine.execute_action(name, payload)
+        engine.execute_action(name, &legacy_context(payload))
     }
 
     fn handle_fs_events<'a>(
@@ -421,6 +423,49 @@ impl MediaBackend for MediaEngineBackend {
         )?;
         Ok(true)
     }
+}
+
+/// Temporary bridge until `POST /api/x` lands: the current routes and the CLI
+/// still send a flat payload, so it is mapped onto the action context here.
+fn legacy_context(payload: &Value) -> ActionCtx {
+    ActionCtx {
+        lock: payload.get("lock").cloned(),
+        media: payload
+            .get("media")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        options: payload
+            .get("options")
+            .and_then(Value::as_array)
+            .map_or_else(Vec::new, |options| {
+                options
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect()
+            }),
+        isatty: payload
+            .get("isatty")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
+/// Temporary bridge until `ServerConfig.actions` is typed as `ActionMap`: the
+/// flat shape keeps the top-level label only.
+fn legacy_actions(actions: &ActionMap) -> HashMap<String, ActionDef> {
+    actions
+        .iter()
+        .map(|(name, entry)| {
+            (
+                name.clone(),
+                ActionDef {
+                    label: entry.label.clone(),
+                    description: entry.description.clone(),
+                },
+            )
+        })
+        .collect()
 }
 
 /// Collects the set of known root directories for one media type.

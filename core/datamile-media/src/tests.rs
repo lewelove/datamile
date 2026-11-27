@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use datamile_cache::EntityKey;
 use datamile_logic::{LogicEngine, SortOrder};
-use datamile_lua_domain::{DomainLuaEngine, LogicManifest};
+use datamile_lua_domain::{ActionDeclarations, DomainLuaEngine, LogicManifest};
 use datamile_mpd::MpdEngine;
 use datamile_server::{
     ImageTaskRegistry, MediaBackend, ServerConfig, ServerState, UpdateRequest,
@@ -29,7 +29,9 @@ use crate::deps::{
     ExternalIndex, MediaShared, UpdateScope, index_entity, unindex_entity,
 };
 use crate::lua_bridge::register_native_helpers;
-use crate::schema::{discover_roots, read_media_manifest, validate_media_schema};
+use crate::schema::{
+    MediaManifest, discover_roots, read_media_manifest, validate_media_schema,
+};
 use crate::state::{COMPILE_ROOT_LUA, MEDIA_LUA, MediaState, state_path};
 use crate::update::{
     ForceMode, LogSink, PassResult, UpdateEvent, UpdateSink, run_pass, scope_for_request,
@@ -55,6 +57,11 @@ fn engine_and_data(
 
 fn engine_for(config_path: &Path) -> DomainLuaEngine {
     engine_and_data(config_path).0
+}
+
+/// Validates a schema with no logic or action declarations attached.
+fn validate_schema_alone(media: &MediaManifest) -> anyhow::Result<()> {
+    validate_media_schema(media, &LogicManifest::default(), &ActionDeclarations::new())
 }
 
 fn write(path: &Path, content: &str) {
@@ -177,7 +184,8 @@ fn fixture() -> Fixture {
 fn media_state(f: &Fixture) -> (MediaState, LogicManifest) {
     let (engine, evaluated) = engine_and_data(&f.config);
     let media = read_media_manifest(&engine).expect("media manifest");
-    validate_media_schema(&media, &evaluated.manifest).expect("schema");
+    validate_media_schema(&media, &evaluated.manifest, &evaluated.actions)
+        .expect("schema");
     let roots = discover_roots(&engine, &media, f.config.parent().expect("dir"))
         .expect("discovery")
         .roots;
@@ -191,7 +199,7 @@ fn media_state(f: &Fixture) -> (MediaState, LogicManifest) {
         logic_manifest: evaluated.manifest.clone(),
         roots,
         dependencies: vec![f.config.clone()],
-        actions: evaluated.actions,
+        actions: HashMap::new(),
         interfaces: evaluated.interfaces,
         mpd: datamile_mpd::MpdConfig {
             music_directory: Some(f.lib.to_string_lossy().to_string()),
@@ -227,8 +235,7 @@ fn schema_rejects_missing_init_and_functions() {
     let engine = engine_for(&config);
     let media = read_media_manifest(&engine).expect("manifest");
 
-    let err = validate_media_schema(&media, &LogicManifest::default())
-        .expect_err("missing init must fail");
+    let err = validate_schema_alone(&media).expect_err("missing init must fail");
     assert!(err.to_string().contains("init"), "unexpected: {err}");
 }
 
@@ -245,8 +252,7 @@ fn schema_rejects_missing_select_and_id() {
     let engine = engine_for(&config);
     let media = read_media_manifest(&engine).expect("manifest");
 
-    let err = validate_media_schema(&media, &LogicManifest::default())
-        .expect_err("missing select/id must fail");
+    let err = validate_schema_alone(&media).expect_err("missing select/id must fail");
     assert!(
         err.to_string().contains("select") || err.to_string().contains("id"),
         "unexpected: {err}"
@@ -271,9 +277,40 @@ fn schema_rejects_unknown_logic_media() {
     let (engine, evaluated) = engine_and_data(&config);
     let media = read_media_manifest(&engine).expect("manifest");
 
-    let err = validate_media_schema(&media, &evaluated.manifest)
+    let err = validate_media_schema(&media, &evaluated.manifest, &evaluated.actions)
         .expect_err("unknown media must fail");
     assert!(err.to_string().contains("movie"), "unexpected: {err}");
+}
+
+/// An action scoped to a media type no `d.media.root` declares would never
+/// resolve, so the schema refuses it before discovery runs.
+#[test]
+fn schema_rejects_an_action_scoped_to_unknown_media() {
+    let dir = TempDir::new().expect("temp");
+    let config = dir.path().join("init.lua");
+    write(
+        &config,
+        r#"
+        d.media.root("album", {
+            init = "/tmp",
+            select = function() return {} end,
+            id = function() return "x" end
+        })
+        d.action("open_book", { media = "book", run = function(_ctx) end })
+        "#,
+    );
+    let (engine, evaluated) = engine_and_data(&config);
+    let media = read_media_manifest(&engine).expect("manifest");
+
+    let err = validate_media_schema(&media, &evaluated.manifest, &evaluated.actions)
+        .expect_err("unknown action media must fail");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("declares unknown media type"),
+        "unexpected: {message}"
+    );
+    assert!(message.contains("book"), "unexpected: {message}");
 }
 
 #[test]
@@ -298,8 +335,7 @@ fn schema_rejects_duplicate_root_names() {
     let engine = engine_for(&config);
     let media = read_media_manifest(&engine).expect("manifest");
 
-    let err = validate_media_schema(&media, &LogicManifest::default())
-        .expect_err("duplicate names must fail");
+    let err = validate_schema_alone(&media).expect_err("duplicate names must fail");
     assert!(err.to_string().contains("duplicate"), "unexpected: {err}");
 }
 
@@ -475,6 +511,27 @@ fn playable_uri_is_the_entity_location_relative_to_the_music_directory() {
             .join(node)
             .to_string_lossy()
     );
+}
+
+/// The entity dict carries the entity dir so a client can act on an entity
+/// without parsing its lock, matching `GET /api/media/{type}`.
+#[test]
+fn entity_dict_includes_the_entity_dir() {
+    let (f, lock, media) = compiled_album();
+    let schema = media.roots.get("album").expect("album schema");
+
+    let parsed = crate::ingest::parse_lock(
+        "album",
+        &lock.to_string(),
+        schema,
+        Some(&f.lib.canonicalize().expect("canon")),
+    )
+    .expect("parse")
+    .expect("entity");
+
+    let dict: Value =
+        serde_json::from_str(parsed.entity.dict_raw.get()).expect("dict json");
+    assert_eq!(dict["path"], json!(parsed.entity.path.to_string_lossy()));
 }
 
 /// A file outside `music_directory` keeps its absolute path. Nothing here tries
@@ -2071,7 +2128,8 @@ fn two_type_fixture() -> TwoTypes {
 fn two_type_shared(f: &TwoTypes) -> Arc<MediaShared> {
     let (engine, evaluated) = engine_and_data(&f.config);
     let media = read_media_manifest(&engine).expect("media manifest");
-    validate_media_schema(&media, &evaluated.manifest).expect("schema");
+    validate_media_schema(&media, &evaluated.manifest, &evaluated.actions)
+        .expect("schema");
     let roots = discover_roots(&engine, &media, f.config.parent().expect("dir"))
         .expect("discovery")
         .roots;
@@ -2085,7 +2143,7 @@ fn two_type_shared(f: &TwoTypes) -> Arc<MediaShared> {
         logic_manifest: evaluated.manifest.clone(),
         roots,
         dependencies: vec![f.config.clone()],
-        actions: evaluated.actions,
+        actions: HashMap::new(),
         interfaces: evaluated.interfaces,
         mpd: datamile_mpd::MpdConfig::default(),
         compiler_jobs: None,
@@ -2264,7 +2322,6 @@ fn schema_rejects_unsafe_media_type_names() {
     let engine = engine_for(&config);
     let media = read_media_manifest(&engine).expect("manifest");
 
-    let err = validate_media_schema(&media, &LogicManifest::default())
-        .expect_err("unsafe names must fail");
+    let err = validate_schema_alone(&media).expect_err("unsafe names must fail");
     assert!(err.to_string().contains("[a-z0-9_-]+"), "unexpected: {err}");
 }

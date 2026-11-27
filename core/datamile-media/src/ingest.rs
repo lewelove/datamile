@@ -245,8 +245,11 @@ pub fn parse_lock(
 
     let (images, image_namespaces) = parse_images(entity, &root);
 
+    // `path` matches the entity dir that `GET /api/media/{type}` reports, so a
+    // client can act on an entity without reading its lock.
     let dict = serde_json::json!({
         "id": id,
+        "path": root.to_string_lossy(),
         "tags": entity.get("tags"),
         "objects": entity.get("objects"),
         "images": entity.get("images"),

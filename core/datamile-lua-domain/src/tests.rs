@@ -2,11 +2,13 @@
 //! declare, how it round-trips into Rust, and how logic is evaluated.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use anyhow::Result;
 use serde_json::json;
 use tempfile::TempDir;
 
+use crate::config::{ActionCtx, ActionMap};
 use crate::engine::DomainLuaEngine;
 
 /// Writes `init.lua` into a fresh temp dir and returns a ready engine.
@@ -127,67 +129,295 @@ fn undeclared_interface_is_an_error() {
     );
 }
 
+/// Evaluates `init.lua` and resolves the declared actions into the map clients
+/// and endpoints consume.
+fn resolved_actions(engine: &DomainLuaEngine, path: &Path) -> Result<ActionMap> {
+    let eval = engine.evaluate_config(path)?;
+    engine.resolve_actions(&eval.actions)
+}
+
+/// `run` receives the whole action context: the parsed lock, the resolved
+/// media type, the trailing options and the terminal flag.
 #[test]
-fn action_runs_with_the_given_intermediary() {
+fn action_runs_with_the_action_context() {
     let (_dir, engine, path) = setup(
         r#"
         datamile.action("probe", {
-            run = function(ctx) _G.PROBE_ACTION = ctx.albums[1].path end
+            run = function(ctx)
+                _G.PROBE_LOCK = ctx.lock.album.title
+                _G.PROBE_MEDIA = ctx.media
+                _G.PROBE_OPTIONS = table.concat(ctx.options, ",")
+                _G.PROBE_ISATTY = ctx.isatty
+            end
         })
         "#,
     );
 
     engine.evaluate_config(&path).expect("evaluate config");
 
+    let ctx = ActionCtx {
+        lock: Some(json!({ "album": { "title": "Abbey Road" } })),
+        media: Some("album".to_string()),
+        options: vec!["--force".to_string(), "x".to_string()],
+        isatty: true,
+    };
     engine
-        .execute_action("probe", &json!({ "albums": [{ "path": "/a" }] }))
+        .execute_action("probe", &ctx)
         .expect("action must run");
 
-    let seen: String = engine
-        .runtime
-        .lua
-        .globals()
-        .get("PROBE_ACTION")
-        .expect("action set the global");
-    assert_eq!(seen, "/a");
+    let globals = engine.runtime.lua.globals();
+    let lock: String = globals.get("PROBE_LOCK").expect("lock reached run");
+    let media: String = globals.get("PROBE_MEDIA").expect("media reached run");
+    let options: String = globals.get("PROBE_OPTIONS").expect("options reached run");
+    let isatty: bool = globals.get("PROBE_ISATTY").expect("isatty reached run");
+
+    assert_eq!(lock, "Abbey Road");
+    assert_eq!(media, "album");
+    assert_eq!(options, "--force,x");
+    assert!(isatty);
 }
 
-/// Clients render actions by `label` and `description`, so `d.action` must
-/// forward both instead of registering only the run function.
+/// The canonical name is the identity of an action, so a second declaration
+/// that canonicalizes onto an existing one is a config error whichever
+/// spelling comes first.
 #[test]
-fn action_keeps_its_label_and_description() {
+fn action_duplicate_canonical_names_are_refused() {
+    for (first, second) in [
+        ("open-terminal", "open_terminal"),
+        ("open_terminal", "open-terminal"),
+    ] {
+        let (_dir, engine, path) = setup(&format!(
+            r#"
+            datamile.action("{first}", {{ media = "album", run = function(_ctx) end }})
+            datamile.action("{second}", {{ media = "movie", run = function(_ctx) end }})
+            "#
+        ));
+
+        let err = engine
+            .evaluate_config(&path)
+            .err()
+            .expect("duplicate canonical names must fail");
+
+        // Declaration errors are raised while `init.lua` runs, so the Lua
+        // message sits in the error chain rather than on the outer context.
+        let message = format!("{err:#}");
+        assert!(message.contains("declared twice"), "unexpected: {message}");
+        assert!(message.contains("open_terminal"), "unexpected: {message}");
+        assert!(message.contains("open-terminal"), "unexpected: {message}");
+    }
+}
+
+/// `media` selects the action's scope; anything that is not a list of names
+/// fails the whole config instead of silently registering nothing.
+#[test]
+fn action_media_shape_is_validated() {
+    for declaration in [
+        "media = \"\"",
+        "media = {}",
+        "media = { \"\" }",
+        "media = { \"album\", \"\" }",
+        "media = 7",
+    ] {
+        let (_dir, engine, path) = setup(&format!(
+            "datamile.action(\"probe\", {{ {declaration}, run = function(_ctx) end }})"
+        ));
+
+        let err = engine
+            .evaluate_config(&path)
+            .err()
+            .unwrap_or_else(|| panic!("{declaration} must be rejected"));
+
+        let message = format!("{err}");
+        assert!(
+            message.contains("'media' must be a non-empty string"),
+            "error for '{declaration}': {message}"
+        );
+    }
+}
+
+/// A repeated media type is one scope, not two entries of the same name.
+#[test]
+fn action_media_is_deduplicated() {
+    let (_dir, engine, path) = setup(
+        r#"
+        datamile.action("probe", {
+            media = { "album", "album", "movie" },
+            run = function(_ctx) end
+        })
+        "#,
+    );
+
+    let eval = engine.evaluate_config(&path).expect("evaluate config");
+
+    assert_eq!(eval.actions["probe"], vec!["album", "movie"]);
+}
+
+/// Every declaration needs a callable body; the old merge that borrowed `run`
+/// from an earlier declaration is gone.
+#[test]
+fn action_without_a_run_function_is_refused() {
+    let (_dir, engine, path) = setup(
+        r#"
+        datamile.action("probe", { media = "album", label = "Probe" })
+        "#,
+    );
+
+    let err = engine
+        .evaluate_config(&path)
+        .err()
+        .expect("a missing run function must fail");
+
+    assert!(format!("{err:#}").contains("run"), "unexpected: {err:#}");
+}
+
+/// Clients render actions by `label` and `description`; a generic action keeps
+/// the flat pair and ignores the unread `config` field.
+#[test]
+fn generic_action_keeps_its_label_and_description() {
     let (_dir, engine, path) = setup(
         r#"
         datamile.action("probe", {
             label = "Probe",
             description = "Probe the payload",
+            config = { unused = true },
             run = function(_ctx) end
         })
         "#,
     );
 
-    let eval = engine.evaluate_config(&path).expect("evaluate config");
-    let action = eval.actions.get("probe").expect("action is registered");
+    let actions = resolved_actions(&engine, &path).expect("resolve actions");
+    let entry = &actions["probe"];
 
-    assert_eq!(action.label, "Probe");
-    assert_eq!(action.description.as_deref(), Some("Probe the payload"));
+    assert_eq!(entry.label, "Probe");
+    assert_eq!(entry.description.as_deref(), Some("Probe the payload"));
+    assert!(entry.media.is_none(), "a generic action has no media scope");
 }
 
-/// A bare `d.action` still needs a label for the interface to show.
+/// A scoped action carries one presentation per declared media type, built by
+/// calling `label`/`description` with that media type.
 #[test]
-fn action_label_falls_back_to_its_name() {
+fn scoped_action_resolves_presentation_per_media() {
     let (_dir, engine, path) = setup(
         r#"
-        datamile.action("probe", {
+        datamile.action("open-terminal", {
+            media = { "album", "movie" },
+            label = function(media)
+                return media == "album" and "Open Album Terminal" or "Open Movie Terminal"
+            end,
+            description = function(media)
+                return "Open a terminal in the " .. media .. " directory"
+            end,
             run = function(_ctx) end
+        })
+        "#,
+    );
+
+    let actions = resolved_actions(&engine, &path).expect("resolve actions");
+    let entry = &actions["open_terminal"];
+    let media = entry.media.as_ref().expect("scoped action has media");
+
+    assert_eq!(media["album"].label, "Open Album Terminal");
+    assert_eq!(
+        media["album"].description.as_deref(),
+        Some("Open a terminal in the album directory")
+    );
+    assert_eq!(media["movie"].label, "Open Movie Terminal");
+    assert_eq!(entry.label, "open_terminal");
+    assert!(entry.description.is_none());
+}
+
+/// A scoped action without a label still shows its canonical name.
+#[test]
+fn scoped_action_label_falls_back_to_its_name() {
+    let (_dir, engine, path) = setup(
+        r#"
+        datamile.action("probe", { media = "album", run = function(_ctx) end })
+        "#,
+    );
+
+    let actions = resolved_actions(&engine, &path).expect("resolve actions");
+    let media = actions["probe"].media.as_ref().expect("scoped action");
+
+    assert_eq!(media["album"].label, "probe");
+    assert!(media["album"].description.is_none());
+}
+
+/// A presentation callback that cannot produce text for a media type is a
+/// config error naming both the action and the media type.
+#[test]
+fn action_callback_failures_name_the_action_and_media() {
+    for callback in [
+        "function(_media) return nil end",
+        "function(_media) return \"\" end",
+        "function(_media) error(\"boom\") end",
+    ] {
+        let (_dir, engine, path) = setup(&format!(
+            r#"
+            datamile.action("probe", {{
+                media = "album",
+                label = {callback},
+                run = function(_ctx) end
+            }})
+            "#
+        ));
+
+        let err = resolved_actions(&engine, &path)
+            .expect_err("a failed label callback must fail config load");
+
+        let message = format!("{err}");
+        assert!(
+            message.contains("action 'probe'")
+                && message.contains("'label' callback failed")
+                && message.contains("media 'album'"),
+            "error for {callback}: {message}"
+        );
+    }
+}
+
+/// `server.allowed_origins` extends the LAN allowlist, so a malformed entry
+/// fails the config instead of being carried along unused.
+#[test]
+fn malformed_allowed_origins_fail_config_load() {
+    for (entry, name) in [
+        ("10.0.0.0/33", "10.0.0.0/33"),
+        ("10.0.0.0/nope", "10.0.0.0/nope"),
+        ("bad host!", "bad host!"),
+    ] {
+        let (_dir, engine, path) = setup(&format!(
+            "datamile.config({{ server = {{ allowed_origins = {{ \"{entry}\" }} }} }})"
+        ));
+
+        let err = engine
+            .evaluate_config(&path)
+            .err()
+            .unwrap_or_else(|| panic!("'{entry}' must be rejected"));
+
+        let message = format!("{err}");
+        assert!(
+            message.contains("allowed_origins"),
+            "error for '{entry}': {message}"
+        );
+        assert!(message.contains(name), "error for '{entry}': {message}");
+    }
+}
+
+/// Hostnames, addresses and CIDR blocks are all valid allowlist entries.
+#[test]
+fn allowed_origins_accept_hosts_and_cidrs() {
+    let (_dir, engine, path) = setup(
+        r#"
+        datamile.config({
+            server = { allowed_origins = { "datamile.lan", "192.168.0.0/16", "[::1]" } }
         })
         "#,
     );
 
     let eval = engine.evaluate_config(&path).expect("evaluate config");
 
-    assert_eq!(eval.actions["probe"].label, "probe");
-    assert!(eval.actions["probe"].description.is_none());
+    assert_eq!(
+        eval.config.server.allowed_origins,
+        vec!["datamile.lan", "192.168.0.0/16", "[::1]"]
+    );
 }
 
 #[test]

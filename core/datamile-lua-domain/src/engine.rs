@@ -6,7 +6,9 @@ use anyhow::{Context, Result};
 use datamile_lua::LuaRuntime;
 use mlua::Table;
 
-use crate::config::{ActionDef, DomainConfig, InterfaceDef};
+use crate::config::{
+    ActionCtx, ActionDeclarations, ActionMap, DomainConfig, InterfaceDef,
+};
 use crate::logic::LogicManifest;
 
 const LUA_CORE: &str = include_str!("core.lua");
@@ -46,7 +48,7 @@ pub struct DomainLuaEngine {
 pub struct EvaluatedDomainData {
     pub config: DomainConfig,
     pub interfaces: HashMap<String, InterfaceDef>,
-    pub actions: HashMap<String, ActionDef>,
+    pub actions: ActionDeclarations,
     pub dependencies: Vec<PathBuf>,
     pub manifest: LogicManifest,
 }
@@ -94,6 +96,10 @@ impl DomainLuaEngine {
         let mut config: DomainConfig =
             self.runtime.call_global("__DATAMILE_GET_CONFIG")?;
         config.mpd = config.mpd.with_env_overrides();
+        config
+            .server
+            .validate_allowed_origins()
+            .map_err(anyhow::Error::msg)?;
 
         let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let resolved_cache = if config.storage.cache.is_empty() {
@@ -105,7 +111,7 @@ impl DomainLuaEngine {
 
         let interfaces: HashMap<String, InterfaceDef> =
             self.runtime.call_global("__DATAMILE_GET_INTERFACES")?;
-        let actions: HashMap<String, ActionDef> =
+        let actions: ActionDeclarations =
             self.runtime.call_global("__DATAMILE_GET_ACTIONS")?;
         let mut manifest: LogicManifest =
             self.runtime.call_global("__DATAMILE_GET_LOGIC_MANIFEST")?;
@@ -144,11 +150,7 @@ impl DomainLuaEngine {
         Ok(())
     }
 
-    pub fn execute_action(
-        &self,
-        name: &str,
-        intermediary: &serde_json::Value,
-    ) -> Result<()> {
+    pub fn execute_action(&self, name: &str, ctx: &ActionCtx) -> Result<()> {
         let registry = self.registry()?;
         let actions: Table = registry
             .get("actions")
@@ -160,12 +162,33 @@ impl DomainLuaEngine {
             .get("run")
             .map_err(|_| anyhow::anyhow!("Action '{name}' has no run function."))?;
 
-        let lua_intermediary = self.runtime.to_value(intermediary)?;
+        let lua_ctx = self.runtime.to_value(ctx)?;
         run_fn
-            .call::<()>(lua_intermediary)
+            .call::<()>(lua_ctx)
             .map_err(|e| anyhow::anyhow!("Error executing action '{name}': {e}"))?;
 
         Ok(())
+    }
+
+    /// Builds the client-facing action map by evaluating every `label` and
+    /// `description` callback for each validated media type.
+    pub fn resolve_actions(
+        &self,
+        declarations: &ActionDeclarations,
+    ) -> Result<ActionMap> {
+        let resolve_fn: mlua::Function = self
+            .runtime
+            .lua
+            .globals()
+            .get("__DATAMILE_RESOLVE_ACTIONS")
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        let lua_declarations = self.runtime.to_value(declarations)?;
+        let resolved: mlua::Value = resolve_fn
+            .call(lua_declarations)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        self.runtime.from_value(resolved)
     }
 
     pub fn evaluate_logic(
@@ -200,7 +223,7 @@ impl DomainLuaEngine {
 pub struct ResolvedDomainConfig {
     pub config: DomainConfig,
     pub interfaces: HashMap<String, InterfaceDef>,
-    pub actions: HashMap<String, ActionDef>,
+    pub actions: ActionMap,
     pub dependencies: Vec<PathBuf>,
     pub manifest: LogicManifest,
     pub path: PathBuf,
@@ -223,6 +246,7 @@ impl ResolvedDomainConfig {
         }
 
         let mut evaluated = engine.evaluate_config(&path)?;
+        let actions = engine.resolve_actions(&evaluated.actions)?;
 
         if !evaluated.config.storage.cache.is_empty() {
             evaluated.config.storage.cache =
@@ -239,7 +263,7 @@ impl ResolvedDomainConfig {
         Ok(Self {
             config: evaluated.config,
             interfaces: evaluated.interfaces,
-            actions: evaluated.actions,
+            actions,
             dependencies,
             manifest: evaluated.manifest,
             path,

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use datamile_lua_domain::{DomainLuaEngine, LogicManifest};
+use datamile_lua_domain::{ActionDeclarations, DomainLuaEngine, LogicManifest};
 use serde::Deserialize;
 
 /// Static schema for one nested node definition.
@@ -71,6 +71,7 @@ fn valid_media_type_name(name: &str) -> bool {
 pub fn validate_media_schema(
     manifest: &MediaManifest,
     logic: &LogicManifest,
+    actions: &ActionDeclarations,
 ) -> Result<()> {
     let mut seen = HashSet::new();
     for name in &manifest.roots_order {
@@ -116,6 +117,12 @@ pub fn validate_media_schema(
     }
     for (name, def) in &logic.cabinets {
         require_media(name, "cabinet", &def.media, manifest)?;
+    }
+
+    for (name, media_types) in actions {
+        for media in media_types {
+            require_media(name, "action", media, manifest)?;
+        }
     }
 
     Ok(())

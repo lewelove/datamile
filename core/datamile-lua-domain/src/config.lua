@@ -21,21 +21,35 @@ _G.datamile.interface = function(name, t)
 end
 
 _G.datamile.action = function(name, t)
+    if type(name) ~= "string" or name == "" then
+        error("action name must be a non-empty string")
+    end
     if type(t) ~= "table" then
         error(string.format("action '%s': expected table, got %s", tostring(name), type(t)))
     end
-    local existing = REGISTRY.actions[name] or {}
-    local run_fn = t.run or existing.run
-    if type(run_fn) ~= "function" then
-        error(string.format("action '%s': missing 'run' function", tostring(name)))
+    -- `-` and `_` name the same action everywhere: the registry, `datamile x`
+    -- and `POST /api/x` all use the canonical form.
+    local canonical = name:gsub("%-", "_")
+    local existing = REGISTRY.actions[canonical]
+    if existing then
+        -- Name the spelling that needed canonicalizing, whichever declaration
+        -- carried it.
+        local source = name ~= canonical and name or existing.name
+        error(string.format(
+            "action '%s' is declared twice (canonicalized from '%s')",
+            canonical, source))
     end
-    -- Clients render actions from these two fields, so they must survive the
-    -- registry round-trip; the name is the fallback label.
-    REGISTRY.actions[name] = {
-        run = run_fn,
-        label = t.label or existing.label or name,
-        description = t.description or existing.description,
-        config = t.config or existing.config or {}
+    if type(t.run) ~= "function" then
+        error(string.format("action '%s': missing 'run' function", name))
+    end
+    -- The declaration is stored raw: shape validation and the presentation
+    -- callbacks stay in Lua, which Rust cannot carry over.
+    REGISTRY.actions[canonical] = {
+        name = name,
+        media = t.media,
+        label = t.label,
+        description = t.description,
+        run = t.run
     }
 end
 
